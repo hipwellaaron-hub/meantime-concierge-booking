@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ booking.event_name }} — {{ "Booking Agreement" if document.type.value == "agreement" else "Event Order" }}</title>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 1.25rem;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: #f5f5f3; color: #1f2420; line-height: 1.5;
+  }
+  .card {
+    max-width: 640px; margin: 0 auto; background: #fff;
+    border-radius: 12px; padding: 1.5rem; box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+  }
+  h1 { font-size: 1.25rem; margin: 0 0 0.25rem; }
+  .subtitle { color: #6b7268; font-size: 0.9rem; margin-bottom: 1.25rem; }
+  .status {
+    display: inline-block; padding: 0.2rem 0.6rem; border-radius: 999px;
+    font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em;
+  }
+  .status-draft, .status-sent { background: #fdf2d0; color: #7a5b00; }
+  .status-viewed { background: #e3edfb; color: #1a4b8c; }
+  .status-signed { background: #dcf3e3; color: #1c6b3c; }
+  section { margin: 1.25rem 0; padding-top: 1.25rem; border-top: 1px solid #ececea; }
+  section:first-of-type { border-top: none; padding-top: 0; }
+  h2 { font-size: 0.95rem; margin: 0 0 0.5rem; color: #3a4038; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.92rem; }
+  td { padding: 0.3rem 0; vertical-align: top; }
+  td.label { color: #6b7268; width: 40%; }
+  .review { color: #b45309; font-style: italic; }
+  .food-items { width: 100%; font-size: 0.9rem; border-collapse: collapse; }
+  .food-items th, .food-items td { text-align: left; padding: 0.25rem 0.4rem; border-bottom: 1px solid #ececea; }
+  .food-items th { color: #6b7268; font-weight: 600; font-size: 0.8rem; }
+  form.sign { margin-top: 1.5rem; }
+  form.sign input[type=text] {
+    width: 100%; padding: 0.7rem; font-size: 1rem; border: 1px solid #d3d6d1; border-radius: 8px; margin-bottom: 0.75rem;
+  }
+  form.sign button {
+    width: 100%; padding: 0.85rem; font-size: 1rem; font-weight: 600;
+    background: #1c6b3c; color: #fff; border: none; border-radius: 8px; cursor: pointer;
+  }
+  .signed-note { background: #dcf3e3; color: #1c6b3c; padding: 0.9rem; border-radius: 8px; font-size: 0.9rem; }
+  .consent-text { font-size: 0.78rem; color: #6b7268; margin-top: 0.5rem; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>{{ booking.event_name }}</h1>
+  <div class="subtitle">
+    {{ "Booking Agreement" if document.type.value == "agreement" else "Event Order (BEO)" }}
+    · Ref {{ booking.reference_code }} · v{{ document.version }}
+    · <span class="status status-{{ document.status.value }}">{{ document.status.value }}</span>
+  </div>
+
+  {% if document.type.value == "agreement" %}
+  <section>
+    <table>
+      <tr><td class="label">Venue</td><td>{{ document.content.venue }} — {{ document.content.space_name }}</td></tr>
+      <tr><td class="label">Date</td><td>{{ document.content.event_date }}</td></tr>
+      <tr><td class="label">Time</td><td>{{ document.content.start_time }} – {{ document.content.end_time }}</td></tr>
+      <tr><td class="label">Guests</td><td>{{ document.content.adult_count }} adults{% if document.content.child_count %}, {{ document.content.child_count }} children{% endif %}</td></tr>
+      <tr><td class="label">Minimum food spend</td><td>${{ document.content.min_food_spend }}</td></tr>
+      <tr><td class="label">Deposit required</td><td>${{ document.content.deposit_required }}</td></tr>
+    </table>
+  </section>
+  <section>
+    <h2>Terms</h2>
+    <p class="{{ 'review' if '[REVIEW]' in document.content.terms_text else '' }}">{{ document.content.terms_text }}</p>
+  </section>
+  {% else %}
+  <section>
+    <h2>Event Timeline</h2>
+    <p>{{ document.content.event_timeline.event_date }}, {{ document.content.event_timeline.start_time }}–{{ document.content.event_timeline.end_time }}</p>
+    <p class="{{ 'review' if '[REVIEW]' in document.content.event_timeline.notes else '' }}">{{ document.content.event_timeline.notes }}</p>
+  </section>
+  <section>
+    <h2>Catering Order &amp; Service Style</h2>
+    <p class="{{ 'review' if '[REVIEW]' in document.content.catering_order_and_service_style else '' }}">{{ document.content.catering_order_and_service_style }}</p>
+  </section>
+  <section>
+    <h2>Food Order</h2>
+    {% if document.content.food_order.line_items %}
+    <table class="food-items">
+      <tr><th>Item</th><th>Qty</th><th>Unit price</th></tr>
+      {% for item in document.content.food_order.line_items %}
+      <tr><td>{{ item.item }}</td><td>{{ item.quantity }}</td><td>${{ item.unit_price }}</td></tr>
+      {% endfor %}
+    </table>
+    {% else %}
+    <p class="review">{{ document.content.food_order.note }}</p>
+    {% endif %}
+  </section>
+  <section>
+    <h2>Total Food Spend</h2>
+    <table>
+      <tr><td class="label">Total</td><td>{{ ("$" + document.content.total_food_spend.total) if document.content.total_food_spend.total else "—" }}</td></tr>
+      <tr><td class="label">Less deposit paid</td><td>{{ ("$" + document.content.total_food_spend.deposit_paid) if document.content.total_food_spend.deposit_paid else "—" }}</td></tr>
+      <tr><td class="label">Balance due</td><td>{{ ("$" + document.content.total_food_spend.balance_due) if document.content.total_food_spend.balance_due else "—" }}</td></tr>
+    </table>
+    <p class="review">{{ document.content.total_food_spend.note }}</p>
+  </section>
+  <section>
+    <h2>Bar Structure</h2>
+    <p class="{{ 'review' if '[REVIEW]' in document.content.bar_structure else '' }}">{{ document.content.bar_structure }}</p>
+  </section>
+  <section>
+    <h2>Room Layout Notes</h2>
+    <p class="{{ 'review' if '[REVIEW]' in document.content.room_layout_notes else '' }}">{{ document.content.room_layout_notes }}</p>
+  </section>
+  <section>
+    <h2>Music / Entertainment</h2>
+    <p class="{{ 'review' if '[REVIEW]' in document.content.music_entertainment else '' }}">{{ document.content.music_entertainment }}</p>
+  </section>
+  <section>
+    <h2>Special Notes</h2>
+    <p>{{ document.content.special_notes or "—" }}</p>
+  </section>
+  {% endif %}
+
+  {% if document.status.value == "signed" %}
+  <div class="signed-note">
+    Signed by {{ document.signer_name }} on {{ document.signed_at | sydney_time }}
+  </div>
+  {% elif document.type.value == "agreement" and document.status.value in ("sent", "viewed") %}
+  <form class="sign" method="post" action="/d/{{ document.access_token }}/sign">
+    <input type="text" name="signer_name" placeholder="Your full name" required>
+    <button type="submit">Accept &amp; Sign</button>
+    <p class="consent-text">
+      By typing your name and clicking Accept &amp; Sign, you agree to be bound by the terms above, and consent to
+      signing this document electronically. We record your name, IP address, and the time of acceptance.
+    </p>
+  </form>
+  {% endif %}
+</div>
+</body>
+</html>

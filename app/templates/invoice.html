@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ booking.event_name }} — {{ "Deposit" if invoice.type.value == "deposit" else "Final" }} Invoice</title>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 1.25rem;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: #f5f5f3; color: #1f2420; line-height: 1.5;
+  }
+  .card {
+    max-width: 640px; margin: 0 auto; background: #fff;
+    border-radius: 12px; padding: 1.5rem; box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+  }
+  h1 { font-size: 1.25rem; margin: 0 0 0.25rem; }
+  .subtitle { color: #6b7268; font-size: 0.9rem; margin-bottom: 1.25rem; }
+  .status {
+    display: inline-block; padding: 0.2rem 0.6rem; border-radius: 999px;
+    font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em;
+  }
+  .status-draft, .status-sent { background: #fdf2d0; color: #7a5b00; }
+  .status-paid { background: #dcf3e3; color: #1c6b3c; }
+  .status-cancelled { background: #f3d7d7; color: #8c2c2c; }
+  section { margin: 1.25rem 0; padding-top: 1.25rem; border-top: 1px solid #ececea; }
+  section:first-of-type { border-top: none; padding-top: 0; }
+  h2 { font-size: 0.95rem; margin: 0 0 0.5rem; color: #3a4038; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.92rem; }
+  td { padding: 0.3rem 0; vertical-align: top; }
+  td.label { color: #6b7268; width: 45%; }
+  .items th, .items td { text-align: left; padding: 0.3rem 0.4rem; border-bottom: 1px solid #ececea; font-size: 0.9rem; }
+  .items th { color: #6b7268; font-weight: 600; font-size: 0.8rem; }
+  .totals td { padding: 0.25rem 0; }
+  .totals .balance td { font-weight: 700; font-size: 1.05rem; padding-top: 0.5rem; }
+  .review { color: #b45309; font-style: italic; font-size: 0.9rem; }
+  .paid-note { background: #dcf3e3; color: #1c6b3c; padding: 0.9rem; border-radius: 8px; font-size: 0.9rem; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>{{ booking.event_name }}</h1>
+  <div class="subtitle">
+    {{ "Deposit Invoice" if invoice.type.value == "deposit" else "Final Invoice" }}
+    · Ref {{ booking.reference_code }}
+    · <span class="status status-{{ invoice.status.value }}">{{ invoice.status.value }}</span>
+  </div>
+
+  <section>
+    <table class="items">
+      <tr><th>Description</th><th>Qty</th><th>Unit price</th></tr>
+      {% for item in invoice.line_items %}
+      <tr><td>{{ item.description }}</td><td>{{ item.quantity }}</td><td>${{ item.unit_price }}</td></tr>
+      {% endfor %}
+    </table>
+  </section>
+
+  <section>
+    <table class="totals">
+      <tr><td class="label">Subtotal</td><td>${{ invoice.subtotal }}</td></tr>
+      {% if invoice.surcharge and invoice.surcharge != "0.00" %}
+      <tr><td class="label">Public holiday surcharge</td><td>${{ invoice.surcharge }}</td></tr>
+      {% endif %}
+      <tr><td class="label">Total</td><td>${{ invoice.total }}</td></tr>
+      <tr><td class="label">Paid to date</td><td>${{ summary.total_paid }}</td></tr>
+      <tr class="balance"><td class="label">Balance due</td><td>${{ summary.balance_due }}</td></tr>
+    </table>
+  </section>
+
+  {% if summary.payments %}
+  <section>
+    <h2>Payments received</h2>
+    <table>
+      {% for p in summary.payments %}
+      <tr>
+        <td class="label">{{ p.received_at | sydney_time("%d %b %Y") }}{% if p.payer_name %} — {{ p.payer_name }}{% endif %}</td>
+        <td>${{ p.amount }} ({{ p.method.value.replace("_", " ") }})</td>
+      </tr>
+      {% endfor %}
+    </table>
+  </section>
+  {% endif %}
+
+  <section>
+    <h2>How to pay</h2>
+    <p>Direct deposit is our preferred payment method.</p>
+    <p class="review">[REVIEW] insert current bank account/BSB details from the Handover doc</p>
+    {% if stripe_configured %}
+    <p>Prefer to pay by card? <a href="{{ card_payment_url }}">Pay ${{ card_payment_amount }} by card</a> (includes card surcharge, where applicable).</p>
+    {% else %}
+    <p>Card payment is available on request — please contact us.</p>
+    {% endif %}
+  </section>
+
+  {% if invoice.status.value == "paid" %}
+  <div class="paid-note">Paid in full on {{ invoice.paid_at | sydney_time("%d %b %Y") }}.</div>
+  {% endif %}
+</div>
+</body>
+</html>
