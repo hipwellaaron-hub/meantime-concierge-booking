@@ -1,5 +1,7 @@
 import datetime as dt
+import logging
 
+import stripe
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
@@ -11,6 +13,7 @@ from app.templating import templates
 from app.utils import looks_like_a_token
 
 router = APIRouter(tags=["invoices"])
+logger = logging.getLogger(__name__)
 
 
 @router.get("/i/{token}", response_class=HTMLResponse)
@@ -32,7 +35,13 @@ def view_invoice(token: str, request: Request, db: Session = Depends(get_db)):
         card_payment_amount = invoicing.calculate_card_payment_amount(summary["balance_due"], dt.date.today())
         try:
             card_payment_url = stripe_integration.create_payment_link(invoice, card_payment_amount)
-        except (stripe_integration.StripeNotConfigured, NotImplementedError):
+        except stripe_integration.StripeNotConfigured:
+            card_payment_url = None
+        except stripe.StripeError:
+            # A live API problem (network, auth, rate limit) must not take
+            # the whole invoice page down -- fall back to "on request"
+            # same as if Stripe weren't configured at all.
+            logger.exception("Stripe payment link creation failed for invoice %s", invoice.id)
             card_payment_url = None
 
     return templates.TemplateResponse(
