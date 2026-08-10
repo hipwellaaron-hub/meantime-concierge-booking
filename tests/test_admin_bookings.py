@@ -241,3 +241,61 @@ def test_assign_space_conflict_returns_409(admin_client, db, loft, unassigned_sp
         follow_redirects=False,
     )
     assert resp.status_code == 409
+
+
+def test_assign_space_can_set_a_previously_missing_event_date(admin_client, db, loft, unassigned_space):
+    booking = create_booking(
+        db, space_id=unassigned_space.id, contact_id=None, event_date=None,
+        event_name="No Date Yet", event_type="Wedding", adult_count=50, child_count=0,
+        notes=None, actor="test",
+    )
+
+    page = _detail_page(admin_client, booking.id)
+    csrf_token = _csrf(page.text)
+    resp = admin_client.post(
+        f"/admin/bookings/{booking.id}/assign-space",
+        data={
+            "csrf_token": csrf_token, "space_id": str(loft.id),
+            "start_time": "18:00", "end_time": "23:00", "event_date": "2027-09-04",
+        },
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    db.refresh(booking)
+    assert booking.event_date == dt.date(2027, 9, 4)
+
+
+def test_assign_space_with_blank_event_date_leaves_it_unset(admin_client, db, loft, unassigned_space):
+    booking = create_booking(
+        db, space_id=unassigned_space.id, contact_id=None, event_date=None,
+        event_name="Still No Date", event_type="Wedding", adult_count=50, child_count=0,
+        notes=None, actor="test",
+    )
+
+    page = _detail_page(admin_client, booking.id)
+    csrf_token = _csrf(page.text)
+    resp = admin_client.post(
+        f"/admin/bookings/{booking.id}/assign-space",
+        data={"csrf_token": csrf_token, "space_id": str(loft.id), "start_time": "18:00", "end_time": "23:00"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    db.refresh(booking)
+    assert booking.event_date is None
+
+
+def test_sending_wizard_link_without_event_date_is_rejected(admin_client, db, unassigned_space):
+    booking = create_booking(
+        db, space_id=unassigned_space.id, contact_id=None, event_date=None,
+        event_name="No Date Yet", event_type="Wedding", adult_count=50, child_count=0,
+        notes=None, actor="test",
+    )
+
+    page = _detail_page(admin_client, booking.id)
+    csrf_token = _csrf(page.text)
+    resp = admin_client.post(
+        f"/admin/bookings/{booking.id}/wizard/send", data={"csrf_token": csrf_token}, follow_redirects=False
+    )
+    assert resp.status_code == 422
+    db.refresh(booking)
+    assert booking.wizard_session is None

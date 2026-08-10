@@ -39,12 +39,14 @@ def test_full_journey_enquiry_to_paid_invoice_with_intact_audit_trail(db, loft):
                 "event_date": "2027-02-13",
                 "dates_flexible": "false",
                 "attendee_count": 60,
-                # Deliberately not a birthday category -- this test exercises
-                # the whole document/payment pipeline end to end, not the
-                # enquiry-classification flags (see test_enquiry_classification.py).
+                "adult_count": 60,
+                # Deliberately a clean, unambiguous enquiry (real date, real
+                # adult count, non-generic type, no accessibility mention) --
+                # this test exercises the whole document/payment pipeline end
+                # to end, not the enquiry-classification flags (see
+                # test_enquiry_classification.py), so it must raise none.
                 "event_type": "Group Lunch or Dinner",
                 "proposed_time_slot": "Saturday evening",
-                "comments": "Need wheelchair access for one guest.",
             },
             follow_redirects=False,
         )

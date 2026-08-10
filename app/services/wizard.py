@@ -63,6 +63,12 @@ def get_or_create_session(db: Session, booking: Booking, *, actor: str) -> Wizar
     if existing is not None:
         return existing
 
+    if booking.event_date is None:
+        # The wizard's own weekday-dependent checks (trading hours, setup
+        # access) have nothing to check against without one -- confirm the
+        # date on the booking first (see the "Space & time" card).
+        raise ValueError("cannot send a wizard link before the event date is confirmed")
+
     session = WizardSession(
         booking_id=booking.id,
         expires_at=dt.datetime.now(dt.timezone.utc) + dt.timedelta(days=WIZARD_TOKEN_TTL_DAYS),

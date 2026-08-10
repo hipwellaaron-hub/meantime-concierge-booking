@@ -12,27 +12,42 @@ supervision) actually apply. The real trigger is whether underage guests
 will be drinking on-site, not the dropdown label -- a 16th isn't an 18th
 but still has underage guests; a 21st often has younger siblings in the
 room. So a generic "Birthday" must never silently inherit or omit those
-conditions -- it has to be confirmed first.
+conditions -- it has to be confirmed first. And the milestone is
+frequently only disclosed in the event name or the free-text comments,
+never the dropdown itself, so both are searched, not just the Event Type
+field.
 """
 
-import datetime as dt
+import re
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models import Booking, BookingEvent, Space, Venue
 from app.models.booking import BookingStatus
 
-GENERIC_BIRTHDAY = "Birthday"
-EIGHTEENTH_BIRTHDAY = "18th Birthday"
-BIRTHDAY_EVENT_TYPES = {"18th Birthday", "21st Birthday", "Birthday"}
+GENERIC_EVENT_TYPES = {"party", "event", "other", "not sure yet", ""}
 
 BIRTHDAY_CLARIFICATION_QUESTION = (
     "Just so I can set everything up properly, is this a milestone birthday, "
     "and will any guests be under 18?"
 )
 
-SATURDAY = 5  # dt.date.weekday(): Monday=0 ... Sunday=6
+SATURDAY = 5
+THURSDAY = 3  # dt.date.weekday(): Monday=0 ... Sunday=6
+
+# `(th)?` makes the suffix optional ("18 birthday" is a real example, no
+# "th"); the lookahead requires "birthday"/"bday"/"b'day" to actually
+# follow, so a 21st mentioning "some guests under 18" doesn't false-positive.
+_EIGHTEENTH_PATTERN = re.compile(r"\b18(th)?\b(?=[^a-z]*(birthday|bday|b'?day))")
+_ACCESSIBILITY_PATTERN = re.compile(r"\blift\b|wheelchair|accessib|stairs|mobility")
+
+
+def _looks_like_18th(event_type: str, event_name: str, notes: str | None) -> bool:
+    if event_type.strip().lower() == "18th birthday":
+        return True
+    haystack = f"{event_name} {notes or ''}".lower()
+    return bool(_EIGHTEENTH_PATTERN.search(haystack)) or "eighteenth" in haystack
 
 
 def classify_and_flag(
@@ -41,11 +56,13 @@ def classify_and_flag(
     *,
     event_type: str,
     adult_count: int | None,
+    attendee_count: int | None,
     actor: str,
     possible_duplicate_contact: bool = False,
 ) -> list[str]:
     """Returns the flag notes raised (also persisted as BookingEvents)."""
     flags: list[str] = []
+    event_type_normalized = event_type.strip().lower()
 
     if possible_duplicate_contact:
         flags.append(
@@ -53,24 +70,72 @@ def classify_and_flag(
             "check before treating this as a brand-new client."
         )
 
-    if event_type == GENERIC_BIRTHDAY:
+    looks_18th = _looks_like_18th(event_type, booking.event_name, booking.notes)
+
+    if event_type_normalized == "birthday" and not looks_18th:
         flags.append(
             "Generic 'Birthday' enquiry -- milestone and guest ages not yet known. "
             "Do not apply 18th-birthday conditions (RSA, ID checks, parental supervision) until confirmed. "
             f'Ask: "{BIRTHDAY_CLARIFICATION_QUESTION}"'
         )
 
-    if event_type in BIRTHDAY_EVENT_TYPES and adult_count is None:
+    if looks_18th:
+        flags.append(
+            "18th birthday confirmed (or as good as) -- RSA, ID checks, and parental supervision conditions apply."
+        )
+        if booking.event_date is not None and booking.event_date.weekday() == SATURDAY:
+            flags.append(
+                "18th birthday requested for a Saturday -- standard is Friday, Saturday only where "
+                "the date is close and otherwise empty. Confirm with Aaron before proceeding."
+            )
+
+    if event_type_normalized in GENERIC_EVENT_TYPES:
+        flags.append(f"Event type '{event_type}' is unclear -- confirm what kind of event this actually is.")
+
+    if attendee_count is not None and adult_count is None:
         flags.append(
             "Adult/minor guest split not provided -- confirm before finalizing minimum spend "
             "(minimums count adults only)."
         )
 
-    if event_type == EIGHTEENTH_BIRTHDAY and booking.event_date.weekday() == SATURDAY:
+    if attendee_count is None:
         flags.append(
-            "18th birthday requested for a Saturday -- standard is Friday, Saturday only where "
-            "the date is close and otherwise empty. Confirm with Aaron before proceeding."
+            "Guest count not provided -- confirm before proceeding (minimum spend and space "
+            "capacity both depend on it)."
         )
+
+    if booking.event_date is None:
+        flags.append("Event date not provided -- confirm before proceeding.")
+    elif booking.event_date.weekday() == THURSDAY:
+        flags.append(
+            "Thursday requested -- trading closes at 9pm, confirm an evening function actually "
+            "fits before promising the date."
+        )
+
+    notes_lower = (booking.notes or "").lower()
+    if _ACCESSIBILITY_PATTERN.search(notes_lower):
+        flags.append("Accessibility need raised in the enquiry -- confirm requirements before proceeding.")
+        accessible_space = db.execute(
+            select(Space).where(Space.venue_id == booking.space.venue_id, Space.wheelchair_accessible.is_(True))
+        ).scalars().first()
+        accessible_capacity = accessible_space.capacity if accessible_space is not None else 0
+        if attendee_count is not None and attendee_count > accessible_capacity:
+            flags.append(
+                f"Guest count ({attendee_count}) exceeds the only wheelchair-accessible space's "
+                f"capacity ({accessible_capacity}) -- may need to decline or offer an alternative."
+            )
+
+    if attendee_count is not None:
+        largest = db.execute(
+            select(func.max(Space.capacity)).where(
+                Space.venue_id == booking.space.venue_id, Space.is_bookable.is_(True)
+            )
+        ).scalar_one()
+        if largest is not None and attendee_count > largest:
+            flags.append(
+                f"Guest count ({attendee_count}) exceeds every single space's capacity "
+                f"(largest is {largest}) -- would need to combine spaces or decline."
+            )
 
     for note in flags:
         db.add(

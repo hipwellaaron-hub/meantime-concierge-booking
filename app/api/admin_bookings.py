@@ -93,13 +93,24 @@ def assign_space(
     space_id: uuid.UUID = Form(...),
     start_time: dt.time = Form(...),
     end_time: dt.time = Form(...),
+    event_date: str | None = Form(None),
     db: Session = Depends(get_db),
     staff: StaffUser = Depends(require_staff),
 ):
     booking = _get_booking_or_404(db, booking_id)
     try:
+        parsed_event_date = dt.date.fromisoformat(event_date) if event_date else None
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Invalid event date")
+    try:
         booking_service.assign_space_and_time(
-            db, booking, space_id=space_id, start_time=start_time, end_time=end_time, actor=_actor(staff)
+            db,
+            booking,
+            space_id=space_id,
+            start_time=start_time,
+            end_time=end_time,
+            event_date=parsed_event_date,
+            actor=_actor(staff),
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -218,7 +229,10 @@ def send_wizard_link(
     booking_id: uuid.UUID, request: Request, db: Session = Depends(get_db), staff: StaffUser = Depends(require_staff)
 ):
     booking = _get_booking_or_404(db, booking_id)
-    wizard_service.get_or_create_session(db, booking, actor=_actor(staff))
+    try:
+        wizard_service.get_or_create_session(db, booking, actor=_actor(staff))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     return _redirect_to_detail(booking_id)
 
 

@@ -20,6 +20,14 @@ def _format_time(value) -> str:
     return value.strftime("%H:%M") if value is not None else f"{REVIEW} time not yet finalized"
 
 
+def _format_date(value) -> str:
+    # Same reasoning as _format_time: an enquiry can arrive with no date
+    # locked in yet (see the missing_event_date flag in
+    # app.services.enquiry_classification) -- a document generated before
+    # that's resolved must say so, not crash or guess one.
+    return value.isoformat() if value is not None else f"{REVIEW} event date not yet confirmed"
+
+
 def compute_food_order_total(line_items: list[dict]) -> Decimal | None:
     if not line_items:
         return None
@@ -67,7 +75,7 @@ def generate_beo_content(
 
     return {
         "event_timeline": {
-            "event_date": booking.event_date.isoformat(),
+            "event_date": _format_date(booking.event_date),
             "start_time": _format_time(booking.start_time),
             "end_time": _format_time(booking.end_time),
             "notes": f"{REVIEW} add run-sheet detail beyond start/end time",
@@ -104,7 +112,7 @@ def generate_agreement_content(booking: Booking) -> dict:
         "venue": space.venue.name,
         "space_name": space.name,
         "event_name": booking.event_name,
-        "event_date": booking.event_date.isoformat(),
+        "event_date": _format_date(booking.event_date),
         "start_time": _format_time(booking.start_time),
         "end_time": _format_time(booking.end_time),
         "adult_count": booking.adult_count,

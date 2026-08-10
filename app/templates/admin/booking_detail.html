@@ -7,7 +7,7 @@
 
 <p><a href="/admin/bookings">&larr; All bookings</a></p>
 <h1>{{ booking.event_name }} <span class="badge gold">{{ booking.status.value }}</span></h1>
-<p class="muted">{{ booking.reference_code }} &middot; {{ booking.event_date }} &middot; {{ booking.space.name }}
+<p class="muted">{{ booking.reference_code }} &middot; {{ booking.event_date if booking.event_date else "Date TBD" }} &middot; {{ booking.space.name }}
   {% if booking.start_time and booking.end_time %} &middot; {{ booking.start_time }}&ndash;{{ booking.end_time }}{% endif %}
   &middot; {{ booking.adult_count }} adults, {{ booking.child_count }} children (min {{ booking.agreed_min_adults }})
 </p>
@@ -36,6 +36,10 @@
         <option value="{{ space.id }}" {% if space.id == booking.space_id %}selected{% endif %}>{{ space.name }}</option>
         {% endfor %}
       </select>
+    </div>
+    <div>
+      <label>Event date</label>
+      <input type="date" name="event_date" value="{{ booking.event_date or '' }}">
     </div>
     <div>
       <label>Start</label>

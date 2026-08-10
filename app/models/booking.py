@@ -65,7 +65,11 @@ class Booking(Base):
     space_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("spaces.id"), nullable=False)
     contact_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("contacts.id"), nullable=True)
 
-    event_date: Mapped[dt.date] = mapped_column(Date, nullable=False)
+    # Nullable: a real enquiry can arrive with no date locked in yet
+    # ("not sure of dates, are you flexible?") -- see
+    # app.services.enquiry_classification's missing_event_date flag rather
+    # than rejecting or guessing a date for it.
+    event_date: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
     # Nullable: at enquiry stage the client often only knows roughly when
     # they want the event (see proposed_time_slot below), not exact times.
     # A NULL here makes time_range (and thus the exclusion constraint,
@@ -94,7 +98,7 @@ class Booking(Base):
     time_range = mapped_column(
         TSRANGE,
         Computed(
-            "CASE WHEN start_time IS NULL OR end_time IS NULL THEN NULL "
+            "CASE WHEN event_date IS NULL OR start_time IS NULL OR end_time IS NULL THEN NULL "
             "ELSE tsrange(event_date + start_time, event_date + end_time, '[)') END",
             persisted=True,
         ),

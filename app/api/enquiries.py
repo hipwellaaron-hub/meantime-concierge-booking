@@ -91,8 +91,13 @@ def submit_enquiry(request: Request, payload: Annotated[EnquiryCreate, Form()], 
     # Adult/child split: only known if the client volunteered adult_count
     # (not asked up front on this form -- see app.schemas.enquiry). Left
     # unknown, every attendee is conservatively treated as an adult for
-    # minimum-spend purposes, same as before this field existed.
-    if payload.adult_count is not None:
+    # minimum-spend purposes, same as before this field existed. If even
+    # the total guest count is unknown, both are recorded as 0 (the
+    # model's own default) -- classify_and_flag raises a
+    # missing_attendee_count-equivalent flag so this is never silent.
+    if payload.attendee_count is None:
+        adult_count, child_count = 0, 0
+    elif payload.adult_count is not None:
         adult_count = payload.adult_count
         child_count = payload.attendee_count - payload.adult_count
     else:
@@ -120,6 +125,7 @@ def submit_enquiry(request: Request, payload: Annotated[EnquiryCreate, Form()], 
         booking,
         event_type=payload.event_type,
         adult_count=payload.adult_count,
+        attendee_count=payload.attendee_count,
         actor=actor,
         possible_duplicate_contact=len(duplicate_candidates) > 0,
     )

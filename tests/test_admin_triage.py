@@ -22,7 +22,7 @@ def test_triage_lists_enquiries_needing_clarification(admin_client, db, unassign
         event_name="Generic Birthday Enquiry", event_type="Birthday", adult_count=40, child_count=0,
         notes=None, actor="test",
     )
-    classify_and_flag(db, booking, event_type="Birthday", adult_count=None, actor="test")
+    classify_and_flag(db, booking, event_type="Birthday", adult_count=None, attendee_count=40, actor="test")
 
     resp = admin_client.get("/admin/triage")
     assert resp.status_code == 200

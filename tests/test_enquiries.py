@@ -315,11 +315,28 @@ def test_adult_count_greater_than_attendee_count_rejected(db, unassigned_space):
         app.dependency_overrides.clear()
 
 
-def test_unknown_event_type_rejected(db, unassigned_space):
+def test_event_type_outside_the_dropdown_is_accepted(db, unassigned_space):
+    """The dropdown on the public form only offers 12 options, but the
+    backend deliberately does not enforce that as a hard allow-list --
+    real historical enquiries (from the previous iVvy form) used event
+    types ("Christmas", "Party", "Event") that don't match any of the 12,
+    and rejecting those outright would lose a real lead entirely."""
     app.dependency_overrides[get_db] = lambda: db
     try:
         client = TestClient(app, follow_redirects=False)
         resp = client.post("/enquiries", data=_payload(event_type="Bar Mitzvah"))
+        assert resp.status_code == 303
+        booking = db.query(Booking).filter_by(event_name="Wilson Wedding").one()
+        assert booking.event_type == "Bar Mitzvah"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_blank_event_type_after_strip_is_rejected(db, unassigned_space):
+    app.dependency_overrides[get_db] = lambda: db
+    try:
+        client = TestClient(app, follow_redirects=False)
+        resp = client.post("/enquiries", data=_payload(event_type="   "))
         assert resp.status_code == 422
     finally:
         app.dependency_overrides.clear()
@@ -399,5 +416,56 @@ def test_enquiry_form_renders(db, unassigned_space):
         assert resp.status_code == 200
         assert "Event Type" in resp.text
         assert "Wedding" in resp.text
+    finally:
+        app.dependency_overrides.clear()
+
+
+# --- optional attendee_count / event_date -----------------------------------
+
+
+def test_empty_attendee_count_is_accepted_not_rejected(db, unassigned_space):
+    """Regression: a real browser submits an empty <input type=number> as
+    the literal string "", not an omitted field. This is a REQUIRED field
+    in the sense that it drives minimum-spend/capacity checks, but a real
+    client who genuinely doesn't know their final numbers yet must not be
+    turned away at the door -- the enquiry is accepted and flagged for
+    follow-up instead (see test_enquiry_classification.py)."""
+    app.dependency_overrides[get_db] = lambda: db
+    try:
+        client = TestClient(app, follow_redirects=False)
+        resp = client.post("/enquiries", data=_payload(attendee_count=""))
+        assert resp.status_code == 303
+        booking = db.query(Booking).filter_by(event_name="Wilson Wedding").one()
+        assert booking.adult_count == 0
+        assert booking.child_count == 0
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_omitted_event_date_is_accepted_not_rejected(db, unassigned_space):
+    """A real "not sure of dates yet, are you flexible?" enquiry must
+    reach staff, not bounce with a raw validation error."""
+    app.dependency_overrides[get_db] = lambda: db
+    try:
+        client = TestClient(app, follow_redirects=False)
+        payload = _payload()
+        del payload["event_date"]
+        resp = client.post("/enquiries", data=payload)
+        assert resp.status_code == 303
+        booking = db.query(Booking).filter_by(event_name="Wilson Wedding").one()
+        assert booking.event_date is None
+        assert booking.reference_code.startswith("HAM-TBD-")
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_empty_string_event_date_is_accepted_not_rejected(db, unassigned_space):
+    app.dependency_overrides[get_db] = lambda: db
+    try:
+        client = TestClient(app, follow_redirects=False)
+        resp = client.post("/enquiries", data=_payload(event_date=""))
+        assert resp.status_code == 303
+        booking = db.query(Booking).filter_by(event_name="Wilson Wedding").one()
+        assert booking.event_date is None
     finally:
         app.dependency_overrides.clear()

@@ -18,12 +18,15 @@ REFERENCE_ALPHABET = string.ascii_uppercase + string.digits
 REFERENCE_SUFFIX_LENGTH = 5
 
 
-def generate_reference_code(db: Session, event_date: dt.date, venue_slug: str = "HAM") -> str:
+def generate_reference_code(db: Session, event_date: dt.date | None, venue_slug: str = "HAM") -> str:
     """Human-readable and unique. Retries on the rare random collision
-    rather than relying on any external counter."""
+    rather than relying on any external counter. event_date is None for
+    an enquiry that arrived with no date locked in yet -- "TBD" stands in
+    for the date segment rather than guessing one."""
+    date_part = f"{event_date:%Y%m%d}" if event_date is not None else "TBD"
     for _ in range(10):
         suffix = "".join(secrets.choice(REFERENCE_ALPHABET) for _ in range(REFERENCE_SUFFIX_LENGTH))
-        code = f"{venue_slug.upper()}-{event_date:%Y%m%d}-{suffix}"
+        code = f"{venue_slug.upper()}-{date_part}-{suffix}"
         exists = db.execute(select(Booking.id).where(Booking.reference_code == code)).first()
         if exists is None:
             return code
@@ -35,7 +38,7 @@ def create_booking(
     *,
     space_id: uuid.UUID,
     contact_id: uuid.UUID | None,
-    event_date: dt.date,
+    event_date: dt.date | None,
     start_time: dt.time | None = None,
     end_time: dt.time | None = None,
     proposed_time_slot: str | None = None,
@@ -198,7 +201,14 @@ def set_agreed_minimum(
 
 
 def assign_space_and_time(
-    db: Session, booking: Booking, *, space_id: uuid.UUID, start_time: dt.time, end_time: dt.time, actor: str
+    db: Session,
+    booking: Booking,
+    *,
+    space_id: uuid.UUID,
+    start_time: dt.time,
+    end_time: dt.time,
+    event_date: dt.date | None = None,
+    actor: str,
 ) -> Booking:
     """Triage action for iVvy-imported bookings, which land in the
     placeholder Unassigned space with no time-of-day (see
@@ -206,7 +216,14 @@ def assign_space_and_time(
     actually subjects the booking to the double-booking exclusion
     constraint for the first time -- a genuine overlap raises
     IntegrityError, which the caller (app/api/admin_bookings.py) turns
-    into a 409, same as any other constraint violation in this app."""
+    into a 409, same as any other constraint violation in this app.
+
+    event_date is optional and only touched when given: an enquiry that
+    arrived with a real date needs it left alone here, while one that
+    arrived with no date (see app.services.enquiry_classification's
+    missing_event_date flag) needs a place for staff to record it once
+    they've actually spoken to the client -- this is that place, reusing
+    the same triage action rather than adding a whole separate one."""
     space = db.get(Space, space_id)
     if space is None or not space.is_bookable:
         raise ValueError(f"Unknown or non-bookable space {space_id}")
@@ -215,6 +232,19 @@ def assign_space_and_time(
     booking.space_id = space_id
     booking.start_time = start_time
     booking.end_time = end_time
+    if event_date is not None and event_date != booking.event_date:
+        old_event_date = booking.event_date
+        booking.event_date = event_date
+        db.add(
+            BookingEvent(
+                booking_id=booking.id,
+                event_type="field_changed",
+                field_name="event_date",
+                old_value=str(old_event_date) if old_event_date else None,
+                new_value=str(event_date),
+                actor=actor,
+            )
+        )
     db.add(
         BookingEvent(
             booking_id=booking.id,
