@@ -5,6 +5,8 @@ from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.models.document import DocumentStatus
+from app.models.invoice import InvoiceStatus
 from app.models.wizard_session import WizardSessionStatus, WizardStep
 from app.rate_limit import InMemoryRateLimiter, client_ip, rate_limit_dependency
 from app.schemas.wizard import WizardBasicsStep, WizardBeverageStep, WizardExtrasStep, WizardFoodStep, WizardMusicStep
@@ -103,7 +105,7 @@ def submit_basics_step(token: str, request: Request, payload: WizardBasicsStep, 
 def submit_food_step(token: str, request: Request, payload: WizardFoodStep, db: Session = Depends(get_db)):
     session = _get_usable_session(db, token)
     try:
-        wizard_service.save_food_step(
+        guidance = wizard_service.save_food_step(
             db,
             session,
             platters=[item.model_dump() for item in payload.platters],
@@ -113,7 +115,17 @@ def submit_food_step(token: str, request: Request, payload: WizardFoodStep, db: 
     except ValueError as exc:
         raise _handle_value_error(exc) from exc
 
-    return {"current_step": session.current_step.value}
+    return {
+        "current_step": session.current_step.value,
+        "guidance": {
+            "message": guidance.message,
+            "subtotal": str(guidance.subtotal),
+            "min_food_spend": str(guidance.min_food_spend),
+            "met_minimum_spend": guidance.met_minimum_spend,
+            "shortfall": str(guidance.shortfall) if guidance.shortfall is not None else None,
+            "expected_platter_range": guidance.expected_platter_range,
+        },
+    }
 
 
 @router.post("/w/{token}/beverage", dependencies=[Depends(rate_limit_dependency(_wizard_step_rate_limiter))])
@@ -179,8 +191,19 @@ def submit_extras_step(token: str, request: Request, payload: WizardExtrasStep, 
 def submit_review_step(token: str, request: Request, db: Session = Depends(get_db)):
     session = _get_usable_session(db, token)
     try:
-        wizard_service.submit_review(db, session, actor=_actor(request))
+        session, generation = wizard_service.submit_review(db, session, actor=_actor(request))
     except ValueError as exc:
         raise _handle_value_error(exc) from exc
 
-    return {"status": session.status.value}
+    return {
+        "status": session.status.value,
+        "is_clean": generation.is_clean,
+        "outstanding_items": generation.outstanding_items,
+        "beo_status": generation.document.status.value,
+        "invoice_status": generation.invoice.status.value,
+        # Only handed back once actually sent -- a draft document's token
+        # isn't meant to be reachable yet, matching how its own /d and /i
+        # routes already treat a draft as not-found.
+        "invoice_url": f"/i/{generation.invoice.access_token}" if generation.invoice.status != InvoiceStatus.draft else None,
+        "beo_url": f"/d/{generation.document.access_token}" if generation.document.status != DocumentStatus.draft else None,
+    }

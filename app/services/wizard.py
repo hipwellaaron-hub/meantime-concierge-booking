@@ -22,7 +22,8 @@ from app.models.document import DocumentStatus, DocumentType
 from app.models.invoice import InvoiceStatus, InvoiceType
 from app.models.menu_item import MenuItemCategory
 from app.models.wizard_session import WizardSession, WizardSessionStatus, WizardStep
-from app.services import catalogue
+from app.services import catalogue, wizard_generation
+from app.services.food_guidance import FoodGuidance, generate_food_guidance
 from app.services.policy import WIZARD_TOKEN_TTL_DAYS, WIZARD_TRIGGER_DAYS_BEFORE_EVENT
 from app.services.validation import (
     SETUP_ACCESS_STANDARD_TIME,
@@ -233,11 +234,21 @@ def save_basics_step(
     return warnings
 
 
-def save_food_step(db: Session, session: WizardSession, *, platters: list[dict], pizzas: list[dict], actor: str) -> None:
+def save_food_step(
+    db: Session, session: WizardSession, *, platters: list[dict], pizzas: list[dict], actor: str
+) -> FoodGuidance:
     """Each item is {"menu_item_id": UUID, "quantity": int}. Validates every
     referenced item exists and is active -- JSONB can't be DB-FK-enforced,
     so this is the anti-tampering/correctness check for price-relevant
-    client input."""
+    client input. Also resolves each item's real price (current vs.
+    legacy) and returns advisory FoodGuidance -- see app.services.food_guidance.
+
+    The subtotal stored here is for wizard-display guidance ONLY. BEO/
+    invoice generation (a later phase) must always recompute fresh from
+    the catalogue at generation time, never trust this stored figure --
+    catalogue prices can change between when a client fills the wizard and
+    when staff finalize the booking.
+    """
     _lock_and_guard_editable(db, session)
     booking = session.booking
 
@@ -251,17 +262,56 @@ def save_food_step(db: Session, session: WizardSession, *, platters: list[dict],
             menu_item = catalogue.get_by_id(db, menu_item_id)
             if menu_item is None or menu_item.category != category:
                 raise ValueError(f"unknown or inactive menu item {menu_item_id}")
-            cleaned.append({"menu_item_id": str(menu_item_id), "quantity": quantity})
+            cleaned.append({"menu_item_id": str(menu_item_id), "quantity": quantity, "menu_item": menu_item})
         return cleaned
 
+    validated_platters = _validate(platters, MenuItemCategory.platter)
+    validated_pizzas = _validate(pizzas, MenuItemCategory.pizza)
+
+    subtotal = Decimal("0.00")
+    needs_price_review: list[str] = []
+    for entry in validated_platters + validated_pizzas:
+        price = catalogue.resolve_price(entry["menu_item"], booking)
+        if price is None:
+            # A legacy-eligible booking selected an item with no defined
+            # legacy price (e.g. Vegetarian Pizza, new in v1.3) -- never
+            # guess a figure. Excluded from the guidance subtotal; staff
+            # must confirm the real price at generation time.
+            needs_price_review.append(entry["menu_item"].name)
+            continue
+        subtotal += price * entry["quantity"]
+
     session.food_response = {
-        "platters": _validate(platters, MenuItemCategory.platter),
-        "pizzas": _validate(pizzas, MenuItemCategory.pizza),
+        "platters": [{"menu_item_id": e["menu_item_id"], "quantity": e["quantity"]} for e in validated_platters],
+        "pizzas": [{"menu_item_id": e["menu_item_id"], "quantity": e["quantity"]} for e in validated_pizzas],
+        "guidance_subtotal": str(subtotal),
+        "needs_price_review": needs_price_review,
     }
+
+    total_platter_count = sum(e["quantity"] for e in validated_platters)
+    total_guest_count = booking.adult_count + booking.child_count
+    guidance = generate_food_guidance(
+        subtotal=subtotal,
+        min_food_spend=booking.space.min_food_spend,
+        platter_count=total_platter_count,
+        total_guest_count=total_guest_count,
+    )
+
     db.add(BookingEvent(booking_id=booking.id, event_type="wizard_step_saved", field_name="food", actor=actor))
+    if needs_price_review:
+        db.add(
+            BookingEvent(
+                booking_id=booking.id,
+                event_type="wizard_needs_review",
+                field_name="food_pricing",
+                new_value=f"no legacy price defined for: {', '.join(needs_price_review)}",
+                actor=actor,
+            )
+        )
     _advance_step(session, WizardStep.food)
     db.commit()
     db.refresh(session)
+    return guidance
 
 
 def save_beverage_step(
@@ -369,20 +419,22 @@ def flag_accessibility_escalation(db: Session, session: WizardSession, *, actor:
     return True
 
 
-def submit_review(db: Session, session: WizardSession, *, actor: str) -> WizardSession:
+def submit_review(db: Session, session: WizardSession, *, actor: str):
+    """Returns (session, WizardGenerationResult) -- the generation result
+    carries is_clean/outstanding_items/document/invoice for the caller
+    (the /w/{token}/review router) to surface. See
+    app.services.wizard_generation.generate_beo_and_invoice for the BEO/
+    invoice generation and auto-route logic itself.
+    """
     _lock_and_guard_editable(db, session)
     session.status = WizardSessionStatus.submitted
     session.submitted_at = dt.datetime.now(dt.timezone.utc)
     session.current_step = WizardStep.review
     db.add(BookingEvent(booking_id=session.booking_id, event_type="wizard_submitted", actor=actor))
-
-    # HOOK: BEO regeneration + final invoice generation attach here in a
-    # later phase (not designed yet). Both gated OFF by default via
-    # Settings.wizard_beo_auto_finalize / Settings.wizard_invoice_auto_send
-    # (see app/config.py) -- the BEO is an internal operational document to
-    # staff, the invoice is client-facing, and those may warrant different
-    # auto-route rules, so they're independently switchable.
-
     db.commit()
     db.refresh(session)
-    return session
+
+    generation_result = wizard_generation.generate_beo_and_invoice(db, session, actor=actor)
+
+    db.refresh(session)
+    return session, generation_result

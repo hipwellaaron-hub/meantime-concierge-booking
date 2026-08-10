@@ -32,9 +32,38 @@ def compute_food_order_total(line_items: list[dict]) -> Decimal | None:
         raise ValueError(f"malformed food order line item: {exc}") from exc
 
 
-def generate_beo_content(booking: Booking, food_order_line_items: list[dict] | None = None) -> dict:
+def generate_beo_content(
+    booking: Booking,
+    food_order_line_items: list[dict] | None = None,
+    *,
+    catering_order_and_service_style: str | None = None,
+    bar_structure: str | None = None,
+    room_layout_notes: str | None = None,
+    music_entertainment: str | None = None,
+    special_notes_extra: str | None = None,
+    deposit_paid: Decimal | None = None,
+) -> dict:
+    """Every new keyword-only param defaults to None, which preserves the
+    exact original [REVIEW]-placeholder output byte for byte -- this
+    function still has no opinion on what's genuinely missing vs. real
+    captured data with nothing outstanding; that distinction is the
+    caller's job (see app.services.wizard_generation, which is the only
+    caller that ever passes these)."""
     food_order_line_items = food_order_line_items or []
     food_total = compute_food_order_total(food_order_line_items)
+
+    if food_total is None:
+        total_food_spend_note = f"{REVIEW} add a food order above to compute the total"
+        balance_due = None
+    elif deposit_paid is None:
+        total_food_spend_note = (
+            f"{REVIEW} deposit paid / balance due aren't derivable yet -- "
+            "payments aren't tracked in Concierge until Phase 3"
+        )
+        balance_due = None
+    else:
+        total_food_spend_note = None
+        balance_due = food_total - deposit_paid
 
     return {
         "event_timeline": {
@@ -43,26 +72,21 @@ def generate_beo_content(booking: Booking, food_order_line_items: list[dict] | N
             "end_time": _format_time(booking.end_time),
             "notes": f"{REVIEW} add run-sheet detail beyond start/end time",
         },
-        "catering_order_and_service_style": f"{REVIEW} add catering order and service style",
+        "catering_order_and_service_style": catering_order_and_service_style or f"{REVIEW} add catering order and service style",
         "food_order": {
             "line_items": food_order_line_items,
             "note": None if food_order_line_items else f"{REVIEW} no food order captured yet",
         },
         "total_food_spend": {
             "total": str(food_total) if food_total is not None else None,
-            "deposit_paid": None,
-            "balance_due": None,
-            "note": (
-                f"{REVIEW} add a food order above to compute the total"
-                if food_total is None
-                else f"{REVIEW} deposit paid / balance due aren't derivable yet -- "
-                "payments aren't tracked in Concierge until Phase 3"
-            ),
+            "deposit_paid": str(deposit_paid) if deposit_paid is not None else None,
+            "balance_due": str(balance_due) if balance_due is not None else None,
+            "note": total_food_spend_note,
         },
-        "bar_structure": f"{REVIEW} add bar structure",
-        "room_layout_notes": f"{REVIEW} add room layout notes",
-        "music_entertainment": f"{REVIEW} add music/entertainment detail",
-        "special_notes": booking.notes or "",
+        "bar_structure": bar_structure or f"{REVIEW} add bar structure",
+        "room_layout_notes": room_layout_notes if room_layout_notes is not None else f"{REVIEW} add room layout notes",
+        "music_entertainment": music_entertainment or f"{REVIEW} add music/entertainment detail",
+        "special_notes": special_notes_extra if special_notes_extra is not None else (booking.notes or ""),
         "status": booking.status.value,
         "_reference": {
             "reference_code": booking.reference_code,

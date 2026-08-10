@@ -148,6 +148,38 @@ def test_food_step_saves_and_resumes(db, loft, menu_items):
     assert reloaded.current_step == WizardStep.beverage
 
 
+def test_food_step_returns_guidance_matching_computed_subtotal(db, loft, menu_items):
+    booking = _make_booking(db, loft, adult_count=60)  # min food spend on Loft is $1,000
+    session = wizard_service.get_or_create_session(db, booking, actor="test")
+    grazing = menu_items["Grazing Platter"]  # $250
+
+    guidance = wizard_service.save_food_step(
+        db, session, platters=[{"menu_item_id": grazing.id, "quantity": 5}], pizzas=[], actor="test"
+    )
+    assert guidance.subtotal == 250 * 5
+    assert guidance.met_minimum_spend is True
+    assert session.food_response["guidance_subtotal"] == str(guidance.subtotal)
+    assert session.food_response["needs_price_review"] == []
+
+
+def test_food_step_flags_undefined_legacy_price_for_review(db, loft, menu_items):
+    before_cutover = dt.datetime(2026, 1, 1, tzinfo=dt.timezone.utc)
+    booking = _make_booking(db, loft)
+    booking.created_at = before_cutover
+    db.commit()
+    session = wizard_service.get_or_create_session(db, booking, actor="test")
+    vegetarian = menu_items["Vegetarian Pizza"]  # no legacy price defined
+
+    guidance = wizard_service.save_food_step(
+        db, session, platters=[], pizzas=[{"menu_item_id": vegetarian.id, "quantity": 2}], actor="test"
+    )
+    # Excluded from the guidance subtotal entirely -- never guessed.
+    assert guidance.subtotal == 0
+    assert "Vegetarian Pizza" in session.food_response["needs_price_review"]
+    event_types = {e.event_type for e in booking.events}
+    assert "wizard_needs_review" in event_types
+
+
 def test_reposting_earlier_step_does_not_regress_current_step(db, loft, menu_items):
     booking = _make_booking(db, loft)
     session = wizard_service.get_or_create_session(db, booking, actor="test")
@@ -228,7 +260,7 @@ def test_cash_bar_never_requires_a_limit(db, loft):
 def test_submitted_session_cannot_be_edited(db, loft):
     booking = _make_booking(db, loft)
     session = wizard_service.get_or_create_session(db, booking, actor="test")
-    wizard_service.submit_review(db, session, actor="test")
+    wizard_service.submit_review(db, session, actor="test")  # returns (session, generation_result)
     try:
         wizard_service.save_music_step(
             db, session, music_type=MusicType.own_playlist, notes=None, bump_in_notes=None, actor="test"
@@ -372,7 +404,7 @@ def test_already_submitted_wizard_excluded_from_worklist(db, hamilton, loft):
     as_of = dt.date(2027, 6, 1)
     booking = _make_eligible_booking(db, loft, event_date=as_of + dt.timedelta(days=10))
     session = wizard_service.get_or_create_session(db, booking, actor="test")
-    wizard_service.submit_review(db, session, actor="test")
+    wizard_service.submit_review(db, session, actor="test")  # returns (session, generation_result)
 
     ids = {b.id for b in wizard_service.get_wizard_eligible_bookings(db, hamilton, as_of=as_of)}
     assert booking.id not in ids
@@ -432,7 +464,7 @@ def test_expired_unsubmitted_session_404s(db, loft):
 def test_submitted_session_still_resolves_read_only(db, loft):
     booking = _make_booking(db, loft)
     session = wizard_service.get_or_create_session(db, booking, actor="test")
-    wizard_service.submit_review(db, session, actor="test")
+    wizard_service.submit_review(db, session, actor="test")  # returns (session, generation_result)
     client = _client(db)
     try:
         resp = client.get(f"/w/{session.access_token}")
@@ -444,7 +476,7 @@ def test_submitted_session_still_resolves_read_only(db, loft):
 def test_post_to_submitted_session_returns_409(db, loft):
     booking = _make_booking(db, loft)
     session = wizard_service.get_or_create_session(db, booking, actor="test")
-    wizard_service.submit_review(db, session, actor="test")
+    wizard_service.submit_review(db, session, actor="test")  # returns (session, generation_result)
     client = _client(db)
     try:
         resp = client.post(

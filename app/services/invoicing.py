@@ -70,12 +70,28 @@ def create_invoice(
     due_date: dt.date,
     *,
     actor: str,
+    credit_line_items: list[dict] | None = None,
 ) -> Invoice:
-    subtotal, surcharge, total = compute_totals(db, booking.event_date, line_items)
+    """credit_line_items (e.g. a negative "Less: deposit credited" line)
+    are applied to `total` only, AFTER subtotal/surcharge are computed
+    from `line_items` alone. They must never be passed through
+    compute_totals mixed in with line_items -- the public holiday
+    surcharge has to apply to the real gross charge, not a figure already
+    reduced by a credit, or it silently undercharges. This is the same
+    class of mistake that already produced a wrong invoice for a live
+    client -- see app.services.wizard_generation.
+    """
+    subtotal, surcharge, gross_total = compute_totals(db, booking.event_date, line_items)
+    credit_line_items = credit_line_items or []
+    credit_total = sum(
+        (Decimal(str(c["quantity"])) * Decimal(str(c["unit_price"])) for c in credit_line_items), Decimal("0.00")
+    )
+    total = gross_total + credit_total  # credit unit_prices are negative, so this reduces total
+
     invoice = Invoice(
         booking_id=booking.id,
         type=invoice_type,
-        line_items=line_items,
+        line_items=line_items + credit_line_items,
         subtotal=subtotal,
         surcharge=surcharge,
         total=total,
