@@ -1,4 +1,5 @@
 import dataclasses
+import json
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
@@ -7,10 +8,14 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models.document import DocumentStatus
 from app.models.invoice import InvoiceStatus
+from app.models.menu_item import MenuItemCategory
 from app.models.wizard_session import WizardSessionStatus, WizardStep
 from app.rate_limit import InMemoryRateLimiter, client_ip, rate_limit_dependency
 from app.schemas.wizard import WizardBasicsStep, WizardBeverageStep, WizardExtrasStep, WizardFoodStep, WizardMusicStep
+from app.services import catalogue
 from app.services import wizard as wizard_service
+from app.services.policy import PLATTER_GUESTS_PER_PLATTER
+from app.services.validation import MUSIC_OFF_TIME, SETUP_ACCESS_STANDARD_TIME
 from app.templating import templates
 from app.utils import looks_like_a_token, truncate
 
@@ -46,6 +51,20 @@ def _handle_value_error(exc: ValueError) -> HTTPException:
     return HTTPException(status_code=422, detail=str(exc))
 
 
+def _catalogue_payload(db: Session, booking, category: MenuItemCategory) -> list[dict]:
+    # Items with no resolvable price for this booking (the undefined-
+    # legacy-price edge case, e.g. Vegetarian Pizza on a pre-cutover
+    # booking) are excluded from what a client can select at all --
+    # better to not offer it than show a confusing blank/guessed price.
+    payload = []
+    for item in catalogue.get_active_items(db, category):
+        price = catalogue.resolve_price(item, booking)
+        if price is None:
+            continue
+        payload.append({"id": str(item.id), "name": item.name, "price": str(price)})
+    return payload
+
+
 @router.get("/w/{token}", response_class=HTMLResponse)
 def view_wizard(token: str, request: Request, db: Session = Depends(get_db)):
     session = _get_usable_session(db, token)
@@ -54,26 +73,44 @@ def view_wizard(token: str, request: Request, db: Session = Depends(get_db)):
     if session.status == WizardSessionStatus.submitted:
         return templates.TemplateResponse(request, "wizard/submitted.html", {"session": session, "booking": booking})
 
-    step_data = {
-        WizardStep.basics: {
-            "start_time": booking.start_time,
-            "end_time": booking.end_time,
-            "food_service_time": booking.food_service_time,
-            "setup_access_time": booking.setup_access_time,
+    bootstrap = {
+        "booking": {
+            "event_name": booking.event_name,
+            "reference_code": booking.reference_code,
+            "event_date": booking.event_date.isoformat(),
+            "space_name": booking.space.name,
+            "start_time": str(booking.start_time) if booking.start_time else None,
+            "end_time": str(booking.end_time) if booking.end_time else None,
+            "food_service_time": str(booking.food_service_time) if booking.food_service_time else None,
+            "setup_access_time": str(booking.setup_access_time) if booking.setup_access_time else None,
             "adult_count": booking.adult_count,
             "child_count": booking.child_count,
+            "outside_cake_permitted": booking.outside_cake_permitted,
         },
-        WizardStep.food: session.food_response,
-        WizardStep.beverage: session.beverage_response,
-        WizardStep.music: session.music_response,
-        WizardStep.extras: session.extras_response,
-        WizardStep.review: None,
-    }[session.current_step]
+        "current_step": session.current_step.value,
+        "responses": {
+            "food": session.food_response,
+            "beverage": session.beverage_response,
+            "music": session.music_response,
+            "extras": session.extras_response,
+        },
+        "catalogue": {
+            "platters": _catalogue_payload(db, booking, MenuItemCategory.platter),
+            "pizzas": _catalogue_payload(db, booking, MenuItemCategory.pizza),
+            "cakes": _catalogue_payload(db, booking, MenuItemCategory.cake),
+        },
+        "policy": {
+            "min_food_spend": str(booking.space.min_food_spend),
+            "platter_guests_per_platter": PLATTER_GUESTS_PER_PLATTER,
+            "setup_access_standard_time": str(SETUP_ACCESS_STANDARD_TIME),
+            "music_off_time": str(MUSIC_OFF_TIME),
+        },
+    }
 
     return templates.TemplateResponse(
         request,
-        "wizard/step.html",
-        {"session": session, "booking": booking, "current_step": session.current_step.value, "step_data": step_data},
+        "wizard/wizard.html",
+        {"booking": booking, "bootstrap_json": json.dumps(bootstrap)},
     )
 
 
