@@ -48,12 +48,17 @@ def main(label: str = "") -> None:
         ).scalars().first()
 
         if booking is None:
+            # Each label gets its own date -- these are all real 'confirmed'
+            # bookings on the same real space, so the double-booking
+            # exclusion constraint (correctly) rejects overlapping ones.
+            date_offset = (ord(label[0]) - ord("A")) if label else 0
+            event_date = dt.date(2027, 3, 20) + dt.timedelta(days=date_offset)
             contact, _ = find_or_create_contact(db, f"Sample Wizard Tester{suffix}", sample_email, None)
             booking = create_booking(
                 db,
                 space_id=SAMPLE_SPACE_ID,
                 contact_id=contact.id,
-                event_date=dt.date(2027, 3, 20),
+                event_date=event_date,
                 start_time=dt.time(18, 0),
                 end_time=dt.time(23, 0),
                 event_name=sample_event_name,
