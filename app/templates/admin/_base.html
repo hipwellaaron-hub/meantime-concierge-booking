@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}Staff{% endblock %} — Meantime Concierge</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Playfair+Display:wght@600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0e0e0e;
+    --surface: #161616;
+    --surface-hi: #1e1e1e;
+    --gold: #c9a96e;
+    --gold-dim: #a08350;
+    --cream: #f5f0e8;
+    --muted: #8a8580;
+    --ember: #d4622b;
+    --safe-green: #4a6b4a;
+    --safe-green-text: #7ab87a;
+    --wine: #7a2e3a;
+    --border: rgba(201,169,110,0.15);
+    --border-bright: rgba(201,169,110,0.35);
+    --radius: 12px;
+    --font-head: "Playfair Display", Georgia, serif;
+    --font-body: "DM Sans", -apple-system, BlinkMacSystemFont, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: var(--font-body); background: var(--bg); color: var(--cream); -webkit-font-smoothing: antialiased; }
+  a { color: var(--gold); }
+  header.top {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 24px; background: var(--surface-hi); border-bottom: 1px solid var(--border);
+    position: sticky; top: 0; z-index: 10;
+  }
+  header.top .brand { font-family: var(--font-head); font-size: 1.15rem; font-weight: 600; color: var(--cream); text-decoration: none; }
+  nav.primary { display: flex; gap: 18px; align-items: center; }
+  nav.primary a { font-size: 0.85rem; font-weight: 600; text-decoration: none; color: var(--muted); }
+  nav.primary a.active, nav.primary a:hover { color: var(--gold); }
+  .staff-info { display: flex; align-items: center; gap: 12px; font-size: 0.8rem; color: var(--muted); }
+  .staff-info button { background: none; border: 1px solid var(--border-bright); color: var(--cream); border-radius: 8px; padding: 6px 12px; font-size: 0.78rem; cursor: pointer; }
+  .staff-info button:hover { border-color: var(--gold); color: var(--gold); }
+
+  main { max-width: 1080px; margin: 0 auto; padding: 28px 24px 80px; }
+  h1 { font-family: var(--font-head); font-size: 1.6rem; margin: 0 0 20px; color: var(--cream); }
+  h2 { font-family: var(--font-head); font-size: 1.15rem; margin: 0 0 12px; color: var(--cream); }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; margin-bottom: 18px; }
+  .grid { display: grid; gap: 18px; }
+  .grid.cols-4 { grid-template-columns: repeat(4, 1fr); }
+  @media (max-width: 800px) { .grid.cols-4 { grid-template-columns: repeat(2, 1fr); } }
+
+  table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+  th { text-align: left; color: var(--muted); font-weight: 600; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.03em; padding: 8px 10px; border-bottom: 1px solid var(--border-bright); }
+  td { padding: 10px; border-bottom: 1px solid var(--border); }
+  tr:hover td { background: var(--surface-hi); }
+
+  .stat { text-align: left; }
+  .stat .num { font-family: var(--font-head); font-size: 2rem; color: var(--gold); }
+  .stat .label { font-size: 0.8rem; color: var(--muted); margin-top: 2px; }
+
+  label { display: block; font-size: 0.82rem; font-weight: 600; margin: 10px 0 5px; color: var(--cream); }
+  input[type=text], input[type=number], input[type=date], input[type=time], textarea, select {
+    width: 100%; padding: 9px 10px; border: 1px solid var(--border); border-radius: 8px;
+    font-size: 0.9rem; background: var(--surface-hi); color: var(--cream); font-family: inherit;
+  }
+  input:focus, textarea:focus, select:focus { outline: none; border-color: var(--border-bright); }
+  .field-row { display: flex; gap: 12px; }
+  .field-row > div { flex: 1; }
+
+  .btn { display: inline-block; padding: 9px 16px; border-radius: 8px; border: 1px solid var(--gold-dim); background: var(--gold); color: #201a10; font-weight: 700; font-size: 0.85rem; cursor: pointer; font-family: inherit; }
+  .btn:hover { background: var(--gold-dim); }
+  .btn.secondary { background: transparent; color: var(--cream); border: 1px solid var(--border-bright); }
+  .btn.secondary:hover { border-color: var(--gold); color: var(--gold); }
+  .btn.danger { background: transparent; color: #e8b3bd; border: 1px solid var(--wine); }
+  .btn.danger:hover { background: rgba(122,46,58,0.2); }
+  form.inline { display: inline; }
+
+  .badge { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 0.72rem; font-weight: 700; letter-spacing: 0.02em; text-transform: uppercase; border: 1px solid var(--border-bright); color: var(--muted); }
+  .badge.gold { background: rgba(201,169,110,0.12); border-color: var(--gold-dim); color: var(--gold); }
+  .badge.green { background: rgba(74,107,74,0.2); border-color: var(--safe-green); color: var(--safe-green-text); }
+  .badge.ember { background: rgba(212,98,43,0.12); border-color: var(--ember); color: #eeb08f; }
+  .badge.wine { background: rgba(122,46,58,0.2); border-color: var(--wine); color: #e8b3bd; }
+
+  .muted { color: var(--muted); }
+  .empty-state { color: var(--muted); font-style: italic; padding: 20px 0; }
+  .section-gap { margin-top: 28px; }
+</style>
+</head>
+<body>
+
+<header class="top">
+  <a class="brand" href="/admin/">Meantime Concierge</a>
+  <nav class="primary">
+    <a href="/admin/">Dashboard</a>
+    <a href="/admin/bookings">Bookings</a>
+    <a href="/admin/triage">Triage</a>
+  </nav>
+  <div class="staff-info">
+    <span>{{ staff.name }}</span>
+    <form method="post" action="/admin/logout">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button type="submit">Log out</button>
+    </form>
+  </div>
+</header>
+
+<main>
+{% block content %}{% endblock %}
+</main>
+
+</body>
+</html>

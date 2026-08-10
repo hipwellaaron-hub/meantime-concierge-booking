@@ -1,0 +1,235 @@
+{% extends "admin/_base.html" %}
+{% block title %}{{ booking.event_name }}{% endblock %}
+{% block content %}
+{% set current_agreement = (booking.documents | selectattr('type.value', 'equalto', 'agreement') | selectattr('is_current') | list | first) %}
+{% set current_beo = (booking.documents | selectattr('type.value', 'equalto', 'beo') | selectattr('is_current') | list | first) %}
+{% set deposit_invoices = booking.invoices | selectattr('type.value', 'equalto', 'deposit') | list %}
+
+<p><a href="/admin/bookings">&larr; All bookings</a></p>
+<h1>{{ booking.event_name }} <span class="badge gold">{{ booking.status.value }}</span></h1>
+<p class="muted">{{ booking.reference_code }} &middot; {{ booking.event_date }} &middot; {{ booking.space.name }}
+  {% if booking.start_time and booking.end_time %} &middot; {{ booking.start_time }}&ndash;{{ booking.end_time }}{% endif %}
+  &middot; {{ booking.adult_count }} adults, {{ booking.child_count }} children (min {{ booking.agreed_min_adults }})
+</p>
+{% if booking.contact %}
+<p class="muted">{{ booking.contact.name }} &middot; {{ booking.contact.email }}{% if booking.contact.phone %} &middot; {{ booking.contact.phone }}{% endif %}</p>
+{% endif %}
+
+<div class="card">
+  <h2>Space &amp; time</h2>
+  <form method="post" action="/admin/bookings/{{ booking.id }}/assign-space" class="field-row">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div>
+      <label>Space</label>
+      <select name="space_id">
+        {% for space in bookable_spaces %}
+        <option value="{{ space.id }}" {% if space.id == booking.space_id %}selected{% endif %}>{{ space.name }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div>
+      <label>Start</label>
+      <input type="time" name="start_time" value="{{ booking.start_time or '' }}">
+    </div>
+    <div>
+      <label>End</label>
+      <input type="time" name="end_time" value="{{ booking.end_time or '' }}">
+    </div>
+    <div style="flex:0 0 auto; align-self:flex-end;">
+      <button class="btn" type="submit">Save</button>
+    </div>
+  </form>
+</div>
+
+<div class="card">
+  <h2>Documents</h2>
+  <table>
+    <thead><tr><th>Type</th><th>Version</th><th>Status</th><th>Actions</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>Agreement</td>
+        <td class="muted">{{ current_agreement.version if current_agreement else "—" }}</td>
+        <td>{% if current_agreement %}<span class="badge">{{ current_agreement.status.value }}</span>{% else %}<span class="muted">none</span>{% endif %}</td>
+        <td>
+          <form class="inline" method="post" action="/admin/bookings/{{ booking.id }}/documents/agreement/generate">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button class="btn secondary" type="submit">{{ "Regenerate" if current_agreement else "Generate" }}</button>
+          </form>
+          {% if current_agreement and current_agreement.status.value == "draft" %}
+          <form class="inline" method="post" action="/admin/bookings/{{ booking.id }}/documents/{{ current_agreement.id }}/send">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button class="btn" type="submit">Send</button>
+          </form>
+          {% endif %}
+          {% if current_agreement %}<a href="/d/{{ current_agreement.access_token }}" target="_blank">View &rarr;</a>{% endif %}
+        </td>
+      </tr>
+      <tr>
+        <td>BEO</td>
+        <td class="muted">{{ current_beo.version if current_beo else "—" }}</td>
+        <td>{% if current_beo %}<span class="badge">{{ current_beo.status.value }}</span>{% else %}<span class="muted">none</span>{% endif %}</td>
+        <td>
+          <form class="inline" method="post" action="/admin/bookings/{{ booking.id }}/documents/beo/generate">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button class="btn secondary" type="submit">{{ "Regenerate" if current_beo else "Generate" }}</button>
+          </form>
+          {% if current_beo and current_beo.status.value == "draft" %}
+          <form class="inline" method="post" action="/admin/bookings/{{ booking.id }}/documents/{{ current_beo.id }}/send">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button class="btn" type="submit">Send</button>
+          </form>
+          {% endif %}
+          {% if current_beo %}<a href="/d/{{ current_beo.access_token }}" target="_blank">View &rarr;</a>{% endif %}
+        </td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="card">
+  <h2>Invoices</h2>
+  {% if not deposit_invoices %}
+  <form method="post" action="/admin/bookings/{{ booking.id }}/invoices/deposit" style="margin-bottom:14px;">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="field-row">
+      <div><label>Deposit due date</label><input type="date" name="due_date" required></div>
+      <div style="flex:0 0 auto; align-self:flex-end;"><button class="btn" type="submit">Create deposit invoice</button></div>
+    </div>
+  </form>
+  {% endif %}
+  {% if booking.invoices %}
+  <table>
+    <thead><tr><th>Type</th><th>Total</th><th>Status</th><th>Due</th><th>Actions</th></tr></thead>
+    <tbody>
+    {% for invoice in booking.invoices %}
+      <tr>
+        <td>{{ invoice.type.value }}</td>
+        <td>${{ invoice.total }}</td>
+        <td><span class="badge {% if invoice.status.value == 'paid' %}green{% endif %}">{{ invoice.status.value }}</span></td>
+        <td class="muted">{{ invoice.due_date }}</td>
+        <td>
+          {% if invoice.status.value == "draft" %}
+          <form class="inline" method="post" action="/admin/bookings/{{ booking.id }}/invoices/{{ invoice.id }}/send">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button class="btn" type="submit">Send</button>
+          </form>
+          {% endif %}
+          <a href="/i/{{ invoice.access_token }}" target="_blank">View &rarr;</a>
+          {% if invoice.status.value == "sent" %}
+          <details style="display:inline-block; margin-left:8px;">
+            <summary style="display:inline; cursor:pointer; color:var(--gold);">Record payment</summary>
+            <form method="post" action="/admin/bookings/{{ booking.id }}/invoices/{{ invoice.id }}/payments" style="margin-top:8px;">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <div class="field-row">
+                <div><label>Amount</label><input type="text" name="amount" required></div>
+                <div><label>Method</label>
+                  <select name="method">
+                    {% for m in payment_methods %}<option value="{{ m.value }}">{{ m.value }}</option>{% endfor %}
+                  </select>
+                </div>
+              </div>
+              <div class="field-row">
+                <div><label>Reference</label><input type="text" name="reference"></div>
+                <div><label>Payer name</label><input type="text" name="payer_name"></div>
+              </div>
+              <button class="btn" type="submit" style="margin-top:10px;">Record payment</button>
+            </form>
+          </details>
+          {% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty-state">No invoices yet.</div>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>Guided Booking Wizard</h2>
+  {% if booking.wizard_session %}
+  {% set ws = booking.wizard_session %}
+  <p>Status: <span class="badge {% if ws.status.value == 'submitted' %}green{% elif ws.status.value == 'revoked' %}wine{% endif %}">{{ ws.status.value }}</span>
+    &middot; Step: {{ ws.current_step.value }}
+    {% if ws.has_hard_escalation %}&middot; <span class="badge wine">accessibility escalation</span>{% endif %}
+  </p>
+  <p><a href="/w/{{ ws.access_token }}" target="_blank">Wizard link &rarr;</a></p>
+  {% if ws.status.value not in ("submitted", "revoked") %}
+  <form method="post" action="/admin/bookings/{{ booking.id }}/wizard/revoke">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button class="btn danger" type="submit">Revoke link</button>
+  </form>
+  {% endif %}
+  {% else %}
+  <form method="post" action="/admin/bookings/{{ booking.id }}/wizard/send">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button class="btn" type="submit">Send wizard link</button>
+  </form>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>Policy overrides</h2>
+
+  <h3 style="font-size:0.9rem; color:var(--muted); margin:0 0 6px;">Early setup access</h3>
+  {% if booking.setup_access_confirmed is sameas false %}
+  <p>Client requested setup access at {{ booking.setup_access_time }} (earlier than standard) — pending confirmation.</p>
+  <form method="post" action="/admin/bookings/{{ booking.id }}/policy/setup-access/confirm">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button class="btn" type="submit">Confirm early access</button>
+  </form>
+  {% elif booking.setup_access_confirmed is sameas true %}
+  <p class="muted">Confirmed for {{ booking.setup_access_time }}.</p>
+  {% else %}
+  <p class="muted">No early access requested.</p>
+  {% endif %}
+
+  <h3 style="font-size:0.9rem; color:var(--muted); margin:20px 0 6px;">Agreed minimum guests</h3>
+  <p class="muted">Space standard: {{ booking.space.standard_min_adults }} &middot; Currently agreed: {{ booking.agreed_min_adults }}{% if booking.agreed_min_reduction_reason %} ({{ booking.agreed_min_reduction_reason.value }}){% endif %}</p>
+  <form method="post" action="/admin/bookings/{{ booking.id }}/policy/agreed-minimum">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="field-row">
+      <div><label>Agreed minimum</label><input type="number" name="agreed_min_adults" value="{{ booking.agreed_min_adults }}" min="0" required></div>
+      <div><label>Reason (required if reduced)</label>
+        <select name="reason">
+          <option value="">— none —</option>
+          {% for r in min_reduction_reasons %}<option value="{{ r.value }}">{{ r.value }}</option>{% endfor %}
+        </select>
+      </div>
+      <div style="flex:0 0 auto; align-self:flex-end;"><button class="btn" type="submit">Save</button></div>
+    </div>
+  </form>
+
+  <h3 style="font-size:0.9rem; color:var(--muted); margin:20px 0 6px;">Outside cake</h3>
+  <p class="muted">Currently {{ "permitted" if booking.outside_cake_permitted else "not permitted" }}.</p>
+  <form method="post" action="/admin/bookings/{{ booking.id }}/policy/outside-cake">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="permitted" value="{{ 'false' if booking.outside_cake_permitted else 'true' }}">
+    <button class="btn secondary" type="submit">{{ "Disallow outside cake" if booking.outside_cake_permitted else "Allow outside cake" }}</button>
+  </form>
+</div>
+
+<div class="card">
+  <h2>Audit trail</h2>
+  {% if booking.events %}
+  <table>
+    <thead><tr><th>When</th><th>Event</th><th>Field</th><th>Old</th><th>New</th><th>Actor</th></tr></thead>
+    <tbody>
+    {% for event in booking.events | reverse %}
+      <tr>
+        <td class="muted">{{ event.created_at | sydney_time }}</td>
+        <td>{{ event.event_type }}</td>
+        <td class="muted">{{ event.field_name or "" }}</td>
+        <td class="muted">{{ event.old_value or "" }}</td>
+        <td class="muted">{{ event.new_value or "" }}</td>
+        <td class="muted">{{ event.actor }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty-state">No events yet.</div>
+  {% endif %}
+</div>
+{% endblock %}

@@ -1,0 +1,44 @@
+{% extends "admin/_base.html" %}
+{% block title %}Bookings{% endblock %}
+{% block content %}
+<h1>Bookings</h1>
+
+<form method="get" action="/admin/bookings" class="card" style="display:flex; gap:12px; align-items:flex-end;">
+  <div style="flex:2;">
+    <label for="q">Search</label>
+    <input type="text" id="q" name="q" value="{{ q }}" placeholder="Event name, reference, or contact">
+  </div>
+  <div style="flex:1;">
+    <label for="status">Status</label>
+    <select id="status" name="status">
+      <option value="">Any</option>
+      {% for s in statuses %}
+      <option value="{{ s.value }}" {% if status == s %}selected{% endif %}>{{ s.value }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <button class="btn" type="submit">Filter</button>
+</form>
+
+<div class="card" style="padding:0;">
+  {% if bookings %}
+  <table>
+    <thead><tr><th>Event</th><th>Reference</th><th>Date</th><th>Space</th><th>Status</th><th>Guests</th></tr></thead>
+    <tbody>
+    {% for booking in bookings %}
+      <tr onclick="window.location='/admin/bookings/{{ booking.id }}'" style="cursor:pointer;">
+        <td>{{ booking.event_name }}</td>
+        <td class="muted">{{ booking.reference_code }}</td>
+        <td>{{ booking.event_date }}</td>
+        <td class="muted">{{ booking.space.name }}</td>
+        <td><span class="badge">{{ booking.status.value }}</span></td>
+        <td class="muted">{{ booking.adult_count + booking.child_count }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty-state" style="padding:20px;">No bookings match.</div>
+  {% endif %}
+</div>
+{% endblock %}

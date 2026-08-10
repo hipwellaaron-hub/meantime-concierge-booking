@@ -1,0 +1,68 @@
+{% extends "admin/_base.html" %}
+{% block title %}Triage{% endblock %}
+{% block content %}
+<h1>Triage</h1>
+
+<div class="card">
+  <h2>Awaiting space &amp; time assignment ({{ unassigned | length }})</h2>
+  {% if unassigned %}
+  <table>
+    <thead><tr><th>Event</th><th>Reference</th><th>Date</th><th>Assign to</th><th></th></tr></thead>
+    <tbody>
+    {% for booking in unassigned %}
+      <tr>
+        <td><a href="/admin/bookings/{{ booking.id }}">{{ booking.event_name }}</a></td>
+        <td class="muted">{{ booking.reference_code }}</td>
+        <td>{{ booking.event_date }}</td>
+        <td colspan="2">
+          <form method="post" action="/admin/bookings/{{ booking.id }}/assign-space" class="field-row" style="align-items:flex-end;">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <div>
+              <select name="space_id" required>
+                <option value="" disabled selected>Space…</option>
+                {% for space in bookable_spaces %}
+                <option value="{{ space.id }}">{{ space.name }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div><input type="time" name="start_time" required></div>
+            <div><input type="time" name="end_time" required></div>
+            <div><button class="btn" type="submit">Assign</button></div>
+          </form>
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty-state">Nothing awaiting triage.</div>
+  {% endif %}
+</div>
+
+<div class="card section-gap">
+  <h2>Wizard-ready ({{ wizard_ready | length }})</h2>
+  <p class="muted">Deposit paid, agreement signed, within the trigger window, no wizard sent yet.</p>
+  {% if wizard_ready %}
+  <table>
+    <thead><tr><th>Event</th><th>Reference</th><th>Date</th><th></th></tr></thead>
+    <tbody>
+    {% for booking in wizard_ready %}
+      <tr>
+        <td><a href="/admin/bookings/{{ booking.id }}">{{ booking.event_name }}</a></td>
+        <td class="muted">{{ booking.reference_code }}</td>
+        <td>{{ booking.event_date }}</td>
+        <td>
+          <form method="post" action="/admin/bookings/{{ booking.id }}/wizard/send">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button class="btn" type="submit">Send wizard link</button>
+          </form>
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty-state">No bookings currently wizard-ready.</div>
+  {% endif %}
+</div>
+{% endblock %}

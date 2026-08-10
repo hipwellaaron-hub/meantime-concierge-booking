@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Staff Login — Meantime Concierge</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Playfair+Display:wght@600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0e0e0e; --surface: #161616; --surface-hi: #1e1e1e;
+    --gold: #c9a96e; --gold-dim: #a08350; --cream: #f5f0e8; --muted: #8a8580;
+    --ember: #d4622b; --border: rgba(201,169,110,0.15); --border-bright: rgba(201,169,110,0.35);
+    --font-head: "Playfair Display", Georgia, serif;
+    --font-body: "DM Sans", -apple-system, BlinkMacSystemFont, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
+    font-family: var(--font-body); background: var(--bg); color: var(--cream);
+  }
+  .login-card { width: 100%; max-width: 360px; background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 32px 28px; }
+  h1 { font-family: var(--font-head); font-size: 1.4rem; margin: 0 0 22px; text-align: center; }
+  label { display: block; font-size: 0.82rem; font-weight: 600; margin: 14px 0 6px; }
+  input { width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; font-size: 0.95rem; background: var(--surface-hi); color: var(--cream); font-family: inherit; }
+  input:focus { outline: none; border-color: var(--border-bright); }
+  button { width: 100%; margin-top: 20px; padding: 12px; border-radius: 8px; border: none; background: var(--gold); color: #201a10; font-weight: 700; font-size: 0.95rem; cursor: pointer; font-family: inherit; }
+  button:hover { background: var(--gold-dim); }
+  .error { margin-top: 14px; padding: 10px 12px; border-radius: 8px; background: rgba(212,98,43,0.12); border: 1px solid var(--ember); color: #eeb08f; font-size: 0.85rem; }
+</style>
+</head>
+<body>
+<div class="login-card">
+  <h1>Staff Login</h1>
+  <form method="post" action="/admin/login">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="next" value="{{ next }}">
+    <label for="email">Email</label>
+    <input type="email" id="email" name="email" required autofocus>
+    <label for="password">Password</label>
+    <input type="password" id="password" name="password" required>
+    <button type="submit">Log in</button>
+    {% if error %}<div class="error">{{ error }}</div>{% endif %}
+  </form>
+</div>
+</body>
+</html>
