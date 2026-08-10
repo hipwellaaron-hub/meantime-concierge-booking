@@ -29,6 +29,57 @@
   {% endif %}
 </div>
 
+<div class="card section-gap" style="border-color: var(--ember);">
+  <h2 style="color: var(--ember);">Flagged bookings still open ({{ flagged_in_progress | length }})</h2>
+  <p class="muted">Enquiry flags don't clear just because a booking progressed -- these have moved past 'enquiry' but still have an unresolved flag.</p>
+  {% if flagged_in_progress %}
+  <table>
+    <thead><tr><th>Event</th><th>Reference</th><th>Status</th><th>Date</th><th>Flags</th></tr></thead>
+    <tbody>
+    {% for booking in flagged_in_progress %}
+      {% set flags = booking.events | selectattr('event_type', 'equalto', 'enquiry_flagged') | list %}
+      <tr>
+        <td><a href="/admin/bookings/{{ booking.id }}">{{ booking.event_name }}</a></td>
+        <td class="muted">{{ booking.reference_code }}</td>
+        <td><span class="badge">{{ booking.status.value }}</span></td>
+        <td>{{ booking.event_date if booking.event_date else "Date TBD" }}</td>
+        <td>
+          <ul style="margin:0; padding-left:18px;">
+            {% for f in flags %}<li style="margin-bottom:4px;">{{ f.new_value }}</li>{% endfor %}
+          </ul>
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty-state">Nothing flagged and still open.</div>
+  {% endif %}
+</div>
+
+<div class="card section-gap">
+  <h2>Agreed minimum differs from standard, no reason recorded ({{ unrecorded_min_reductions | length }})</h2>
+  <p class="muted">Master Policy §4.4: a reduced minimum must always carry a reason. These were set some other way (import, migration) and need a reason recorded or correcting.</p>
+  {% if unrecorded_min_reductions %}
+  <table>
+    <thead><tr><th>Event</th><th>Reference</th><th>Space standard</th><th>Agreed</th><th></th></tr></thead>
+    <tbody>
+    {% for booking in unrecorded_min_reductions %}
+      <tr>
+        <td><a href="/admin/bookings/{{ booking.id }}">{{ booking.event_name }}</a></td>
+        <td class="muted">{{ booking.reference_code }}</td>
+        <td class="muted">{{ booking.space.standard_min_adults }}</td>
+        <td>{{ booking.agreed_min_adults }}</td>
+        <td><a href="/admin/bookings/{{ booking.id }}">Review &rarr;</a></td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty-state">Nothing unrecorded.</div>
+  {% endif %}
+</div>
+
 <div class="card section-gap">
   <h2>Awaiting space &amp; time assignment ({{ unassigned | length }})</h2>
   {% if unassigned %}

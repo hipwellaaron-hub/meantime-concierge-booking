@@ -284,6 +284,102 @@ def test_assign_space_with_blank_event_date_leaves_it_unset(admin_client, db, lo
     assert booking.event_date is None
 
 
+def test_assign_space_reconciles_untouched_agreed_minimum_to_new_space_standard(
+    admin_client, db, loft, unassigned_space
+):
+    """A booking created in the Unassigned placeholder (standard_min_adults
+    always 0) must pick up the real space's standard minimum on assignment,
+    not carry the stale 0 forward with no reason recorded."""
+    booking = create_booking(
+        db, space_id=unassigned_space.id, contact_id=None, event_date=None,
+        event_name="From Unassigned", event_type="Wedding", adult_count=50, child_count=0,
+        notes=None, actor="test",
+    )
+    assert booking.agreed_min_adults == unassigned_space.standard_min_adults
+
+    page = _detail_page(admin_client, booking.id)
+    csrf_token = _csrf(page.text)
+    resp = admin_client.post(
+        f"/admin/bookings/{booking.id}/assign-space",
+        data={
+            "csrf_token": csrf_token, "space_id": str(loft.id),
+            "start_time": "18:00", "end_time": "23:00", "event_date": "2027-09-04",
+        },
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    db.refresh(booking)
+    assert booking.agreed_min_adults == loft.standard_min_adults
+    assert booking.agreed_min_reduction_reason is None
+
+
+def test_assign_space_leaves_a_deliberately_set_agreed_minimum_alone(admin_client, db, loft, unassigned_space):
+    from app.models.booking import MinReductionReasonCode
+    from app.services.booking import set_agreed_minimum
+
+    booking = create_booking(
+        db, space_id=unassigned_space.id, contact_id=None, event_date=None,
+        event_name="Custom Minimum Already Set", event_type="Wedding", adult_count=50, child_count=0,
+        notes=None, actor="test",
+    )
+    set_agreed_minimum(
+        db, booking, agreed_min_adults=5, reason=MinReductionReasonCode.aaron_discretion, actor="test"
+    )
+
+    page = _detail_page(admin_client, booking.id)
+    csrf_token = _csrf(page.text)
+    resp = admin_client.post(
+        f"/admin/bookings/{booking.id}/assign-space",
+        data={
+            "csrf_token": csrf_token, "space_id": str(loft.id),
+            "start_time": "18:00", "end_time": "23:00", "event_date": "2027-09-04",
+        },
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    db.refresh(booking)
+    assert booking.agreed_min_adults == 5
+    assert booking.agreed_min_reduction_reason == MinReductionReasonCode.aaron_discretion
+
+
+def test_transition_status_via_dashboard_succeeds(admin_client, db, booking):
+    assert booking.status == BookingStatus.enquiry
+    page = _detail_page(admin_client, booking.id)
+    csrf_token = _csrf(page.text)
+
+    resp = admin_client.post(
+        f"/admin/bookings/{booking.id}/status",
+        data={"csrf_token": csrf_token, "new_status": "offered", "reason": "quoted"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    db.refresh(booking)
+    assert booking.status == BookingStatus.offered
+
+
+def test_transition_status_via_dashboard_rejects_illegal_move(admin_client, db, booking):
+    assert booking.status == BookingStatus.enquiry
+    page = _detail_page(admin_client, booking.id)
+    csrf_token = _csrf(page.text)
+
+    resp = admin_client.post(
+        f"/admin/bookings/{booking.id}/status",
+        data={"csrf_token": csrf_token, "new_status": "confirmed"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 422
+    db.refresh(booking)
+    assert booking.status == BookingStatus.enquiry
+
+
+def test_booking_detail_shows_only_legal_next_statuses(admin_client, db, booking):
+    page = _detail_page(admin_client, booking.id)
+    assert 'value="offered"' in page.text
+    assert 'value="dead"' in page.text
+    assert 'value="confirmed"' not in page.text
+    assert 'value="completed"' not in page.text
+
+
 def test_sending_wizard_link_without_event_date_is_rejected(admin_client, db, unassigned_space):
     booking = create_booking(
         db, space_id=unassigned_space.id, contact_id=None, event_date=None,

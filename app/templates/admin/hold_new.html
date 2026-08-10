@@ -1,0 +1,57 @@
+{% extends "admin/_base.html" %}
+{% block title %}New hold{% endblock %}
+{% block content %}
+<p><a href="/admin/calendar">&larr; Calendar</a></p>
+<h1>New hold</h1>
+<p class="muted">
+  A hold blocks a space against real double-booking (it's a booking at "tentative" status underneath),
+  without needing a full enquiry on file yet. Use this for "please hold this date for us" requests that
+  haven't gone through the enquiry form.
+</p>
+
+<div class="card">
+  <form method="post" action="/admin/calendar/holds">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+    <label>Space(s)</label>
+    {% for space in bookable_spaces %}
+    <label style="font-weight:400; display:flex; align-items:center; gap:8px; margin:4px 0;">
+      <input type="checkbox" name="space_ids" value="{{ space.id }}" style="width:auto;"> {{ space.name }}
+    </label>
+    {% endfor %}
+
+    <div class="field-row">
+      <div>
+        <label>Date</label>
+        <input type="date" name="event_date" value="{{ default_date.isoformat() if default_date else '' }}" required>
+      </div>
+      <div>
+        <label>Client / label</label>
+        <input type="text" name="event_name" placeholder="e.g. Lycopodium — hold" required>
+      </div>
+    </div>
+
+    <div class="field-row">
+      <div>
+        <label>Start (optional)</label>
+        <input type="time" name="start_time">
+      </div>
+      <div>
+        <label>End (optional)</label>
+        <input type="time" name="end_time">
+      </div>
+      <div>
+        <label>Expires (optional)</label>
+        <input type="date" name="hold_expires_at">
+      </div>
+    </div>
+    <p class="muted" style="font-size:0.78rem;">
+      Leave start/end blank for a whole-day hold. Leave expiry blank for an open-ended hold with no auto-expiry --
+      it stays visible on the calendar as an active hold indefinitely, and you can set an expiry later from the
+      booking's detail page.
+    </p>
+
+    <button class="btn" type="submit" style="margin-top:10px;">Create hold</button>
+  </form>
+</div>
+{% endblock %}

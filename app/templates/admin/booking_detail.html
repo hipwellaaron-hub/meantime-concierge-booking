@@ -15,6 +15,40 @@
 <p class="muted">{{ booking.contact.name }} &middot; {{ booking.contact.email }}{% if booking.contact.phone %} &middot; {{ booking.contact.phone }}{% endif %}</p>
 {% endif %}
 
+<div class="card">
+  <h2>Status</h2>
+  {% if legal_next_statuses %}
+  <form method="post" action="/admin/bookings/{{ booking.id }}/status">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="field-row">
+      <div>
+        <label>Move to</label>
+        <select name="new_status" required>
+          <option value="" disabled selected>Choose…</option>
+          {% for s in legal_next_statuses %}<option value="{{ s.value }}">{{ s.value }}</option>{% endfor %}
+        </select>
+      </div>
+      <div><label>Reason (optional)</label><input type="text" name="reason" placeholder="e.g. deposit paid, client confirmed"></div>
+      <div style="flex:0 0 auto; align-self:flex-end;"><button class="btn" type="submit">Change status</button></div>
+    </div>
+  </form>
+  {% else %}
+  <p class="muted">This status is terminal -- no further transition is available.</p>
+  {% endif %}
+
+  {% if booking.status.value == "tentative" %}
+  <h3 style="font-size:0.9rem; color:var(--muted); margin:20px 0 6px;">Hold expiry</h3>
+  <p class="muted">
+    {% if booking.hold_expires_at %}Expires {{ booking.hold_expires_at }}.{% else %}Open-ended -- no expiry set.{% endif %}
+  </p>
+  <form method="post" action="/admin/bookings/{{ booking.id }}/hold-expiry" class="field-row">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div><input type="date" name="hold_expires_at" value="{{ booking.hold_expires_at or '' }}"></div>
+    <div style="flex:0 0 auto;"><button class="btn secondary" type="submit">Save</button></div>
+  </form>
+  {% endif %}
+</div>
+
 {% set clarification_flags = booking.events | selectattr('event_type', 'equalto', 'enquiry_flagged') | list %}
 {% if clarification_flags %}
 <div class="card" style="border-color: var(--ember); background: rgba(212,98,43,0.08);">

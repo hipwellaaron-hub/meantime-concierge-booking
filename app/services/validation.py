@@ -13,14 +13,16 @@ import datetime as dt
 from dataclasses import dataclass
 
 SATURDAY = 5  # datetime.date.weekday(): Monday=0 ... Sunday=6
+WEDNESDAY = 2
 THURSDAY = 3
 DAYTIME_CUTOFF = dt.time(17, 0)
 MUSIC_OFF_TIME = dt.time(23, 30)
 # Master Policy v1.3 §1.8: "From 2:00pm standard. Earlier is often
 # possible but must be confirmed, never promised."
 SETUP_ACCESS_STANDARD_TIME = dt.time(14, 0)
-# Master Policy v1.3 §1.8: Thursday trading is 12:00pm to 9:00pm.
-THURSDAY_TRADING_CLOSE = dt.time(21, 0)
+# Master Policy v1.3 §1.8: Wednesday AND Thursday trading is 12:00pm to
+# 9:00pm -- both days share the same clause, so both share this constant.
+MIDWEEK_TRADING_CLOSE = dt.time(21, 0)
 
 
 @dataclass
@@ -72,14 +74,16 @@ def validate_setup_access_time(requested_time: dt.time) -> list[ValidationWarnin
 
 
 def validate_trading_hours(event_date: dt.date, end_time: dt.time) -> list[ValidationWarning]:
-    """Scoped to the one rule actually specified: Thursday trading closes
-    at 9:00pm. Not a general by-day trading-hours engine."""
-    if event_date.weekday() == THURSDAY and end_time > THURSDAY_TRADING_CLOSE:
+    """Scoped to the one rule actually specified: Wednesday and Thursday
+    trading both close at 9:00pm (same clause, same hours). Not a general
+    by-day trading-hours engine."""
+    if event_date.weekday() in (WEDNESDAY, THURSDAY) and end_time > MIDWEEK_TRADING_CLOSE:
+        day_name = event_date.strftime("%A")
         return [
             ValidationWarning(
-                code="thursday_finish_after_close",
+                code="midweek_finish_after_close",
                 message=(
-                    f"Thursday trading closes at 9:00pm — this booking proposes finishing at "
+                    f"{day_name} trading closes at 9:00pm — this booking proposes finishing at "
                     f"{end_time.strftime('%I:%M%p').lstrip('0').lower()} and must be flagged and confirmed."
                 ),
             )

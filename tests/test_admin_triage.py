@@ -88,6 +88,72 @@ def test_triage_lists_wizard_ready_bookings(admin_client, db, loft):
     assert "Wizard Ready Booking" in resp.text
 
 
+def test_triage_lists_flagged_bookings_in_progress(admin_client, db, unassigned_space):
+    from app.services.enquiry_classification import classify_and_flag
+
+    booking = create_booking(
+        db, space_id=unassigned_space.id, contact_id=None, event_date=dt.date(2027, 6, 1),
+        event_name="Progressed Flagged Booking", event_type="Birthday", adult_count=40, child_count=0,
+        notes=None, actor="test",
+    )
+    classify_and_flag(db, booking, event_type="Birthday", adult_count=None, attendee_count=40, actor="test")
+    change_status(db, booking, BookingStatus.offered, actor="test")
+
+    resp = admin_client.get("/admin/triage")
+    assert resp.status_code == 200
+    assert "Progressed Flagged Booking" in resp.text
+    # It has moved off the enquiry-stage section...
+    assert resp.text.index("Flagged bookings still open") < resp.text.index("Progressed Flagged Booking")
+
+
+def test_triage_does_not_list_flagged_booking_still_at_enquiry_in_the_in_progress_section(
+    admin_client, db, unassigned_space
+):
+    from app.services.enquiry_classification import classify_and_flag
+
+    booking = create_booking(
+        db, space_id=unassigned_space.id, contact_id=None, event_date=dt.date(2027, 6, 1),
+        event_name="Still At Enquiry", event_type="Birthday", adult_count=40, child_count=0,
+        notes=None, actor="test",
+    )
+    classify_and_flag(db, booking, event_type="Birthday", adult_count=None, attendee_count=40, actor="test")
+
+    resp = admin_client.get("/admin/triage")
+    in_progress_section = resp.text.split("Flagged bookings still open")[1].split("Awaiting space")[0]
+    assert "Still At Enquiry" not in in_progress_section
+
+
+def test_triage_lists_unrecorded_minimum_reduction(admin_client, db, loft):
+    booking = create_booking(
+        db, space_id=loft.id, contact_id=None, event_date=dt.date(2027, 6, 1),
+        event_name="Silently Reduced Minimum", event_type=None, adult_count=20, child_count=0,
+        notes=None, actor="test", agreed_min_adults=loft.standard_min_adults - 10,
+    )
+
+    resp = admin_client.get("/admin/triage")
+    assert resp.status_code == 200
+    assert "Silently Reduced Minimum" in resp.text
+    assert "Agreed minimum differs from standard" in resp.text
+
+
+def test_triage_does_not_list_recorded_minimum_reduction(admin_client, db, loft):
+    from app.models.booking import MinReductionReasonCode
+    from app.services.booking import set_agreed_minimum
+
+    booking = create_booking(
+        db, space_id=loft.id, contact_id=None, event_date=dt.date(2027, 6, 1),
+        event_name="Properly Recorded Reduction", event_type=None, adult_count=20, child_count=0,
+        notes=None, actor="test",
+    )
+    set_agreed_minimum(
+        db, booking, agreed_min_adults=loft.standard_min_adults - 10,
+        reason=MinReductionReasonCode.returning_client, actor="test",
+    )
+
+    resp = admin_client.get("/admin/triage")
+    assert "Properly Recorded Reduction" not in resp.text
+
+
 def test_triage_send_wizard_link_creates_session(admin_client, db, loft):
     booking = create_booking(
         db, space_id=loft.id, contact_id=None, event_date=dt.date.today() + dt.timedelta(days=3),

@@ -1,0 +1,110 @@
+{% extends "admin/_base.html" %}
+{% block title %}Calendar{% endblock %}
+{% block content %}
+<style>
+  /* Page-local only -- these statuses don't need to exist anywhere else
+     in the shared palette. */
+  :root { --info: #4a7ab8; --info-text: #a8c6e8; }
+  .cal-nav { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; gap: 12px; flex-wrap: wrap; }
+  .cal-nav .cal-range { font-family: var(--font-head); font-size: 1.2rem; color: var(--cream); }
+  .cal-nav-links { display: flex; gap: 10px; align-items: center; }
+  table.cal-grid { width: 100%; border-collapse: collapse; table-layout: fixed; }
+  table.cal-grid th { background: var(--surface-hi); border: 1px solid var(--border); padding: 8px; text-align: left; font-size: 0.8rem; }
+  table.cal-grid td.cal-daylabel { background: var(--surface-hi); border: 1px solid var(--border); padding: 8px; vertical-align: top; width: 90px; font-size: 0.8rem; color: var(--muted); }
+  table.cal-grid td.cal-daylabel.is-today { color: var(--gold); font-weight: 700; }
+  table.cal-grid td.cal-cell { border: 1px solid var(--border); padding: 6px; vertical-align: top; height: 90px; }
+  .cal-empty { color: var(--muted); font-size: 0.75rem; font-style: italic; }
+  .cal-chip { display: block; border-radius: 6px; padding: 4px 6px; margin-bottom: 4px; font-size: 0.72rem; line-height: 1.3; border: 1px solid transparent; }
+  .cal-chip a { text-decoration: none; font-weight: 700; display: block; }
+  .cal-chip-meta { font-size: 0.68rem; opacity: 0.9; }
+  .cal-chip-confirmed { background: rgba(74,107,74,0.28); border-color: var(--safe-green); }
+  .cal-chip-confirmed a { color: var(--safe-green-text); }
+  .cal-chip-completed { background: rgba(138,133,128,0.15); border-color: var(--border-bright); opacity: 0.7; }
+  .cal-chip-completed a { color: var(--muted); }
+  .cal-chip-hold_active { background: rgba(201,169,110,0.18); border-color: var(--gold-dim); }
+  .cal-chip-hold_active a { color: var(--gold); }
+  .cal-chip-hold_expired { background: rgba(122,46,58,0.28); border-color: var(--wine); }
+  .cal-chip-hold_expired a { color: #e8b3bd; }
+  .cal-chip-offered { background: rgba(74,122,184,0.18); border-color: var(--info); }
+  .cal-chip-offered a { color: var(--info-text); }
+  .cal-chip-enquiry { background: transparent; border: 1px dashed var(--border-bright); }
+  .cal-chip-enquiry a { color: var(--muted); font-weight: 600; }
+  .cal-legend { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 16px; font-size: 0.78rem; color: var(--muted); }
+  .cal-legend-swatch { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 5px; vertical-align: middle; }
+</style>
+
+<h1>Calendar</h1>
+
+{% if undated_count %}
+<div class="card" style="border-color: var(--ember);">
+  <p style="margin:0; color: var(--ember);">
+    {{ undated_count }} booking{{ "s" if undated_count != 1 else "" }} with no event date set -- not shown below.
+    See <a href="/admin/triage">Triage</a>.
+  </p>
+</div>
+{% endif %}
+
+<div class="cal-nav">
+  <div class="cal-range">{{ grid.week_start.strftime("%d %b").lstrip("0") }} &ndash; {{ grid.week_end.strftime("%d %b %Y").lstrip("0") }}</div>
+  <form method="get" action="/admin/calendar" class="cal-nav-links">
+    <a class="btn secondary" href="/admin/calendar?week={{ prev_week.isoformat() }}">&larr; Prev week</a>
+    <a class="btn secondary" href="/admin/calendar?week={{ this_week.isoformat() }}">This week</a>
+    <a class="btn secondary" href="/admin/calendar?week={{ next_week.isoformat() }}">Next week &rarr;</a>
+    <input type="date" name="week" value="{{ grid.week_start.isoformat() }}">
+    <button class="btn secondary" type="submit">Jump</button>
+    <a class="btn" href="/admin/calendar/holds/new">New hold</a>
+  </form>
+</div>
+
+<div class="card" style="overflow-x:auto;">
+  <table class="cal-grid">
+    <thead>
+      <tr>
+        <th style="width:90px;">&nbsp;</th>
+        {% for space in grid.spaces %}<th>{{ space.name }}</th>{% endfor %}
+      </tr>
+    </thead>
+    <tbody>
+      {% for day in grid.days %}
+      <tr>
+        <td class="cal-daylabel{% if day == grid.today %} is-today{% endif %}">{{ day.strftime("%a %d %b").replace(" 0", " ") }}</td>
+        {% for space in grid.spaces %}
+        {% set entries = grid.cells[space.id][day] %}
+        <td class="cal-cell" data-space="{{ space.name }}" data-date="{{ day.isoformat() }}" data-count="{{ entries | length }}">
+          {% if entries %}
+            {% for entry in entries %}
+            <div class="cal-chip cal-chip-{{ entry.kind }}" data-kind="{{ entry.kind }}" data-booking-id="{{ entry.booking.id }}">
+              <a href="/admin/bookings/{{ entry.booking.id }}">{{ entry.booking.event_name }}</a>
+              <div class="cal-chip-meta">
+                {{ entry.booking.adult_count }} adults
+                {% if entry.booking.start_time %}&middot; {{ entry.booking.start_time.strftime("%I%p").lstrip("0").lower() }}{% endif %}
+                &middot;
+                {% if entry.kind == "confirmed" %}Confirmed
+                {% elif entry.kind == "completed" %}Completed
+                {% elif entry.kind == "hold_active" %}Hold{% if entry.booking.hold_expires_at %} (expires {{ entry.booking.hold_expires_at.strftime("%d %b").lstrip("0") }}){% else %} (no expiry){% endif %}
+                {% elif entry.kind == "hold_expired" %}Hold EXPIRED {{ entry.booking.hold_expires_at.strftime("%d %b").lstrip("0") }}
+                {% elif entry.kind == "offered" %}Offered
+                {% elif entry.kind == "enquiry" %}Enquiry
+                {% endif %}
+              </div>
+            </div>
+            {% endfor %}
+          {% else %}
+          <span class="cal-empty">&mdash;</span>
+          {% endif %}
+        </td>
+        {% endfor %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <div class="cal-legend">
+    <span><span class="cal-legend-swatch" style="background: var(--safe-green);"></span>Confirmed &mdash; a fact</span>
+    <span><span class="cal-legend-swatch" style="background: var(--gold);"></span>Hold &mdash; a promise, can still be broken</span>
+    <span><span class="cal-legend-swatch" style="background: var(--wine);"></span>Hold expired &mdash; needs releasing or renewing</span>
+    <span><span class="cal-legend-swatch" style="background: var(--info);"></span>Offered &mdash; a conversation</span>
+    <span><span class="cal-legend-swatch" style="border: 1px dashed var(--border-bright); background:transparent;"></span>Enquiry &mdash; not yet actioned</span>
+  </div>
+</div>
+{% endblock %}

@@ -10,6 +10,7 @@ from app.services.enquiry_classification import (
     BIRTHDAY_CLARIFICATION_QUESTION,
     classify_and_flag,
     get_enquiries_needing_clarification,
+    get_flagged_bookings_in_progress,
 )
 
 
@@ -25,6 +26,10 @@ def _next_saturday(start: dt.date) -> dt.date:
 
 def _next_friday(start: dt.date) -> dt.date:
     return _next_weekday(start, 4)
+
+
+def _next_wednesday(start: dt.date) -> dt.date:
+    return _next_weekday(start, 2)
 
 
 def _next_thursday(start: dt.date) -> dt.date:
@@ -236,7 +241,7 @@ def test_missing_event_date_does_not_crash_the_saturday_or_thursday_checks(db, u
     assert not any("Thursday" in f for f in flags)
 
 
-# --- Thursday trading hours ---------------------------------------------------
+# --- midweek (Wednesday/Thursday) trading hours ---------------------------------
 
 
 def test_thursday_is_flagged(db, unassigned_space):
@@ -246,11 +251,21 @@ def test_thursday_is_flagged(db, unassigned_space):
     assert any("Thursday" in f for f in flags)
 
 
-def test_friday_is_not_flagged_for_thursday(db, unassigned_space):
+def test_wednesday_is_flagged(db, unassigned_space):
+    """Master Policy §1.8's trading-hours clause covers Wednesday and
+    Thursday identically -- this was previously checked only for Thursday."""
+    wednesday = _next_wednesday(dt.date(2027, 1, 1))
+    booking = _make_booking(db, unassigned_space, event_date=wednesday)
+    flags = classify_and_flag(db, booking, event_type="Corporate Function", adult_count=50, attendee_count=50, actor="test")
+    assert any("Wednesday" in f for f in flags)
+
+
+def test_friday_is_not_flagged_for_midweek_trading(db, unassigned_space):
     friday = _next_friday(dt.date(2027, 1, 1))
     booking = _make_booking(db, unassigned_space, event_date=friday)
     flags = classify_and_flag(db, booking, event_type="Corporate Function", adult_count=50, attendee_count=50, actor="test")
     assert not any("Thursday" in f for f in flags)
+    assert not any("Wednesday" in f for f in flags)
 
 
 # --- accessibility -------------------------------------------------------------
@@ -359,6 +374,29 @@ def test_flagged_enquiry_drops_off_worklist_once_progressed(db, hamilton, unassi
 
     change_status(db, booking, BookingStatus.offered, actor="test")
     assert booking.id not in {b.id for b in get_enquiries_needing_clarification(db, hamilton)}
+
+
+def test_flagged_booking_moves_from_enquiry_worklist_to_in_progress_worklist(db, hamilton, unassigned_space):
+    """A flag is never silently dropped just because the booking
+    progressed -- it moves from the enquiry-stage worklist to the
+    in-progress one instead of disappearing."""
+    from app.models.booking import BookingStatus
+    from app.services.booking import change_status
+
+    booking = _make_booking(db, unassigned_space, event_date=_next_friday(dt.date(2027, 1, 1)))
+    classify_and_flag(db, booking, event_type="Birthday", adult_count=None, attendee_count=40, actor="test")
+
+    assert booking.id not in {b.id for b in get_flagged_bookings_in_progress(db, hamilton)}
+
+    change_status(db, booking, BookingStatus.offered, actor="test")
+    assert booking.id in {b.id for b in get_flagged_bookings_in_progress(db, hamilton)}
+    assert booking.id not in {b.id for b in get_enquiries_needing_clarification(db, hamilton)}
+
+    change_status(db, booking, BookingStatus.tentative, actor="test")
+    assert booking.id in {b.id for b in get_flagged_bookings_in_progress(db, hamilton)}
+
+    change_status(db, booking, BookingStatus.cancelled, actor="test")
+    assert booking.id not in {b.id for b in get_flagged_bookings_in_progress(db, hamilton)}
 
 
 # --- end-to-end wiring through the public endpoint --------------------------

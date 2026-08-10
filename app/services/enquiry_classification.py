@@ -34,7 +34,8 @@ BIRTHDAY_CLARIFICATION_QUESTION = (
 )
 
 SATURDAY = 5
-THURSDAY = 3  # dt.date.weekday(): Monday=0 ... Sunday=6
+WEDNESDAY = 2  # dt.date.weekday(): Monday=0 ... Sunday=6
+THURSDAY = 3
 
 # `(th)?` makes the suffix optional ("18 birthday" is a real example, no
 # "th"); the lookahead requires "birthday"/"bday"/"b'day" to actually
@@ -106,9 +107,10 @@ def classify_and_flag(
 
     if booking.event_date is None:
         flags.append("Event date not provided -- confirm before proceeding.")
-    elif booking.event_date.weekday() == THURSDAY:
+    elif booking.event_date.weekday() in (WEDNESDAY, THURSDAY):
+        day_name = booking.event_date.strftime("%A")
         flags.append(
-            "Thursday requested -- trading closes at 9pm, confirm an evening function actually "
+            f"{day_name} requested -- trading closes at 9pm, confirm an evening function actually "
             "fits before promising the date."
         )
 
@@ -166,6 +168,29 @@ def get_enquiries_needing_clarification(db: Session, venue: Venue) -> list[Booki
             .where(
                 Space.venue_id == venue.id,
                 Booking.status == BookingStatus.enquiry,
+                Booking.id.in_(flagged),
+            )
+            .order_by(Booking.created_at)
+        ).all()
+    )
+
+
+def get_flagged_bookings_in_progress(db: Session, venue: Venue) -> list[Booking]:
+    """Staff worklist: bookings flagged at enquiry time that have since
+    moved past 'enquiry' status (so they've dropped off
+    get_enquiries_needing_clarification above) but aren't yet at a terminal
+    status. A flag never gets silently cleared just because the booking
+    progressed -- e.g. an 18th-on-Saturday flag still needs Aaron's
+    confirmation whether the booking is at 'enquiry' or 'tentative'."""
+    flagged = select(BookingEvent.booking_id).where(BookingEvent.event_type == "enquiry_flagged")
+    open_past_enquiry = (BookingStatus.offered, BookingStatus.tentative, BookingStatus.confirmed)
+    return list(
+        db.scalars(
+            select(Booking)
+            .join(Space, Booking.space_id == Space.id)
+            .where(
+                Space.venue_id == venue.id,
+                Booking.status.in_(open_past_enquiry),
                 Booking.id.in_(flagged),
             )
             .order_by(Booking.created_at)

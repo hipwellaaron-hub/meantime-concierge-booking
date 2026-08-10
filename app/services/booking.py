@@ -17,6 +17,35 @@ from app.models.booking import BookingStatus, MinReductionReasonCode
 REFERENCE_ALPHABET = string.ascii_uppercase + string.digits
 REFERENCE_SUFFIX_LENGTH = 5
 
+# Full-day span used when a hold is created with no specific time. A NULL
+# start/end time produces a NULL time_range (see app/models/booking.py's
+# comment on the Computed column), and a NULL time_range never conflicts
+# under the exclusion constraint -- so an untimed "block the whole day"
+# hold would look correctly occupied on the calendar without actually
+# being protected against a real double-booking. Pinning it to a concrete
+# span keeps it genuinely behind the same database constraint that
+# protects every other blocking booking. 11:30pm matches the existing
+# music-off-time boundary (app.services.validation.MUSIC_OFF_TIME) as the
+# latest reasonable end of day.
+HOLD_FULL_DAY_START = dt.time(9, 0)
+HOLD_FULL_DAY_END = dt.time(23, 30)
+
+# The booking lifecycle. Terminal statuses (completed, cancelled, dead) map
+# to an empty tuple -- no further transition is legal from there. This is
+# enforced only by transition_status() below, not by change_status() itself:
+# change_status() stays an unchecked primitive because existing one-off
+# scripts and test fixtures already jump straight to a status (e.g.
+# enquiry -> confirmed) for setup convenience, and must keep working.
+LEGAL_TRANSITIONS: dict[BookingStatus, tuple[BookingStatus, ...]] = {
+    BookingStatus.enquiry: (BookingStatus.offered, BookingStatus.dead),
+    BookingStatus.offered: (BookingStatus.tentative, BookingStatus.dead),
+    BookingStatus.tentative: (BookingStatus.confirmed, BookingStatus.cancelled),
+    BookingStatus.confirmed: (BookingStatus.completed, BookingStatus.cancelled),
+    BookingStatus.completed: (),
+    BookingStatus.cancelled: (),
+    BookingStatus.dead: (),
+}
+
 
 def generate_reference_code(db: Session, event_date: dt.date | None, venue_slug: str = "HAM") -> str:
     """Human-readable and unique. Retries on the rare random collision
@@ -100,7 +129,12 @@ def create_booking(
     return booking
 
 
-def change_status(db: Session, booking: Booking, new_status: BookingStatus, *, actor: str) -> Booking:
+def change_status(
+    db: Session, booking: Booking, new_status: BookingStatus, *, actor: str, reason: str | None = None
+) -> Booking:
+    """Unchecked primitive -- sets status and logs it, no legality check.
+    Staff-facing transitions must go through transition_status() instead,
+    which validates against LEGAL_TRANSITIONS before calling this."""
     old_status = booking.status
     if old_status == new_status:
         return booking
@@ -116,9 +150,36 @@ def change_status(db: Session, booking: Booking, new_status: BookingStatus, *, a
             actor=actor,
         )
     )
+    if reason:
+        db.add(
+            BookingEvent(
+                booking_id=booking.id,
+                event_type="status_changed",
+                field_name="status_change_reason",
+                new_value=reason,
+                actor=actor,
+            )
+        )
     db.commit()
     db.refresh(booking)
     return booking
+
+
+def transition_status(
+    db: Session, booking: Booking, new_status: BookingStatus, *, actor: str, reason: str | None = None
+) -> Booking:
+    """The validated, staff-facing entry point for moving a booking through
+    its lifecycle. Enforces LEGAL_TRANSITIONS; raises ValueError (-> 422 at
+    the API layer) on an illegal move rather than allowing it silently.
+    Re-submitting the current status is treated as a harmless no-op (e.g. a
+    double form submission) rather than an illegal transition."""
+    if new_status == booking.status:
+        return change_status(db, booking, new_status, actor=actor, reason=reason)
+    legal = LEGAL_TRANSITIONS.get(booking.status, ())
+    if new_status not in legal:
+        allowed = ", ".join(s.value for s in legal) or "none -- this is a terminal status"
+        raise ValueError(f"Cannot move from '{booking.status.value}' to '{new_status.value}'. Allowed: {allowed}.")
+    return change_status(db, booking, new_status, actor=actor, reason=reason)
 
 
 def search_bookings(
@@ -223,12 +284,41 @@ def assign_space_and_time(
     arrived with no date (see app.services.enquiry_classification's
     missing_event_date flag) needs a place for staff to record it once
     they've actually spoken to the client -- this is that place, reusing
-    the same triage action rather than adding a whole separate one."""
+    the same triage action rather than adding a whole separate one.
+
+    Also reconciles agreed_min_adults when it's still sitting at the old
+    space's standard with no reduction reason recorded -- i.e. it was never
+    deliberately touched. The placeholder Unassigned space always has
+    standard_min_adults=0, so every freshly-imported booking starts there;
+    left alone, moving it into a real space would leave a stale 0 with no
+    reason, which looks exactly like an unrecorded silent reduction (see
+    get_bookings_with_unrecorded_minimum_reduction). A genuinely
+    staff-set custom minimum (one that already differs from the old
+    space's standard) is left untouched."""
     space = db.get(Space, space_id)
     if space is None or not space.is_bookable:
         raise ValueError(f"Unknown or non-bookable space {space_id}")
 
+    old_space = booking.space
     old_space_id, old_start, old_end = booking.space_id, booking.start_time, booking.end_time
+    if (
+        space_id != old_space_id
+        and booking.agreed_min_adults == old_space.standard_min_adults
+        and booking.agreed_min_reduction_reason is None
+        and space.standard_min_adults != booking.agreed_min_adults
+    ):
+        old_min = booking.agreed_min_adults
+        booking.agreed_min_adults = space.standard_min_adults
+        db.add(
+            BookingEvent(
+                booking_id=booking.id,
+                event_type="field_changed",
+                field_name="agreed_min_adults",
+                old_value=str(old_min),
+                new_value=str(space.standard_min_adults),
+                actor=actor,
+            )
+        )
     booking.space_id = space_id
     booking.start_time = start_time
     booking.end_time = end_time
@@ -285,6 +375,105 @@ def set_outside_cake_permitted(db: Session, booking: Booking, *, permitted: bool
             field_name="outside_cake_permitted",
             old_value=str(old),
             new_value=str(permitted),
+            actor=actor,
+        )
+    )
+    db.commit()
+    db.refresh(booking)
+    return booking
+
+
+def get_bookings_with_unrecorded_minimum_reduction(db: Session, venue_id: uuid.UUID) -> list[Booking]:
+    """Master Policy v1.3 SS4.4, enforceable version: agreed_min_adults
+    should never differ from the space's own standard without a recorded
+    reason. set_agreed_minimum() enforces this for every change made
+    through the dashboard, but create_booking() accepts an explicit
+    agreed_min_adults with no reason check (imports, migration, scripts) --
+    this surfaces that drift for staff to close out rather than silently
+    charging a shortfall nobody agreed to."""
+    open_statuses = (BookingStatus.enquiry, BookingStatus.offered, BookingStatus.tentative, BookingStatus.confirmed)
+    return list(
+        db.scalars(
+            select(Booking)
+            .join(Space, Booking.space_id == Space.id)
+            .where(
+                Space.venue_id == venue_id,
+                Booking.agreed_min_adults != Space.standard_min_adults,
+                Booking.agreed_min_reduction_reason.is_(None),
+                Booking.status.in_(open_statuses),
+            )
+            .order_by(Booking.created_at)
+        ).all()
+    )
+
+
+def create_hold(
+    db: Session,
+    *,
+    space_id: uuid.UUID,
+    event_date: dt.date,
+    event_name: str,
+    contact_id: uuid.UUID | None = None,
+    start_time: dt.time | None = None,
+    end_time: dt.time | None = None,
+    hold_expires_at: dt.date | None = None,
+    actor: str,
+) -> Booking:
+    """A hold is a Booking created directly at 'tentative' status --
+    skipping the normal enquiry -> offered pipeline entirely, for the
+    "block this date for a client, no formal enquiry exists yet" case.
+    Gets the exact same double-booking protection as any other tentative
+    booking (see LEGAL_TRANSITIONS and the exclusion constraint in
+    app/models/booking.py) because it IS one, not a parallel concept.
+    hold_expires_at is optional -- a hold with none is deliberately
+    open-ended, not a bug."""
+    space = db.get(Space, space_id)
+    if space is None or not space.is_bookable:
+        raise ValueError(f"Unknown or non-bookable space {space_id}")
+
+    booking = create_booking(
+        db,
+        space_id=space_id,
+        contact_id=contact_id,
+        event_date=event_date,
+        start_time=start_time if start_time is not None else HOLD_FULL_DAY_START,
+        end_time=end_time if end_time is not None else HOLD_FULL_DAY_END,
+        event_name=event_name,
+        event_type=None,
+        adult_count=0,
+        child_count=0,
+        notes=None,
+        actor=actor,
+        status=BookingStatus.tentative,
+    )
+    if hold_expires_at is not None:
+        booking.hold_expires_at = hold_expires_at
+        db.add(
+            BookingEvent(
+                booking_id=booking.id,
+                event_type="field_changed",
+                field_name="hold_expires_at",
+                new_value=str(hold_expires_at),
+                actor=actor,
+            )
+        )
+        db.commit()
+        db.refresh(booking)
+    return booking
+
+
+def set_hold_expiry(db: Session, booking: Booking, *, hold_expires_at: dt.date | None, actor: str) -> Booking:
+    old = booking.hold_expires_at
+    if old == hold_expires_at:
+        return booking
+    booking.hold_expires_at = hold_expires_at
+    db.add(
+        BookingEvent(
+            booking_id=booking.id,
+            event_type="field_changed",
+            field_name="hold_expires_at",
+            old_value=str(old) if old else None,
+            new_value=str(hold_expires_at) if hold_expires_at else None,
             actor=actor,
         )
     )

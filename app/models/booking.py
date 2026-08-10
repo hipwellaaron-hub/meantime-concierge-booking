@@ -163,6 +163,14 @@ class Booking(Base):
     setup_access_time: Mapped[dt.time | None] = mapped_column(Time, nullable=True)
     setup_access_confirmed: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
 
+    # A hold is a Booking at 'tentative' status -- this is the only field
+    # that distinguishes "a soft hold with a known expiry" from an ordinary
+    # tentative booking mid-pipeline. Only meaningful while status is
+    # tentative; NULL means either "not a hold" or "deliberately
+    # open-ended", both of which render the same way (see
+    # app.services.calendar).
+    hold_expires_at: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
+
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False

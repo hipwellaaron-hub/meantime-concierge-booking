@@ -82,8 +82,45 @@ def booking_detail(
             bookable_spaces=bookable_spaces,
             min_reduction_reasons=list(MinReductionReasonCode),
             payment_methods=list(PaymentMethod),
+            legal_next_statuses=booking_service.LEGAL_TRANSITIONS.get(booking.status, ()),
         ),
     )
+
+
+@router.post("/{booking_id}/status", dependencies=[Depends(require_csrf)])
+def transition_booking_status(
+    booking_id: uuid.UUID,
+    request: Request,
+    new_status: BookingStatus = Form(...),
+    reason: str | None = Form(None),
+    db: Session = Depends(get_db),
+    staff: StaffUser = Depends(require_staff),
+):
+    booking = _get_booking_or_404(db, booking_id)
+    try:
+        booking_service.transition_status(
+            db, booking, new_status, actor=_actor(staff), reason=reason or None
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return _redirect_to_detail(booking_id)
+
+
+@router.post("/{booking_id}/hold-expiry", dependencies=[Depends(require_csrf)])
+def set_hold_expiry(
+    booking_id: uuid.UUID,
+    request: Request,
+    hold_expires_at: str | None = Form(None),
+    db: Session = Depends(get_db),
+    staff: StaffUser = Depends(require_staff),
+):
+    booking = _get_booking_or_404(db, booking_id)
+    try:
+        parsed = dt.date.fromisoformat(hold_expires_at) if hold_expires_at else None
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Invalid expiry date")
+    booking_service.set_hold_expiry(db, booking, hold_expires_at=parsed, actor=_actor(staff))
+    return _redirect_to_detail(booking_id)
 
 
 @router.post("/{booking_id}/assign-space", dependencies=[Depends(require_csrf)])
