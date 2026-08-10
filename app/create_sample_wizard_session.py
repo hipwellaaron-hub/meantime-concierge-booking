@@ -1,14 +1,21 @@
-"""One-off script: creates a single sample booking that's fully eligible
-for the Guided Booking Wizard (deposit paid + agreement signed), and a
-wizard session for it, so Aaron can click through the real wizard UI on
-production. Idempotent -- safe to run more than once, prints the
-existing link instead of duplicating on a second run.
+"""One-off script: creates a sample booking that's fully eligible for the
+Guided Booking Wizard (deposit paid + agreement signed), and a wizard
+session for it, so Aaron (or whoever he shares the link with) can click
+through the real wizard UI on production. Idempotent per label -- safe to
+run more than once with the same label, prints the existing link instead
+of duplicating.
+
+Pass a label as the first CLI arg to create multiple independent test
+bookings/sessions (each gets its own event name, contact, and wizard
+token) -- e.g. `python -m app.create_sample_wizard_session B` for a
+second, independent tester link.
 
 Not wired into any router or scheduled job. Intended to be run once via a
 temporary preDeployCommand override, then removed.
 """
 
 import datetime as dt
+import sys
 import uuid
 
 from sqlalchemy import select
@@ -25,30 +32,31 @@ from app.services import wizard as wizard_service
 from app.services.booking import change_status, create_booking
 from app.services.contact_matching import find_or_create_contact
 
-SAMPLE_EMAIL = "sample-wizard-test@meantime-concierge.internal"
-SAMPLE_EVENT_NAME = "SAMPLE WIZARD TEST BOOKING (safe to delete)"
-SAMPLE_EVENT_DATE = dt.date(2027, 3, 20)
 SAMPLE_SPACE_ID = uuid.UUID("f8d85609-01f4-4375-9629-86b8dd5c3fd4")  # The Loft, Hamilton
 BASE_URL = "https://meantime-concierge-booking-production.up.railway.app"
 
 
-def main() -> None:
+def main(label: str = "") -> None:
+    suffix = f" {label}" if label else ""
+    sample_email = f"sample-wizard-test{('-' + label.lower()) if label else ''}@meantime-concierge.internal"
+    sample_event_name = f"SAMPLE WIZARD TEST BOOKING{suffix} (safe to delete)"
+
     db = SessionLocal()
     try:
         booking = db.execute(
-            select(Booking).where(Booking.event_name == SAMPLE_EVENT_NAME)
+            select(Booking).where(Booking.event_name == sample_event_name)
         ).scalars().first()
 
         if booking is None:
-            contact, _ = find_or_create_contact(db, "Sample Wizard Tester", SAMPLE_EMAIL, None)
+            contact, _ = find_or_create_contact(db, f"Sample Wizard Tester{suffix}", sample_email, None)
             booking = create_booking(
                 db,
                 space_id=SAMPLE_SPACE_ID,
                 contact_id=contact.id,
-                event_date=SAMPLE_EVENT_DATE,
+                event_date=dt.date(2027, 3, 20),
                 start_time=dt.time(18, 0),
                 end_time=dt.time(23, 0),
-                event_name=SAMPLE_EVENT_NAME,
+                event_name=sample_event_name,
                 event_type="Sample/Test",
                 adult_count=60,
                 child_count=4,
@@ -58,7 +66,7 @@ def main() -> None:
             )
             booking.outside_cake_permitted = True  # exercise the grandfathered-cake path too
             db.commit()
-        print(f"SAMPLE_BOOKING_REF: {booking.reference_code}")
+        print(f"SAMPLE_BOOKING_REF{suffix}: {booking.reference_code}")
 
         deposit_invoice = db.execute(
             select(Invoice).where(Invoice.booking_id == booking.id, Invoice.type == InvoiceType.deposit)
@@ -89,10 +97,10 @@ def main() -> None:
             )
 
         session = wizard_service.get_or_create_session(db, booking, actor="admin:sample_wizard_script")
-        print(f"SAMPLE_WIZARD_URL: {BASE_URL}/w/{session.access_token}")
+        print(f"SAMPLE_WIZARD_URL{suffix}: {BASE_URL}/w/{session.access_token}")
     finally:
         db.close()
 
 
 if __name__ == "__main__":
-    main()
+    main(sys.argv[1] if len(sys.argv) > 1 else "")
