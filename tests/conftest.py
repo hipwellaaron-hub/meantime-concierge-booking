@@ -6,6 +6,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.config import settings
 from app.seed import seed as seed_hamilton
+from app.seed_catalogue import seed as seed_catalogue
 from app.seed_public_holidays import seed as seed_public_holidays
 from app.services.booking import create_booking
 
@@ -43,6 +44,19 @@ def loft(hamilton, db):
 @pytest.fixture()
 def lounge(hamilton, db):
     return next(s for s in hamilton.spaces if s.name == "The Lounge")
+
+
+@pytest.fixture()
+def mezzanine(hamilton, db):
+    return next(s for s in hamilton.spaces if s.name == "The Mezzanine")
+
+
+@pytest.fixture()
+def menu_items(db):
+    seed_catalogue(db)
+    from app.models import MenuItem
+
+    return {item.name: item for item in db.query(MenuItem)}
 
 
 @pytest.fixture()
@@ -84,9 +98,12 @@ def _reset_rate_limiters():
     429 that has nothing to do with what they're testing."""
     from app.api.documents import _sign_rate_limiter
     from app.api.enquiries import _enquiry_rate_limiter
+    from app.api.wizard import _wizard_step_rate_limiter
 
     _enquiry_rate_limiter._hits.clear()
     _sign_rate_limiter._hits.clear()
+    _wizard_step_rate_limiter._hits.clear()
     yield
     _enquiry_rate_limiter._hits.clear()
     _sign_rate_limiter._hits.clear()
+    _wizard_step_rate_limiter._hits.clear()

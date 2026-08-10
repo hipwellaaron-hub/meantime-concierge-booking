@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ booking.event_name }} — Details Submitted</title>
+  <style>
+    body { font-family: -apple-system, sans-serif; background: #f5f5f3; margin: 0; padding: 24px 16px; color: #2b2b2b; }
+    .card { max-width: 480px; margin: 0 auto; background: #fff; border-radius: 12px; padding: 24px; box-shadow: 0 1px 4px rgba(0,0,0,0.08); text-align: center; }
+    h1 { font-size: 1.1rem; margin: 0 0 8px; }
+    p { color: #6b6b6b; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Thanks — your details are in</h1>
+    <p>We've received your event details for {{ booking.event_name }}. Your Event Order and final invoice will follow shortly.</p>
+  </div>
+</body>
+</html>

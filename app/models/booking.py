@@ -3,6 +3,7 @@ import enum
 import uuid
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     Computed,
     Date,
@@ -33,6 +34,17 @@ class BookingStatus(str, enum.Enum):
 
 
 booking_status_enum = SAEnum(BookingStatus, name="booking_status", native_enum=True)
+
+
+class MinReductionReasonCode(str, enum.Enum):
+    friday_fill = "friday_fill"
+    weekend_gap = "weekend_gap"
+    returning_client = "returning_client"
+    spend_clears_anyway = "spend_clears_anyway"
+    aaron_discretion = "aaron_discretion"
+
+
+min_reduction_reason_enum = SAEnum(MinReductionReasonCode, name="min_reduction_reason", native_enum=True)
 
 # Only these statuses actually hold the space -- everything else is
 # excluded from the double-booking check below. This is deliberately a
@@ -115,6 +127,38 @@ class Booking(Base):
     migration_external_ref: Mapped[str | None] = mapped_column(String(100), nullable=True)
     migration_snapshot: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
+    # The Master Policy doc is explicit: "never read the minimum from the
+    # space when producing a contract, invoice, Event Order or shortfall
+    # calculation. Only ever from the booking." NOT NULL (not a nullable
+    # fallback-to-space-default) is deliberate -- it means no future
+    # consumer can accidentally read Space.standard_min_adults instead,
+    # which is exactly the bug class the policy doc is warning about.
+    # Defaults to the space's standard minimum at booking creation; only
+    # changes on Aaron's explicit approval (see agreed_min_reduction_reason).
+    agreed_min_adults: Mapped[int] = mapped_column(Integer, nullable=False)
+    # NULL unless the minimum has actually been reduced from the space
+    # standard -- set together with agreed_min_adults, never independently.
+    agreed_min_reduction_reason: Mapped[MinReductionReasonCode | None] = mapped_column(
+        min_reduction_reason_enum, nullable=True
+    )
+
+    # Staff-write-only (no route in this codebase lets a client set this).
+    # Master Policy v1.3: new bookings get no outside food/cakes by default;
+    # existing/grandfathered bookings are flagged true individually.
+    outside_cake_permitted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    # When food service actually starts -- distinct from start_time (the
+    # hire period's arrival time), which this may lag.
+    food_service_time: Mapped[dt.time | None] = mapped_column(Time, nullable=True)
+    # Standard is 2:00pm (see app.services.validation.SETUP_ACCESS_STANDARD_TIME).
+    # setup_access_confirmed is deliberately tri-state: NULL = never
+    # requested, False = requested earlier than standard and pending
+    # Aaron's confirmation (never promised automatically), True = confirmed
+    # (standard-or-later requests are auto-True; an early request only
+    # becomes True via an explicit staff action).
+    setup_access_time: Mapped[dt.time | None] = mapped_column(Time, nullable=True)
+    setup_access_confirmed: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
@@ -125,6 +169,7 @@ class Booking(Base):
     events: Mapped[list["BookingEvent"]] = relationship(back_populates="booking", order_by="BookingEvent.created_at")
     documents: Mapped[list["Document"]] = relationship(back_populates="booking", order_by="Document.version")
     invoices: Mapped[list["Invoice"]] = relationship(back_populates="booking", order_by="Invoice.created_at")
+    wizard_session: Mapped["WizardSession | None"] = relationship(back_populates="booking", uselist=False)
 
     __table_args__ = (
         CheckConstraint("end_time > start_time", name="ck_booking_end_after_start"),

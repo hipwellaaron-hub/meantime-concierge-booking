@@ -51,6 +51,7 @@ def create_booking(
     migration_source: str | None = None,
     migration_external_ref: str | None = None,
     migration_snapshot: dict | None = None,
+    agreed_min_adults: int | None = None,
 ) -> Booking:
     space = db.get(Space, space_id)
     if space is None:
@@ -75,6 +76,10 @@ def create_booking(
         migration_source=migration_source,
         migration_external_ref=migration_external_ref,
         migration_snapshot=migration_snapshot,
+        # Defaults to the space's standard minimum -- "the agreed minimum
+        # defaults to the standard" (Master Policy v1.3 §4.1). Only ever
+        # changes from here via an explicit staff reduction afterward.
+        agreed_min_adults=agreed_min_adults if agreed_min_adults is not None else space.standard_min_adults,
     )
     db.add(booking)
     db.flush()  # assigns booking.id, and is where the exclusion constraint fires

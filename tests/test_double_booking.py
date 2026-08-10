@@ -48,6 +48,7 @@ def test_concurrent_overlapping_inserts_cannot_both_succeed():
                 event_name=f"Concurrent {key}",
                 adult_count=10,
                 child_count=0,
+                agreed_min_adults=0,
                 reference_code=f"CONC-{key}-{uuid.uuid4().hex[:8].upper()}",
             )
             session.add(booking)

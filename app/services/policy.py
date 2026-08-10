@@ -41,3 +41,52 @@ def is_card_surcharge_permitted(payment_date: dt.date, card_network: str = DEFAU
     if card_network in SURCHARGE_EXEMPT_NETWORKS:
         return True
     return payment_date < CARD_SURCHARGE_BAN_DATE
+
+
+# --- Everything below is sourced from the Meantime Hamilton Master Policy
+# v1.3 doc (locked, August 2026) -- read in full and cross-checked against
+# this module; STANDARD_DEPOSIT/CARD_SURCHARGE_RATE/PUBLIC_HOLIDAY_SURCHARGE_RATE
+# above already matched it exactly, no drift found there.
+
+# Master Policy v1.3 §1.4 (Platters): "1 platter per 5 guests." Genuinely
+# unresolved: live staff correspondence has used 1-per-4 (reasoning a
+# platter is roughly four entrees), and the doc's own "Open Items" section
+# says both figures are in circulation and flags this as not settled.
+# Quote this locked figure and flag the discrepancy -- never silently
+# switch to 1-per-4.
+PLATTER_GUESTS_PER_PLATTER = 5
+
+# Master Policy v1.3, minimum guests & shortfall: "$50 per adult below the
+# agreed minimum." Applies only where Space.has_per_head_shortfall_fee is
+# True (Loft/Mezzanine -- never the Lounge, which has no minimum at all).
+# Must be computed against Booking.agreed_min_adults ONLY -- the doc is
+# explicit that reading Space.standard_min_adults here is the exact bug
+# class reduced minimums exist to prevent ("the client will be charged a
+# shortfall they were never told about").
+SHORTFALL_RATE_PER_ADULT = Decimal("50.00")
+
+# Master Policy v1.3 §1.5: "bookings made before May 2026 honour the
+# pricing quoted at the time." The doc names the month but not an exact
+# day -- 2026-05-01 is this build's assumption, not a stated date; confirm
+# the precise cutover with Aaron. Anchored to Booking.created_at (when the
+# booking was MADE), not event_date, per the doc's own wording -- see
+# app.services.catalogue.resolve_pizza_price.
+PIZZA_LEGACY_PRICING_CUTOVER_DATE = dt.date(2026, 5, 1)
+
+# Master Policy v1.3 §2.7 (Cancellation). Not invoked by any wizard logic
+# yet -- added here only because this module is the stated single source
+# of truth for every such figure, so a future cancellation flow has
+# nowhere else to look. "1 month" is the doc's own wording, no exact day
+# count given.
+CANCELLATION_SHORT_NOTICE_THRESHOLD = dt.timedelta(days=30)
+CANCELLATION_SHORT_NOTICE_FEE_PER_HEAD = Decimal("20.00")  # in addition to the (always non-refundable) deposit
+
+# Master Policy v1.3 §2.2: "Final numbers must be confirmed 14 days prior
+# to the event." This is the Guided Booking Wizard's own trigger timing.
+WIZARD_TRIGGER_DAYS_BEFORE_EVENT = 14
+
+# Not stated in the Master Policy doc -- it says wizard links must "expire
+# after the event" but gives no exact duration. 21 days comfortably covers
+# a slow-to-respond client without leaving a link live indefinitely past
+# the event; this build's assumption, confirm with Aaron.
+WIZARD_TOKEN_TTL_DAYS = 21

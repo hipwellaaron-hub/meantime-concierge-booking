@@ -6,6 +6,7 @@ from app.api.documents import router as documents_router
 from app.api.enquiries import router as enquiries_router
 from app.api.invoices import router as invoices_router
 from app.api.webhooks import router as webhooks_router
+from app.api.wizard import router as wizard_router
 
 # Generous for the JSON/form payloads this app actually receives (an
 # enquiry, a signature) -- blocks gross abuse, not real use. Only catches
@@ -45,6 +46,7 @@ app.include_router(documents_router)
 app.include_router(invoices_router)
 app.include_router(enquiries_router)
 app.include_router(webhooks_router)
+app.include_router(wizard_router)
 
 
 @app.get("/health")
