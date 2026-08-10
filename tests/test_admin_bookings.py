@@ -38,6 +38,49 @@ def test_booking_detail_renders(admin_client, booking):
     assert "Wilson Wedding" in resp.text
 
 
+def test_draft_document_has_no_dead_view_link(admin_client, db, booking):
+    """The public /d/{token} route 404s on a draft document by design (not
+    yet human-approved for client eyes) -- the detail page must not offer a
+    View link that leads straight into that 404."""
+    page = _detail_page(admin_client, booking.id)
+    csrf_token = _csrf(page.text)
+    resp = admin_client.post(
+        f"/admin/bookings/{booking.id}/documents/agreement/generate",
+        data={"csrf_token": csrf_token},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+
+    db.refresh(booking)
+    page2 = _detail_page(admin_client, booking.id)
+    assert "View" not in page2.text
+    assert "Send it to get a viewable link" in page2.text
+
+
+def test_sent_document_has_a_working_view_link(admin_client, db, booking):
+    page = _detail_page(admin_client, booking.id)
+    csrf_token = _csrf(page.text)
+    admin_client.post(
+        f"/admin/bookings/{booking.id}/documents/agreement/generate",
+        data={"csrf_token": csrf_token}, follow_redirects=False,
+    )
+    db.refresh(booking)
+
+    page2 = _detail_page(admin_client, booking.id)
+    csrf_token2 = _csrf(page2.text)
+    agreement = documents_service.get_current(db, booking.id, DocumentType.agreement)
+    admin_client.post(
+        f"/admin/bookings/{booking.id}/documents/{agreement.id}/send",
+        data={"csrf_token": csrf_token2}, follow_redirects=False,
+    )
+    db.refresh(booking)
+
+    page3 = _detail_page(admin_client, booking.id)
+    assert "View" in page3.text
+    view_resp = admin_client.get(f"/d/{agreement.access_token}")
+    assert view_resp.status_code == 200
+
+
 def test_generate_and_send_beo(admin_client, db, booking):
     page = _detail_page(admin_client, booking.id)
     csrf_token = _csrf(page.text)

@@ -108,8 +108,10 @@
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <button class="btn" type="submit">Send</button>
           </form>
+          <span class="muted" style="font-size:0.8rem;">Send it to get a viewable link</span>
+          {% elif current_agreement %}
+          <a href="/d/{{ current_agreement.access_token }}" target="_blank">View &rarr;</a>
           {% endif %}
-          {% if current_agreement %}<a href="/d/{{ current_agreement.access_token }}" target="_blank">View &rarr;</a>{% endif %}
         </td>
       </tr>
       <tr>
@@ -126,8 +128,10 @@
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <button class="btn" type="submit">Send</button>
           </form>
+          <span class="muted" style="font-size:0.8rem;">Send it to get a viewable link</span>
+          {% elif current_beo %}
+          <a href="/d/{{ current_beo.access_token }}" target="_blank">View &rarr;</a>
           {% endif %}
-          {% if current_beo %}<a href="/d/{{ current_beo.access_token }}" target="_blank">View &rarr;</a>{% endif %}
         </td>
       </tr>
     </tbody>
@@ -161,8 +165,10 @@
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <button class="btn" type="submit">Send</button>
           </form>
-          {% endif %}
+          <span class="muted" style="font-size:0.8rem;">Send it to get a viewable link</span>
+          {% else %}
           <a href="/i/{{ invoice.access_token }}" target="_blank">View &rarr;</a>
+          {% endif %}
           {% if invoice.status.value == "sent" %}
           <details style="display:inline-block; margin-left:8px;">
             <summary style="display:inline; cursor:pointer; color:var(--gold);">Record payment</summary>
