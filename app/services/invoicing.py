@@ -26,6 +26,14 @@ def _round_money(value: Decimal) -> Decimal:
     return value.quantize(Decimal("0.01"))
 
 
+def gst_component(gst_inclusive_amount: Decimal) -> Decimal:
+    """Standard AU GST: 1/11 of a GST-inclusive amount. invoice.total is
+    already GST-inclusive (nothing in this codebase adds GST on top of a
+    quoted figure), so this is purely a breakdown for display, not an
+    additional charge."""
+    return _round_money(gst_inclusive_amount / Decimal("11"))
+
+
 def is_public_holiday(db: Session, event_date: dt.date) -> bool:
     holiday = db.execute(
         select(PublicHoliday).where(
@@ -118,6 +126,27 @@ def create_invoice(
 def create_deposit_invoice(db: Session, booking: Booking, *, due_date: dt.date, actor: str) -> Invoice:
     line_items = [{"description": "Booking deposit", "quantity": 1, "unit_price": str(STANDARD_DEPOSIT)}]
     return create_invoice(db, booking, InvoiceType.deposit, line_items, due_date, actor=actor)
+
+
+def delete_draft(db: Session, invoice: Invoice, *, actor: str) -> None:
+    """Only a draft can be deleted -- same reasoning as
+    app.services.documents.delete_draft. Anything sent/paid/cancelled must
+    stay exactly as it is."""
+    if invoice.status != InvoiceStatus.draft:
+        raise ValueError(
+            f"cannot delete an invoice that is already {invoice.status.value} -- only a draft can be deleted"
+        )
+    db.add(
+        BookingEvent(
+            booking_id=invoice.booking_id,
+            event_type="invoice_deleted",
+            field_name=f"{invoice.type.value}_invoice",
+            old_value=str(invoice.total),
+            actor=actor,
+        )
+    )
+    db.delete(invoice)
+    db.commit()
 
 
 def get_by_token(db: Session, token: str) -> Invoice | None:

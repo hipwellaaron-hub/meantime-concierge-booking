@@ -108,9 +108,15 @@
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <button class="btn" type="submit">Send</button>
           </form>
+          <form class="inline" method="post" action="/admin/bookings/{{ booking.id }}/documents/{{ current_agreement.id }}/delete" onsubmit="return confirm('Delete this draft agreement?');">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button class="btn danger" type="submit">Delete</button>
+          </form>
           <span class="muted" style="font-size:0.8rem;">Send it to get a viewable link</span>
           {% elif current_agreement %}
           <a href="/d/{{ current_agreement.access_token }}" target="_blank">View &rarr;</a>
+          <a href="/d/{{ current_agreement.access_token }}/pdf">Download PDF</a>
+          <button type="button" class="btn secondary" onclick="copyLink(this, '/d/{{ current_agreement.access_token }}')">Copy link</button>
           {% endif %}
         </td>
       </tr>
@@ -128,9 +134,15 @@
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <button class="btn" type="submit">Send</button>
           </form>
+          <form class="inline" method="post" action="/admin/bookings/{{ booking.id }}/documents/{{ current_beo.id }}/delete" onsubmit="return confirm('Delete this draft BEO?');">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button class="btn danger" type="submit">Delete</button>
+          </form>
           <span class="muted" style="font-size:0.8rem;">Send it to get a viewable link</span>
           {% elif current_beo %}
           <a href="/d/{{ current_beo.access_token }}" target="_blank">View &rarr;</a>
+          <a href="/d/{{ current_beo.access_token }}/pdf">Download PDF</a>
+          <button type="button" class="btn secondary" onclick="copyLink(this, '/d/{{ current_beo.access_token }}')">Copy link</button>
           {% endif %}
         </td>
       </tr>
@@ -165,9 +177,15 @@
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <button class="btn" type="submit">Send</button>
           </form>
+          <form class="inline" method="post" action="/admin/bookings/{{ booking.id }}/invoices/{{ invoice.id }}/delete" onsubmit="return confirm('Delete this draft invoice?');">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button class="btn danger" type="submit">Delete</button>
+          </form>
           <span class="muted" style="font-size:0.8rem;">Send it to get a viewable link</span>
           {% else %}
           <a href="/i/{{ invoice.access_token }}" target="_blank">View &rarr;</a>
+          <a href="/i/{{ invoice.access_token }}/pdf">Download PDF</a>
+          <button type="button" class="btn secondary" onclick="copyLink(this, '/i/{{ invoice.access_token }}')">Copy link</button>
           {% endif %}
           {% if invoice.status.value == "sent" %}
           <details style="display:inline-block; margin-left:8px;">
@@ -286,4 +304,15 @@
   <div class="empty-state">No events yet.</div>
   {% endif %}
 </div>
+
+<script>
+function copyLink(button, path) {
+  const url = window.location.origin + path;
+  navigator.clipboard.writeText(url).then(() => {
+    const original = button.textContent;
+    button.textContent = "Copied!";
+    setTimeout(() => { button.textContent = original; }, 1500);
+  });
+}
+</script>
 {% endblock %}

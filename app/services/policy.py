@@ -87,3 +87,31 @@ WIZARD_TRIGGER_DAYS_BEFORE_EVENT = 14
 # Master Policy doc says wizard links must "expire after the event" but
 # gives no exact duration -- 21 days confirmed by Aaron.
 WIZARD_TOKEN_TTL_DAYS = 21
+
+
+# --- Venue identity & banking -----------------------------------------------
+# Confirmed directly by Aaron, 2026-08-11 -- not in the Master Policy doc,
+# which doesn't cover banking details at all. These appear on every
+# client-facing invoice and agreement, so they live here rather than being
+# duplicated (and risking drift) across templates.
+# Venue.name in the DB is just "Hamilton" (an internal slug-ish label
+# distinguishing venues if Meantime ever opens a second one) -- both real
+# iVvy documents header with "Meantime Hamilton" as the actual trading
+# name, so that's what belongs on anything client-facing.
+VENUE_TRADING_NAME = "Meantime Hamilton"
+VENUE_LEGAL_NAME = "Meantime Pty Ltd"
+VENUE_ABN = "36 654 270 532"
+VENUE_ADDRESS = "104 Beaumont St, Hamilton NSW 2303"
+
+BANK_ACCOUNT_NAME = "Meantime Pty Ltd"
+BANK_BSB = "063-519"
+BANK_ACCOUNT_NUMBER = "10315591"
+
+# Master Policy v1.3 §6.1: "Functions correspondence is signed: Aaron /
+# Meantime Hamilton / meantimehamilton@gmail.com. The address
+# hello@meantime.com.au is superseded for functions correspondence." A real
+# signed contract was found using hello@meantime.com.au -- exactly known
+# error #4 from §3.4 -- so this constant exists specifically to stop that
+# recurring in generated documents.
+VENUE_CONTACT_NAME = "Aaron"
+VENUE_CONTACT_EMAIL = "meantimehamilton@gmail.com"

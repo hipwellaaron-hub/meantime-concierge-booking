@@ -194,6 +194,44 @@ def send_document(
     return _redirect_to_detail(booking_id)
 
 
+@router.post("/{booking_id}/documents/{document_id}/delete", dependencies=[Depends(require_csrf)])
+def delete_document(
+    booking_id: uuid.UUID,
+    document_id: uuid.UUID,
+    request: Request,
+    db: Session = Depends(get_db),
+    staff: StaffUser = Depends(require_staff),
+):
+    _get_booking_or_404(db, booking_id)
+    document = db.get(Document, document_id)
+    if document is None or document.booking_id != booking_id:
+        raise HTTPException(status_code=404, detail="Document not found on this booking")
+    try:
+        documents_service.delete_draft(db, document, actor=_actor(staff))
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return _redirect_to_detail(booking_id)
+
+
+@router.post("/{booking_id}/invoices/{invoice_id}/delete", dependencies=[Depends(require_csrf)])
+def delete_invoice(
+    booking_id: uuid.UUID,
+    invoice_id: uuid.UUID,
+    request: Request,
+    db: Session = Depends(get_db),
+    staff: StaffUser = Depends(require_staff),
+):
+    _get_booking_or_404(db, booking_id)
+    invoice = db.get(Invoice, invoice_id)
+    if invoice is None or invoice.booking_id != booking_id:
+        raise HTTPException(status_code=404, detail="Invoice not found on this booking")
+    try:
+        invoicing.delete_draft(db, invoice, actor=_actor(staff))
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return _redirect_to_detail(booking_id)
+
+
 @router.post("/{booking_id}/invoices/deposit", dependencies=[Depends(require_csrf)])
 def create_deposit_invoice(
     booking_id: uuid.UUID,

@@ -44,7 +44,7 @@ _EIGHTEENTH_PATTERN = re.compile(r"\b18(th)?\b(?=[^a-z]*(birthday|bday|b'?day))"
 _ACCESSIBILITY_PATTERN = re.compile(r"\blift\b|wheelchair|accessib|stairs|mobility")
 
 
-def _looks_like_18th(event_type: str, event_name: str, notes: str | None) -> bool:
+def looks_like_18th(event_type: str, event_name: str, notes: str | None) -> bool:
     if event_type.strip().lower() == "18th birthday":
         return True
     haystack = f"{event_name} {notes or ''}".lower()
@@ -71,7 +71,7 @@ def classify_and_flag(
             "check before treating this as a brand-new client."
         )
 
-    looks_18th = _looks_like_18th(event_type, booking.event_name, booking.notes)
+    looks_18th = looks_like_18th(event_type, booking.event_name, booking.notes)
 
     if event_type_normalized == "birthday" and not looks_18th:
         flags.append(

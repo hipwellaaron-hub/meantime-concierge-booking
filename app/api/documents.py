@@ -1,11 +1,12 @@
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models.document import DocumentStatus
 from app.rate_limit import InMemoryRateLimiter, client_ip, rate_limit_dependency
 from app.services import documents as documents_service
+from app.services.pdf import render_html_to_pdf
 from app.templating import templates
 from app.utils import looks_like_a_token, truncate
 
@@ -46,6 +47,26 @@ def view_document(token: str, request: Request, db: Session = Depends(get_db)):
 
     return templates.TemplateResponse(
         request, "document.html", {"document": document, "booking": document.booking}
+    )
+
+
+@router.get("/d/{token}/pdf")
+def download_document_pdf(token: str, db: Session = Depends(get_db)):
+    if not looks_like_a_token(token):
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    document = documents_service.get_by_token(db, token)
+    if document is None or document.status == DocumentStatus.draft:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    html = templates.get_template("document.html").render(document=document, booking=document.booking, is_pdf=True)
+    pdf_bytes = render_html_to_pdf(html)
+    doc_label = "Agreement" if document.type.value == "agreement" else "BEO"
+    filename = f"{document.booking.reference_code}-{doc_label}-v{document.version}.pdf"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
 

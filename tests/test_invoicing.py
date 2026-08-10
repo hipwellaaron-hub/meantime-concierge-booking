@@ -13,7 +13,10 @@ from app.services.invoicing import (
     cancel_invoice,
     create_deposit_invoice,
     create_invoice,
+    delete_draft,
+    get_by_token,
     get_payment_summary,
+    gst_component,
     is_public_holiday,
     mark_sent,
     record_payment,
@@ -282,3 +285,88 @@ def test_invoice_view_shows_totals_and_split_payments(db, booking):
         assert "Card payment is available on request" in resp.text
     finally:
         app.dependency_overrides.clear()
+
+
+# --- GST breakdown --------------------------------------------------------------
+
+
+def test_gst_component_is_one_eleventh_of_gst_inclusive_total():
+    assert gst_component(Decimal("500.00")) == Decimal("45.45")
+
+
+def test_gst_component_rounds_to_cents():
+    assert gst_component(Decimal("100.00")) == Decimal("9.09")
+
+
+def test_invoice_pdf_shows_gst_and_bank_details(db, booking):
+    invoice = create_deposit_invoice(db, booking, due_date=dt.date(2026, 9, 1), actor="test")
+    invoice = mark_sent(db, invoice, actor="test")
+
+    app.dependency_overrides[get_db] = lambda: db
+    try:
+        client = TestClient(app)
+        resp = client.get(f"/i/{invoice.access_token}")
+        assert resp.status_code == 200
+        assert "GST included" in resp.text
+        assert "45.45" in resp.text
+        assert "063-519" in resp.text
+        assert "10315591" in resp.text
+        assert "[REVIEW]" not in resp.text
+    finally:
+        app.dependency_overrides.clear()
+
+
+# --- PDF download ----------------------------------------------------------------
+
+
+def test_draft_invoice_pdf_download_404s(db, booking):
+    invoice = create_deposit_invoice(db, booking, due_date=dt.date(2026, 9, 1), actor="test")
+
+    app.dependency_overrides[get_db] = lambda: db
+    try:
+        client = TestClient(app)
+        resp = client.get(f"/i/{invoice.access_token}/pdf")
+        assert resp.status_code == 404
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_sent_invoice_pdf_downloads_as_a_real_pdf(db, booking):
+    invoice = create_deposit_invoice(db, booking, due_date=dt.date(2026, 9, 1), actor="test")
+    invoice = mark_sent(db, invoice, actor="test")
+
+    app.dependency_overrides[get_db] = lambda: db
+    try:
+        client = TestClient(app)
+        resp = client.get(f"/i/{invoice.access_token}/pdf")
+        assert resp.status_code == 200
+        assert resp.headers["content-type"] == "application/pdf"
+        assert resp.content[:4] == b"%PDF"
+    finally:
+        app.dependency_overrides.clear()
+
+
+# --- draft-only delete -------------------------------------------------------------
+
+
+def test_delete_draft_invoice_succeeds(db, booking):
+    invoice = create_deposit_invoice(db, booking, due_date=dt.date(2026, 9, 1), actor="test")
+    invoice_id = invoice.id
+    delete_draft(db, invoice, actor="test")
+    assert db.get(type(invoice), invoice_id) is None
+
+
+def test_delete_sent_invoice_is_rejected(db, booking):
+    invoice = create_deposit_invoice(db, booking, due_date=dt.date(2026, 9, 1), actor="test")
+    invoice = mark_sent(db, invoice, actor="test")
+    with pytest.raises(ValueError):
+        delete_draft(db, invoice, actor="test")
+    assert get_by_token(db, invoice.access_token) is not None
+
+
+def test_delete_paid_invoice_is_rejected(db, booking):
+    invoice = create_deposit_invoice(db, booking, due_date=dt.date(2026, 9, 1), actor="test")
+    invoice = mark_sent(db, invoice, actor="test")
+    record_payment(db, invoice, amount=Decimal("500.00"), method=PaymentMethod.card, actor="test")
+    with pytest.raises(ValueError):
+        delete_draft(db, invoice, actor="test")

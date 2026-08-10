@@ -8,9 +8,146 @@ hard blocking are wrong; this is the middle path.
 from decimal import Decimal, InvalidOperation
 
 from app.models import Booking
+from app.services import policy
+from app.services.enquiry_classification import looks_like_18th
 from app.services.policy import STANDARD_DEPOSIT
 
 REVIEW = "[REVIEW]"
+
+# --- Master Policy v1.3 §3: client-facing contract terms --------------------
+# Sourced verbatim from the Master Policy doc and cross-checked against a
+# real signed contract. Shared clauses reference policy.py's own constants
+# (never a second hardcoded copy of a figure) EXCEPT the Minimum Spend
+# clause below, which Aaron was explicit must be two fully separate
+# literal strings, not templated across spaces: "The one word difference
+# is exactly the kind of drift that produced the errors in §3.4."
+
+_DEPOSITS_CLAUSE = (
+    f"A non-refundable deposit of ${STANDARD_DEPOSIT:.0f} is payable within 7 days of making your booking. "
+    "The deposit will secure your date and event location. Meantime cannot guarantee any booking without a "
+    "deposit."
+)
+
+_CREDIT_CARD_CLAUSE = "A valid credit card is required to secure your booking."
+
+_BOOKING_AGREEMENT_CLAUSE = (
+    "A signed completed Event Order is required no less than 7 days out from the event to ensure all details "
+    "of your event are correct prior to commencement."
+)
+
+_DECORATIONS_CLAUSE = (
+    "You are welcome to theme your event as you wish. No confetti or glitter. The hirer is required to ensure "
+    "the room is left clean and tidy, or cleaning charges may be incurred. The hirer is liable for repair, "
+    "damage or replacement of equipment caused by negligence of the hirer or the hirer's representatives."
+)
+
+_CREDIT_CARD_SURCHARGE_CLAUSE = (
+    f"Credit card surcharges are applicable to all credit card payments. Surcharge rates are standard "
+    f"{policy.CARD_SURCHARGE_RATE * 100:.1f}% across Mastercard, Visa, AMEX and Diners Club."
+)
+
+_CANCELLATION_POLICY_CLAUSE = (
+    "Cancellation of your event must be notified in writing to the venue. If your event is cancelled 1 month "
+    "or less prior to your event, the deposit is retained and you will be charged a "
+    f"${policy.CANCELLATION_SHORT_NOTICE_FEE_PER_HEAD:.0f} per head cancellation fee to the numbers stated on "
+    "the booking agreement. If your event is cancelled with more than 1 month's notice, only the deposit is "
+    "forfeited."
+)
+
+_PUBLIC_HOLIDAYS_CLAUSE = (
+    f"All events booked on a public holiday will incur a {policy.PUBLIC_HOLIDAY_SURCHARGE_RATE * 100:.0f}% "
+    "surcharge to cover penalty rates of our staff."
+)
+
+_TRADING_HOURS_CLAUSE = (
+    "Meantime Hamilton operates 12pm to 9pm Wednesday and Thursday, 12pm to 12am Friday, 11am to 12am "
+    "Saturday, and 11am to 9pm Sunday."
+)
+
+# Minimum Spend -- deliberately NOT derived from Space.min_food_spend.
+# Update these by hand if the Master Policy doc's figures ever change.
+_LOFT_MINIMUM_SPEND_CLAUSE = (
+    "There is a $1,000 minimum spend required for your event across food. Your deposit will make up part of "
+    "this total, and be deducted from your final invoice."
+)
+_MEZZANINE_MINIMUM_SPEND_CLAUSE = (
+    "There is a $500 minimum spend required for your event across food. Your deposit will make up this "
+    "total, and be deducted from your final invoice."
+)
+
+# 18th birthday appendix (§3.3) -- appended after the space's own block
+# whenever the booking looks like an 18th (see _looks_like_18th, the same
+# detection already used to flag this at enquiry time).
+_EIGHTEENTH_APPENDIX = (
+    "18th Birthday Conditions\n\n"
+    "There are a few standard conditions that apply to all 18th birthday events:\n\n"
+    "- A responsible adult, parent or guardian must be present for the full duration of the event and "
+    "actively supervising.\n"
+    "- All guests must present valid photo ID. ID and bag checks may be conducted at any time.\n"
+    "- No BYO alcohol is permitted.\n"
+    "- Strict RSA compliance applies. Underage guests cannot consume alcohol under any circumstances.\n"
+    "- Management reserves the right to refuse entry or remove guests if needed.\n"
+    "- The booking holder is legally responsible for all underage guests, guest behaviour, RSA compliance "
+    "and any damages incurred.\n"
+    "- If underage drinking or serious misconduct occurs, the event may be terminated immediately and you "
+    f"will be charged a ${policy.CANCELLATION_SHORT_NOTICE_FEE_PER_HEAD:.0f} per head cancellation fee to the "
+    "numbers stated on the booking agreement. This is separate from and in addition to the general "
+    "cancellation policy above."
+)
+
+
+def _guest_numbers_clause(space_name: str, agreed_min_adults: int) -> str:
+    """Booking-specific, recomputed every time from Booking.agreed_min_adults
+    (never Space.standard_min_adults) -- Master Policy v1.3 §4.4: never
+    quote the standard minimum once a reduction is agreed, and never let
+    the worked example go stale against the actual figure."""
+    example = ""
+    if agreed_min_adults > 10:
+        shortfall_fee = policy.SHORTFALL_RATE_PER_ADULT * 10
+        example = (
+            f" For example, if only {agreed_min_adults - 10} guests attend, an additional "
+            f"${shortfall_fee:.0f} fee will be charged to meet the minimum requirement."
+        )
+    return (
+        f"{space_name} has a minimum requirement of {agreed_min_adults} guests. Final numbers must be "
+        f"locked in 2 weeks prior to the event. On the night, if the guest count falls below "
+        f"{agreed_min_adults}, a charge of ${policy.SHORTFALL_RATE_PER_ADULT:.0f} per person will apply for "
+        f"the difference.{example} Kids are welcome but do not count toward minimum guest numbers."
+    )
+
+
+def _terms_text(booking: Booking) -> str:
+    space_name = booking.space.name
+    if space_name == "The Loft":
+        minimum_spend_clause = _LOFT_MINIMUM_SPEND_CLAUSE
+    elif space_name == "The Mezzanine":
+        minimum_spend_clause = _MEZZANINE_MINIMUM_SPEND_CLAUSE
+    else:
+        # The Lounge (and anything else) has no Master Policy clause block
+        # yet -- Aaron's own words: "flag and stop with a [REVIEW]... do
+        # not invent terms." No guest minimum and no shortfall charge at
+        # all for the Lounge, so a Guest Numbers clause here would be
+        # actively wrong, not just unconfirmed.
+        return f"{REVIEW} no Master Policy contract clause exists yet for {space_name} -- confirm with Aaron before sending"
+
+    blocks = [
+        ("Deposits", _DEPOSITS_CLAUSE),
+        ("Credit Card", _CREDIT_CARD_CLAUSE),
+        ("Guest Numbers", _guest_numbers_clause(space_name, booking.agreed_min_adults)),
+        ("Minimum Spend", minimum_spend_clause),
+        ("Booking Agreement", _BOOKING_AGREEMENT_CLAUSE),
+        ("Decorations", _DECORATIONS_CLAUSE),
+        ("Credit Card Surcharges", _CREDIT_CARD_SURCHARGE_CLAUSE),
+        ("Cancellation Policy", _CANCELLATION_POLICY_CLAUSE),
+        ("Public Holidays", _PUBLIC_HOLIDAYS_CLAUSE),
+        ("Trading Hours", _TRADING_HOURS_CLAUSE),
+    ]
+    text = "\n\n".join(f"{heading}\n\n{body}" for heading, body in blocks)
+
+    if looks_like_18th(booking.event_type or "", booking.event_name, booking.notes):
+        text += "\n\n" + _EIGHTEENTH_APPENDIX
+
+    return text
 
 
 def _format_time(value) -> str:
@@ -107,9 +244,15 @@ def generate_beo_content(
 
 
 def generate_agreement_content(booking: Booking) -> dict:
+    """Everything here is frozen into the document's content at generation
+    time, including venue/ABN/address/contact -- deliberately the opposite
+    of invoice.html's live venue globals (see app.templating). A signed
+    contract has to reflect what was true when it was agreed, not whatever
+    is true today; an unpaid invoice should always point at the current
+    bank details."""
     space = booking.space
     return {
-        "venue": space.venue.name,
+        "venue": policy.VENUE_TRADING_NAME,
         "space_name": space.name,
         "event_name": booking.event_name,
         "event_date": _format_date(booking.event_date),
@@ -120,5 +263,9 @@ def generate_agreement_content(booking: Booking) -> dict:
         "min_food_spend": str(space.min_food_spend),
         "standard_min_adults": space.standard_min_adults,
         "deposit_required": str(STANDARD_DEPOSIT),
-        "terms_text": f"{REVIEW} paste current cancellation/payment terms from the Handover doc",
+        "terms_text": _terms_text(booking),
+        "venue_abn": policy.VENUE_ABN,
+        "venue_address": policy.VENUE_ADDRESS,
+        "venue_contact_name": policy.VENUE_CONTACT_NAME,
+        "venue_contact_email": policy.VENUE_CONTACT_EMAIL,
     }

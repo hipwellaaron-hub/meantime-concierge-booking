@@ -37,6 +37,8 @@
   .totals .balance td { font-weight: 700; font-size: 1.05rem; padding-top: 0.5rem; }
   .review { color: #b45309; font-style: italic; font-size: 0.9rem; }
   .paid-note { background: #dcf3e3; color: #1c6b3c; padding: 0.9rem; border-radius: 8px; font-size: 0.9rem; }
+  .venue-header { color: #6b7268; font-size: 0.82rem; margin: -0.5rem 0 1.25rem; }
+  .bank-details td.label { width: auto; padding-right: 1rem; }
 </style>
 </head>
 <body>
@@ -46,6 +48,12 @@
     {{ "Deposit Invoice" if invoice.type.value == "deposit" else "Final Invoice" }}
     · Ref {{ booking.reference_code }}
     · <span class="status status-{{ invoice.status.value }}">{{ invoice.status.value }}</span>
+  </div>
+
+  <div class="venue-header">
+    {{ venue_trading_name }} &middot; ABN {{ venue_abn }}<br>
+    {{ venue_address }}<br>
+    Contact: {{ venue_contact_name }} ({{ venue_contact_email }})
   </div>
 
   <section>
@@ -64,6 +72,7 @@
       <tr><td class="label">Public holiday surcharge</td><td>${{ invoice.surcharge }}</td></tr>
       {% endif %}
       <tr><td class="label">Total</td><td>${{ invoice.total }}</td></tr>
+      <tr><td class="label">GST included</td><td>${{ gst_component }}</td></tr>
       <tr><td class="label">Paid to date</td><td>${{ summary.total_paid }}</td></tr>
       <tr class="balance"><td class="label">Balance due</td><td>${{ summary.balance_due }}</td></tr>
     </table>
@@ -86,7 +95,12 @@
   <section>
     <h2>How to pay</h2>
     <p>Direct deposit is our preferred payment method.</p>
-    <p class="review">[REVIEW] insert current bank account/BSB details from the Handover doc</p>
+    <table class="bank-details">
+      <tr><td class="label">Account name</td><td>{{ bank_account_name }}</td></tr>
+      <tr><td class="label">BSB</td><td>{{ bank_bsb }}</td></tr>
+      <tr><td class="label">Account number</td><td>{{ bank_account_number }}</td></tr>
+      <tr><td class="label">Reference</td><td>{{ booking.reference_code }}</td></tr>
+    </table>
     {% if stripe_configured %}
     <p>Prefer to pay by card? <a href="{{ card_payment_url }}">Pay ${{ card_payment_amount }} by card</a> (includes card surcharge, where applicable).</p>
     {% else %}

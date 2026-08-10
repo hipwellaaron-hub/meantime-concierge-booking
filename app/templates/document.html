@@ -32,6 +32,8 @@
   td { padding: 0.3rem 0; vertical-align: top; }
   td.label { color: #6b7268; width: 40%; }
   .review { color: #b45309; font-style: italic; }
+  .terms-text { white-space: pre-wrap; }
+  .venue-header { color: #6b7268; font-size: 0.82rem; margin: -0.5rem 0 1.25rem; }
   .food-items { width: 100%; font-size: 0.9rem; border-collapse: collapse; }
   .food-items th, .food-items td { text-align: left; padding: 0.25rem 0.4rem; border-bottom: 1px solid #ececea; }
   .food-items th { color: #6b7268; font-weight: 600; font-size: 0.8rem; }
@@ -57,6 +59,11 @@
   </div>
 
   {% if document.type.value == "agreement" %}
+  <div class="venue-header">
+    {{ document.content.venue }} &middot; ABN {{ document.content.venue_abn }}<br>
+    {{ document.content.venue_address }}<br>
+    Venue contact: {{ document.content.venue_contact_name }} ({{ document.content.venue_contact_email }})
+  </div>
   <section>
     <table>
       <tr><td class="label">Venue</td><td>{{ document.content.venue }} — {{ document.content.space_name }}</td></tr>
@@ -69,7 +76,7 @@
   </section>
   <section>
     <h2>Terms</h2>
-    <p class="{{ 'review' if '[REVIEW]' in document.content.terms_text else '' }}">{{ document.content.terms_text }}</p>
+    <p class="terms-text {{ 'review' if '[REVIEW]' in document.content.terms_text else '' }}">{{ document.content.terms_text | nl2br }}</p>
   </section>
   {% else %}
   <section>
@@ -125,7 +132,7 @@
   <div class="signed-note">
     Signed by {{ document.signer_name }} on {{ document.signed_at | sydney_time }}
   </div>
-  {% elif document.type.value == "agreement" and document.status.value in ("sent", "viewed") %}
+  {% elif not is_pdf and document.type.value == "agreement" and document.status.value in ("sent", "viewed") %}
   <form class="sign" method="post" action="/d/{{ document.access_token }}/sign">
     <input type="text" name="signer_name" placeholder="Your full name" required>
     <button type="submit">Accept &amp; Sign</button>

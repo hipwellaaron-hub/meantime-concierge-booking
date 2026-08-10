@@ -105,6 +105,29 @@ def record_view(db: Session, document: Document) -> Document:
     return document
 
 
+def delete_draft(db: Session, document: Document, *, actor: str) -> None:
+    """Only a draft can be deleted. A draft was never shown to a client --
+    there's nothing to preserve. Anything sent/viewed/signed must go
+    through create_new_version() instead (superseded, never deleted), so a
+    link that was already given to a client can never stop resolving to
+    something."""
+    if document.status != DocumentStatus.draft:
+        raise ValueError(
+            f"cannot delete a document that is already {document.status.value} -- only a draft can be deleted"
+        )
+    db.add(
+        BookingEvent(
+            booking_id=document.booking_id,
+            event_type="document_deleted",
+            field_name=f"{document.type.value}_version",
+            old_value=str(document.version),
+            actor=actor,
+        )
+    )
+    db.delete(document)
+    db.commit()
+
+
 def sign(db: Session, document: Document, *, signer_name: str, signer_ip: str) -> Document:
     # The critical case this guards: two near-simultaneous POSTs to
     # /d/{token}/sign (a double-clicked Accept & Sign button, or a client

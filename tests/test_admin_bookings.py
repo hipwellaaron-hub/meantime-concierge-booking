@@ -438,3 +438,71 @@ def test_sending_wizard_link_without_event_date_is_rejected(admin_client, db, un
     assert resp.status_code == 422
     db.refresh(booking)
     assert booking.wizard_session is None
+
+
+def test_delete_draft_agreement_via_dashboard(admin_client, db, booking):
+    page = _detail_page(admin_client, booking.id)
+    csrf_token = _csrf(page.text)
+    admin_client.post(
+        f"/admin/bookings/{booking.id}/documents/agreement/generate",
+        data={"csrf_token": csrf_token}, follow_redirects=False,
+    )
+    db.refresh(booking)
+    agreement = documents_service.get_current(db, booking.id, DocumentType.agreement)
+
+    page2 = _detail_page(admin_client, booking.id)
+    csrf_token2 = _csrf(page2.text)
+    resp = admin_client.post(
+        f"/admin/bookings/{booking.id}/documents/{agreement.id}/delete",
+        data={"csrf_token": csrf_token2}, follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    assert db.get(type(agreement), agreement.id) is None
+
+
+def test_delete_sent_agreement_via_dashboard_is_rejected(admin_client, db, booking):
+    page = _detail_page(admin_client, booking.id)
+    csrf_token = _csrf(page.text)
+    admin_client.post(
+        f"/admin/bookings/{booking.id}/documents/agreement/generate",
+        data={"csrf_token": csrf_token}, follow_redirects=False,
+    )
+    db.refresh(booking)
+    agreement = documents_service.get_current(db, booking.id, DocumentType.agreement)
+
+    page2 = _detail_page(admin_client, booking.id)
+    csrf_token2 = _csrf(page2.text)
+    admin_client.post(
+        f"/admin/bookings/{booking.id}/documents/{agreement.id}/send",
+        data={"csrf_token": csrf_token2}, follow_redirects=False,
+    )
+    db.refresh(booking)
+
+    page3 = _detail_page(admin_client, booking.id)
+    csrf_token3 = _csrf(page3.text)
+    resp = admin_client.post(
+        f"/admin/bookings/{booking.id}/documents/{agreement.id}/delete",
+        data={"csrf_token": csrf_token3}, follow_redirects=False,
+    )
+    assert resp.status_code == 409
+    assert db.get(type(agreement), agreement.id) is not None
+
+
+def test_delete_draft_invoice_via_dashboard(admin_client, db, booking):
+    page = _detail_page(admin_client, booking.id)
+    csrf_token = _csrf(page.text)
+    admin_client.post(
+        f"/admin/bookings/{booking.id}/invoices/deposit",
+        data={"csrf_token": csrf_token, "due_date": "2026-09-01"}, follow_redirects=False,
+    )
+    db.refresh(booking)
+    invoice = booking.invoices[0]
+
+    page2 = _detail_page(admin_client, booking.id)
+    csrf_token2 = _csrf(page2.text)
+    resp = admin_client.post(
+        f"/admin/bookings/{booking.id}/invoices/{invoice.id}/delete",
+        data={"csrf_token": csrf_token2}, follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    assert db.get(type(invoice), invoice.id) is None

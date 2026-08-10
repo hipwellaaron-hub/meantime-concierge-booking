@@ -7,7 +7,7 @@ from app.database import get_db
 from app.main import app
 from app.models.document import DocumentStatus, DocumentType
 from app.services.document_generation import compute_food_order_total, generate_agreement_content, generate_beo_content
-from app.services.documents import create_new_version, get_by_token, get_current, mark_sent, record_view, sign
+from app.services.documents import create_new_version, delete_draft, get_by_token, get_current, mark_sent, record_view, sign
 
 
 def test_new_version_supersedes_not_overwrites(db, booking):
@@ -299,3 +299,166 @@ def test_event_name_with_html_is_escaped_in_rendered_document(db, loft):
         assert "&lt;script&gt;" in resp.text
     finally:
         app.dependency_overrides.clear()
+
+
+# --- real Master Policy terms content ----------------------------------------
+
+
+def _booking_in(db, space, *, event_type=None, event_name="Test Event", notes=None, adult_count=70):
+    from app.services.booking import create_booking as _create_booking
+
+    return _create_booking(
+        db, space_id=space.id, contact_id=None, event_date=dt.date(2027, 6, 5),
+        start_time=dt.time(18, 0), end_time=dt.time(23, 0), event_name=event_name,
+        event_type=event_type, adult_count=adult_count, child_count=0, notes=notes, actor="test",
+    )
+
+
+def test_loft_terms_use_loft_guest_numbers_and_minimum_spend(db, loft):
+    booking = _booking_in(db, loft)
+    content = generate_agreement_content(booking)
+    assert "The Loft has a minimum requirement of 60 guests" in content["terms_text"]
+    assert "$1,000 minimum spend" in content["terms_text"]
+    assert "make up part of this total" in content["terms_text"]
+
+
+def test_mezzanine_terms_use_mezzanine_guest_numbers_and_minimum_spend(db, mezzanine):
+    booking = _booking_in(db, mezzanine)
+    content = generate_agreement_content(booking)
+    assert "The Mezzanine has a minimum requirement of 40 guests" in content["terms_text"]
+    assert "$500 minimum spend" in content["terms_text"]
+    assert "make up this total" in content["terms_text"]
+
+
+def test_guest_numbers_clause_reflects_agreed_minimum_not_space_standard(db, loft):
+    from app.services.booking import set_agreed_minimum
+    from app.models.booking import MinReductionReasonCode
+
+    booking = _booking_in(db, loft)
+    set_agreed_minimum(db, booking, agreed_min_adults=40, reason=MinReductionReasonCode.aaron_discretion, actor="test")
+    content = generate_agreement_content(booking)
+    assert "minimum requirement of 40 guests" in content["terms_text"]
+    assert "minimum requirement of 60 guests" not in content["terms_text"]
+    # worked example must recompute too, never a stale literal
+    assert "only 30 guests attend" in content["terms_text"]
+
+
+def test_guest_numbers_clause_omits_worked_example_when_minimum_too_low_for_it(db, loft):
+    from app.services.booking import set_agreed_minimum
+    from app.models.booking import MinReductionReasonCode
+
+    booking = _booking_in(db, loft)
+    set_agreed_minimum(db, booking, agreed_min_adults=5, reason=MinReductionReasonCode.aaron_discretion, actor="test")
+    content = generate_agreement_content(booking)
+    assert "minimum requirement of 5 guests" in content["terms_text"]
+    assert "For example" not in content["terms_text"]  # would otherwise say "-5 guests"
+
+
+def test_lounge_has_no_fabricated_terms(db, lounge):
+    booking = _booking_in(db, lounge)
+    content = generate_agreement_content(booking)
+    assert content["terms_text"].startswith("[REVIEW]")
+    assert "minimum requirement" not in content["terms_text"]  # Lounge has no guest minimum at all
+
+
+def test_18th_birthday_appends_the_conditions_block(db, loft):
+    booking = _booking_in(db, loft, event_type="18th Birthday")
+    content = generate_agreement_content(booking)
+    assert "18th Birthday Conditions" in content["terms_text"]
+    assert "Strict RSA compliance" in content["terms_text"]
+
+
+def test_18th_detected_from_event_name_also_appends_conditions(db, loft):
+    booking = _booking_in(db, loft, event_type="Birthday", event_name="Sam's 18th birthday")
+    content = generate_agreement_content(booking)
+    assert "18th Birthday Conditions" in content["terms_text"]
+
+
+def test_non_18th_does_not_append_conditions(db, loft):
+    booking = _booking_in(db, loft, event_type="Wedding")
+    content = generate_agreement_content(booking)
+    assert "18th Birthday Conditions" not in content["terms_text"]
+
+
+def test_agreement_content_uses_correct_venue_contact_not_the_known_error(db, loft):
+    """A real signed contract was found using hello@meantime.com.au --
+    Master Policy v1.3 SS6.1 says that address is superseded for functions
+    correspondence. This must never recur in a generated document."""
+    booking = _booking_in(db, loft)
+    content = generate_agreement_content(booking)
+    assert content["venue_contact_email"] == "meantimehamilton@gmail.com"
+    assert content["venue_contact_email"] != "hello@meantime.com.au"
+    assert content["venue_contact_name"] == "Aaron"
+
+
+def test_agreement_content_includes_abn_and_address(db, loft):
+    booking = _booking_in(db, loft)
+    content = generate_agreement_content(booking)
+    assert content["venue_abn"] == "36 654 270 532"
+    assert "Beaumont St" in content["venue_address"]
+
+
+# --- PDF download --------------------------------------------------------------
+
+
+def test_draft_document_pdf_download_404s(db, booking):
+    document = create_new_version(db, booking, DocumentType.agreement, generate_agreement_content(booking), actor="test")
+
+    app.dependency_overrides[get_db] = lambda: db
+    try:
+        client = TestClient(app)
+        resp = client.get(f"/d/{document.access_token}/pdf")
+        assert resp.status_code == 404
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_sent_document_pdf_downloads_as_a_real_pdf(db, booking):
+    document = create_new_version(db, booking, DocumentType.agreement, generate_agreement_content(booking), actor="test")
+    document = mark_sent(db, document, actor="test")
+
+    app.dependency_overrides[get_db] = lambda: db
+    try:
+        client = TestClient(app)
+        resp = client.get(f"/d/{document.access_token}/pdf")
+        assert resp.status_code == 200
+        assert resp.headers["content-type"] == "application/pdf"
+        assert resp.content[:4] == b"%PDF"
+        assert "attachment" in resp.headers["content-disposition"]
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_pdf_download_does_not_show_the_interactive_sign_form(db, booking):
+    """A downloaded PDF is static -- an unusable 'type your name' field in
+    it would be actively misleading, not just unnecessary."""
+    document = create_new_version(db, booking, DocumentType.agreement, generate_agreement_content(booking), actor="test")
+    document = mark_sent(db, document, actor="test")
+
+    app.dependency_overrides[get_db] = lambda: db
+    try:
+        client = TestClient(app)
+        resp = client.get(f"/d/{document.access_token}/pdf")
+        assert resp.status_code == 200
+        assert b"Accept" not in resp.content or b"signer_name" not in resp.content
+    finally:
+        app.dependency_overrides.clear()
+
+
+# --- draft-only delete ----------------------------------------------------------
+
+
+def test_delete_draft_document_succeeds(db, booking):
+    document = create_new_version(db, booking, DocumentType.agreement, generate_agreement_content(booking), actor="test")
+    document_id = document.id
+    delete_draft(db, document, actor="test")
+    assert db.get(type(document), document_id) is None
+
+
+def test_delete_sent_document_is_rejected(db, booking):
+    document = create_new_version(db, booking, DocumentType.agreement, generate_agreement_content(booking), actor="test")
+    document = mark_sent(db, document, actor="test")
+    with pytest.raises(ValueError):
+        delete_draft(db, document, actor="test")
+    # still there, untouched
+    assert get_by_token(db, document.access_token) is not None
