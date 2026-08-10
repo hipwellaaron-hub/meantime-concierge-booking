@@ -3,7 +3,33 @@
 {% block content %}
 <h1>Triage</h1>
 
-<div class="card">
+<div class="card" style="border-color: var(--ember);">
+  <h2 style="color: var(--ember);">Enquiries needing clarification ({{ needs_clarification | length }})</h2>
+  {% if needs_clarification %}
+  <table>
+    <thead><tr><th>Event</th><th>Reference</th><th>Date</th><th>Flags</th></tr></thead>
+    <tbody>
+    {% for booking in needs_clarification %}
+      {% set flags = booking.events | selectattr('event_type', 'equalto', 'enquiry_flagged') | list %}
+      <tr>
+        <td><a href="/admin/bookings/{{ booking.id }}">{{ booking.event_name }}</a></td>
+        <td class="muted">{{ booking.reference_code }}</td>
+        <td>{{ booking.event_date }}</td>
+        <td>
+          <ul style="margin:0; padding-left:18px;">
+            {% for f in flags %}<li style="margin-bottom:4px;">{{ f.new_value }}</li>{% endfor %}
+          </ul>
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty-state">Nothing needing clarification.</div>
+  {% endif %}
+</div>
+
+<div class="card section-gap">
   <h2>Awaiting space &amp; time assignment ({{ unassigned | length }})</h2>
   {% if unassigned %}
   <table>

@@ -25,32 +25,40 @@ def test_full_journey_enquiry_to_paid_invoice_with_intact_audit_trail(db, loft):
     app.dependency_overrides[get_db] = lambda: db
     client = TestClient(app)
     try:
-        # 1. Public enquiry (Phase 4) -- the only entry point a real client uses
+        # 1. Public enquiry (Phase 4) -- the only entry point a real client uses.
+        # No space is picked here (matches the real public form): it lands in
+        # the Unassigned/pending-triage space, same as an iVvy import.
         resp = client.post(
             "/enquiries",
-            json={
-                "name": "Taylor Reeves",
+            data={
+                "first_name": "Taylor",
+                "last_name": "Reeves",
                 "email": "taylor.reeves@example.com",
                 "phone": "0400111222",
                 "event_name": "Reeves 40th Birthday",
                 "event_date": "2027-02-13",
+                "dates_flexible": "false",
                 "attendee_count": 60,
-                "event_type": "birthday",
+                # Deliberately not a birthday category -- this test exercises
+                # the whole document/payment pipeline end to end, not the
+                # enquiry-classification flags (see test_enquiry_classification.py).
+                "event_type": "Group Lunch or Dinner",
                 "proposed_time_slot": "Saturday evening",
                 "comments": "Need wheelchair access for one guest.",
-                "space_id": str(loft.id),
             },
+            follow_redirects=False,
         )
-        assert resp.status_code == 201
-        booking_id = resp.json()["booking_id"]
+        assert resp.status_code == 303
 
-        booking = db.get(Booking, booking_id)
+        booking = db.query(Booking).filter_by(event_name="Reeves 40th Birthday").one()
         assert booking.status.value == "enquiry"
         assert booking.start_time is None  # Phase 1: unknown at enquiry stage, not guessed
 
-        # Staff confirms the booking with real times (simulates the not-yet-built
-        # admin flow -- direct service call, same as the rest of this build)
+        # Staff triages: assigns the real space and confirms with real times
+        # (simulates the admin dashboard's assign-space + confirm flow --
+        # direct service calls here, same as the rest of this build).
         booking.status = "confirmed"
+        booking.space_id = loft.id
         booking.start_time = dt.time(18, 0)
         booking.end_time = dt.time(23, 0)
         db.add(booking)

@@ -15,6 +15,16 @@
 <p class="muted">{{ booking.contact.name }} &middot; {{ booking.contact.email }}{% if booking.contact.phone %} &middot; {{ booking.contact.phone }}{% endif %}</p>
 {% endif %}
 
+{% set clarification_flags = booking.events | selectattr('event_type', 'equalto', 'enquiry_flagged') | list %}
+{% if clarification_flags %}
+<div class="card" style="border-color: var(--ember); background: rgba(212,98,43,0.08);">
+  <h2 style="color: var(--ember); margin-bottom: 10px;">Needs clarification before proceeding</h2>
+  <ul style="margin:0; padding-left:18px;">
+    {% for f in clarification_flags %}<li style="margin-bottom:6px;">{{ f.new_value }}</li>{% endfor %}
+  </ul>
+</div>
+{% endif %}
+
 <div class="card">
   <h2>Space &amp; time</h2>
   <form method="post" action="/admin/bookings/{{ booking.id }}/assign-space" class="field-row">

@@ -14,6 +14,22 @@ def _csrf(html: str) -> str:
     return re.search(r'name="csrf_token" value="([^"]+)"', html).group(1)
 
 
+def test_triage_lists_enquiries_needing_clarification(admin_client, db, unassigned_space):
+    from app.services.enquiry_classification import classify_and_flag
+
+    booking = create_booking(
+        db, space_id=unassigned_space.id, contact_id=None, event_date=dt.date(2027, 6, 1),
+        event_name="Generic Birthday Enquiry", event_type="Birthday", adult_count=40, child_count=0,
+        notes=None, actor="test",
+    )
+    classify_and_flag(db, booking, event_type="Birthday", adult_count=None, actor="test")
+
+    resp = admin_client.get("/admin/triage")
+    assert resp.status_code == 200
+    assert "Generic Birthday Enquiry" in resp.text
+    assert "milestone and guest ages not yet known" in resp.text
+
+
 def test_triage_lists_unassigned_bookings(admin_client, db, unassigned_space):
     booking = create_booking(
         db, space_id=unassigned_space.id, contact_id=None, event_date=dt.date(2027, 6, 1),

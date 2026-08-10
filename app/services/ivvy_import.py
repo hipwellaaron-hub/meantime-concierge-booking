@@ -87,7 +87,7 @@ def parse_money(value: str) -> str | None:
         return None
 
 
-def _get_unassigned_space_id(db: Session, venue: Venue):
+def get_unassigned_space_id(db: Session, venue: Venue):
     space = db.execute(
         select(Space.id).where(Space.venue_id == venue.id, Space.name == UNASSIGNED_SPACE_NAME)
     ).scalar_one()
@@ -96,7 +96,7 @@ def _get_unassigned_space_id(db: Session, venue: Venue):
 
 def import_ivvy_csv(db: Session, csv_path: str, *, venue: Venue, actor: str = "ivvy_import") -> ImportResult:
     result = ImportResult()
-    unassigned_space_id = _get_unassigned_space_id(db, venue)
+    unassigned_space_id = get_unassigned_space_id(db, venue)
 
     with open(csv_path, encoding="utf-8-sig", newline="") as f:
         reader = csv.DictReader(f)
