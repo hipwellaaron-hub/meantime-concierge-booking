@@ -104,9 +104,43 @@ def test_beo_generation_flags_missing_data_for_review(db, booking):
     content = generate_beo_content(booking)
     assert "[REVIEW]" in content["bar_structure"]
     assert "[REVIEW]" in content["food_order"]["note"]
+    assert "[REVIEW]" in content["event_timeline"]["notes"]
     assert content["total_food_spend"]["total"] is None
     assert content["special_notes"] == "Bride requests no seafood."
     assert content["status"] == "enquiry"
+
+
+def test_beo_event_timeline_uses_real_setup_and_food_service_times_when_known(db, booking):
+    booking.setup_access_time = dt.time(14, 0)
+    booking.setup_access_confirmed = True
+    booking.food_service_time = dt.time(18, 30)
+    db.commit()
+
+    content = generate_beo_content(booking)
+    notes = content["event_timeline"]["notes"]
+    assert "Setup access from 14:00 (confirmed)" in notes
+    assert "Food service from 18:30" in notes
+    assert "[REVIEW]" not in notes
+
+
+def test_beo_event_timeline_notes_partial_when_only_one_time_known(db, booking):
+    booking.food_service_time = dt.time(18, 30)
+    db.commit()
+
+    content = generate_beo_content(booking)
+    notes = content["event_timeline"]["notes"]
+    assert "Food service from 18:30" in notes
+    assert "Setup access" not in notes
+    assert "[REVIEW]" not in notes
+
+
+def test_beo_event_timeline_shows_pending_when_setup_access_not_yet_confirmed(db, booking):
+    booking.setup_access_time = dt.time(11, 0)
+    booking.setup_access_confirmed = False
+    db.commit()
+
+    content = generate_beo_content(booking)
+    assert "requested, pending confirmation" in content["event_timeline"]["notes"]
 
 
 def test_beo_generation_computes_food_total_when_line_items_given(db, booking):

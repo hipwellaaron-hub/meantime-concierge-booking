@@ -139,6 +139,31 @@ def _get_deposit_paid(db: Session, booking: Booking) -> Decimal:
     return sum((invoicing.get_total_paid(db, inv.id) for inv in deposit_invoices), Decimal("0.00"))
 
 
+def build_beo_content_for_session(db: Session, session: WizardSession) -> dict:
+    """Real BEO content built from a wizard session's captured answers --
+    the same real-data path used at automatic wizard-submission time (see
+    generate_beo_and_invoice below). Also callable directly for a manual
+    Regenerate from the staff dashboard, so a completed wizard's real
+    answers are never silently discarded in favour of blank [REVIEW]
+    placeholders just because staff triggered generation by hand rather
+    than the client submitting. Ignores per-item pricing gaps (unlike
+    generate_beo_and_invoice, this doesn't need an outstanding_items list
+    -- it isn't deciding whether to auto-route anything)."""
+    booking = session.booking
+    food_line_items, _ = build_food_line_items(db, booking, session.food_response)
+    deposit_paid = _get_deposit_paid(db, booking)
+    return generate_beo_content(
+        booking,
+        food_line_items,
+        catering_order_and_service_style=build_catering_order_text(booking, session.food_response),
+        bar_structure=build_bar_structure_text(session.beverage_response),
+        room_layout_notes=(session.extras_response or {}).get("layout_notes") if session.extras_response else None,
+        music_entertainment=build_music_text(session.music_response),
+        special_notes_extra=build_special_notes(session.extras_response),
+        deposit_paid=deposit_paid,
+    )
+
+
 def generate_beo_and_invoice(db: Session, session: WizardSession, *, actor: str) -> WizardGenerationResult:
     booking = session.booking
     outstanding_items: list[str] = []

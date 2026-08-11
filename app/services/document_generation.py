@@ -165,6 +165,24 @@ def _format_date(value) -> str:
     return value.isoformat() if value is not None else f"{REVIEW} event date not yet confirmed"
 
 
+def _event_timeline_notes(booking: Booking) -> str:
+    """setup_access_time/food_service_time are durable Booking columns
+    (the wizard's Basics step writes straight to them, not to wizard-only
+    JSONB state -- see app.models.wizard_session), so they're always
+    available here regardless of which caller is generating the BEO, not
+    just the wizard-sourced path. Only flags REVIEW when neither is
+    actually on record yet."""
+    parts = []
+    if booking.setup_access_time is not None:
+        confirmed = "confirmed" if booking.setup_access_confirmed else "requested, pending confirmation"
+        parts.append(f"Setup access from {booking.setup_access_time.strftime('%H:%M')} ({confirmed}).")
+    if booking.food_service_time is not None:
+        parts.append(f"Food service from {booking.food_service_time.strftime('%H:%M')}.")
+    if not parts:
+        return f"{REVIEW} add run-sheet detail beyond start/end time"
+    return " ".join(parts)
+
+
 def compute_food_order_total(line_items: list[dict]) -> Decimal | None:
     if not line_items:
         return None
@@ -215,7 +233,7 @@ def generate_beo_content(
             "event_date": _format_date(booking.event_date),
             "start_time": _format_time(booking.start_time),
             "end_time": _format_time(booking.end_time),
-            "notes": f"{REVIEW} add run-sheet detail beyond start/end time",
+            "notes": _event_timeline_notes(booking),
         },
         "catering_order_and_service_style": catering_order_and_service_style or f"{REVIEW} add catering order and service style",
         "food_order": {

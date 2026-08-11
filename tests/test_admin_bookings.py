@@ -506,3 +506,71 @@ def test_delete_draft_invoice_via_dashboard(admin_client, db, booking):
     )
     assert resp.status_code == 303
     assert db.get(type(invoice), invoice.id) is None
+
+
+def test_dashboard_beo_regenerate_uses_real_wizard_data_when_submitted(admin_client, db, loft, menu_items):
+    from app.services import wizard as wizard_service
+    from app.services.booking import create_booking
+    from app.services.wizard import BarStructure, CakeChoiceType, MusicType
+
+    wizard_booking = create_booking(
+        db, space_id=loft.id, contact_id=None, event_date=dt.date(2027, 6, 12),
+        start_time=dt.time(18, 0), end_time=dt.time(23, 0), event_name="Wizard BEO Test",
+        event_type="birthday", adult_count=60, child_count=0, notes=None, actor="test",
+    )
+    session = wizard_service.get_or_create_session(db, wizard_booking, actor="test")
+    grazing = menu_items["Grazing Platter"]
+    wizard_service.save_basics_step(
+        db, session, start_time=wizard_booking.start_time, end_time=wizard_booking.end_time,
+        food_service_time=dt.time(18, 30), setup_access_time=dt.time(14, 0),
+        adult_count=60, child_count=0, actor="test",
+    )
+    wizard_service.save_food_step(
+        db, session, platters=[{"menu_item_id": grazing.id, "quantity": 2}], pizzas=[], actor="test"
+    )
+    wizard_service.save_beverage_step(
+        db, session, bar_structure=BarStructure.cash_bar, bar_limit=None, bar_inclusions=None, actor="test"
+    )
+    wizard_service.save_music_step(
+        db, session, music_type=MusicType.own_playlist, notes="Chill playlist", bump_in_notes=None, actor="test"
+    )
+    wizard_service.save_extras_step(
+        db, session, cake_choice_type=CakeChoiceType.none, cake_menu_item_id=None, cake_notes=None,
+        decorations_notes=None, layout_notes="No special layout", dietary_requirements=None,
+        accessibility_needs=None, additional_notes=None, actor="test",
+    )
+    wizard_service.submit_review(db, session, actor="test")
+    db.refresh(wizard_booking)
+
+    # Now staff manually hits Regenerate from the dashboard -- must reuse
+    # the real wizard answers, not overwrite them with blank [REVIEW]
+    # placeholders.
+    page = _detail_page(admin_client, wizard_booking.id)
+    csrf_token = _csrf(page.text)
+    resp = admin_client.post(
+        f"/admin/bookings/{wizard_booking.id}/documents/beo/generate",
+        data={"csrf_token": csrf_token}, follow_redirects=False,
+    )
+    assert resp.status_code == 303
+
+    beo = documents_service.get_current(db, wizard_booking.id, DocumentType.beo)
+    assert "Grazing Platter" in [li["description"] for li in beo.content["food_order"]["line_items"]]
+    assert "Cash bar" in beo.content["bar_structure"]
+    assert "Chill playlist" in beo.content["music_entertainment"]
+    assert "Setup access from 14:00" in beo.content["event_timeline"]["notes"]
+    assert "Food service from 18:30" in beo.content["event_timeline"]["notes"]
+    assert "[REVIEW]" not in beo.content["catering_order_and_service_style"]
+
+
+def test_dashboard_beo_generate_still_blank_when_no_wizard_session(admin_client, db, booking):
+    page = _detail_page(admin_client, booking.id)
+    csrf_token = _csrf(page.text)
+    resp = admin_client.post(
+        f"/admin/bookings/{booking.id}/documents/beo/generate",
+        data={"csrf_token": csrf_token}, follow_redirects=False,
+    )
+    assert resp.status_code == 303
+
+    beo = documents_service.get_current(db, booking.id, DocumentType.beo)
+    assert "[REVIEW]" in beo.content["bar_structure"]
+    assert "[REVIEW]" in beo.content["event_timeline"]["notes"]

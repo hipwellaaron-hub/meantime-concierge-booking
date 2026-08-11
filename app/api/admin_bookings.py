@@ -15,10 +15,12 @@ from app.models.booking import BookingStatus, MinReductionReasonCode
 from app.models.document import DocumentType
 from app.models.payment import PaymentMethod
 from app.models.staff_user import StaffUser
+from app.models.wizard_session import WizardSessionStatus
 from app.services import booking as booking_service
 from app.services import documents as documents_service
 from app.services import invoicing
 from app.services import wizard as wizard_service
+from app.services import wizard_generation
 from app.services.document_generation import generate_agreement_content, generate_beo_content
 from app.templating import templates
 from app.utils import truncate
@@ -166,7 +168,19 @@ def generate_document(
     staff: StaffUser = Depends(require_staff),
 ):
     booking = _get_booking_or_404(db, booking_id)
-    content = generate_agreement_content(booking) if doc_type == DocumentType.agreement else generate_beo_content(booking)
+    if doc_type == DocumentType.agreement:
+        content = generate_agreement_content(booking)
+    else:
+        session = booking.wizard_session
+        if session is not None and session.status == WizardSessionStatus.submitted:
+            # A completed wizard already has the client's real food/
+            # beverage/music/extras answers -- generating blind [REVIEW]
+            # placeholders instead would silently throw that away just
+            # because staff triggered this by hand rather than the client
+            # submitting (see app.services.wizard_generation).
+            content = wizard_generation.build_beo_content_for_session(db, session)
+        else:
+            content = generate_beo_content(booking)
     documents_service.create_new_version(db, booking, doc_type, content, actor=_actor(staff))
     return _redirect_to_detail(booking_id)
 
