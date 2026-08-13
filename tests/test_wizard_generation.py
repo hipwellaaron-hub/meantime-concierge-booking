@@ -237,3 +237,30 @@ def test_dirty_submission_stays_draft_even_with_flags_on(db, loft, menu_items):
     assert result.is_clean is False
     assert result.document.status == DocumentStatus.draft
     assert result.invoice.status == InvoiceStatus.draft
+
+
+def test_wizard_submission_reuses_existing_manual_final_invoice_not_a_duplicate(db, loft, menu_items):
+    # Staff invoiced this booking by hand before the client got around to
+    # completing the wizard -- a real, expected sequence now that a manual
+    # final invoice path exists (app.services.invoicing.create_final_invoice).
+    booking = _make_booking(db, loft, event_date=dt.date(2027, 3, 6))
+    change_status(db, booking, BookingStatus.confirmed, actor="test")
+    _pay_deposit(db, booking, amount=Decimal("500.00"))
+
+    manual_invoice = invoicing.create_final_invoice(
+        db, booking, line_items=[{"description": "Catering", "quantity": 1, "unit_price": "600.00"}],
+        due_date=dt.date(2027, 3, 6), actor="staff:aaron",
+    )
+
+    session = wizard_service.get_or_create_session(db, booking, actor="test")
+    _complete_all_steps(db, session, menu_items)
+    session, result = wizard_service.submit_review(db, session, actor="test")
+
+    # Reused, not duplicated.
+    assert result.invoice.id == manual_invoice.id
+    assert len([i for i in booking.invoices if i.type == InvoiceType.final]) == 1
+    # A collision like this is never "clean" -- it must always surface for
+    # a human to reconcile, not silently pass through even with auto-route
+    # flags on.
+    assert result.is_clean is False
+    assert any("already exists" in item for item in result.outstanding_items)

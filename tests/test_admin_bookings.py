@@ -1,5 +1,6 @@
 import datetime as dt
 import re
+from decimal import Decimal
 
 from app.models.booking import BookingStatus, MinReductionReasonCode
 from app.models.document import DocumentStatus, DocumentType
@@ -164,6 +165,68 @@ def test_create_send_and_pay_deposit_invoice(admin_client, db, booking):
     assert resp3.status_code == 303
     db.refresh(invoice)
     assert invoice.status == InvoiceStatus.paid
+
+
+def test_create_final_invoice_without_wizard(admin_client, db, booking):
+    page = _detail_page(admin_client, booking.id)
+    csrf_token = _csrf(page.text)
+
+    resp = admin_client.post(
+        f"/admin/bookings/{booking.id}/invoices/final",
+        data={
+            "csrf_token": csrf_token,
+            "due_date": "2026-10-01",
+            "description": ["Catering", "", "", "", "", ""],
+            "quantity": ["1", "1", "1", "1", "1", "1"],
+            "unit_price": ["350.00", "", "", "", "", ""],
+        },
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    db.refresh(booking)
+    invoice = [i for i in booking.invoices if i.type.value == "final"][0]
+    assert invoice.status == InvoiceStatus.draft
+    assert invoice.total == Decimal("350.00")
+
+
+def test_create_final_invoice_rejects_duplicate_via_dashboard(admin_client, db, booking):
+    invoicing.create_final_invoice(
+        db, booking, line_items=[{"description": "Catering", "quantity": 1, "unit_price": "350.00"}],
+        due_date=dt.date(2026, 10, 1), actor="test",
+    )
+    page = _detail_page(admin_client, booking.id)
+    csrf_token = _csrf(page.text)
+
+    resp = admin_client.post(
+        f"/admin/bookings/{booking.id}/invoices/final",
+        data={
+            "csrf_token": csrf_token,
+            "due_date": "2026-10-01",
+            "description": ["Catering", "", "", "", "", ""],
+            "quantity": ["1", "1", "1", "1", "1", "1"],
+            "unit_price": ["350.00", "", "", "", "", ""],
+        },
+        follow_redirects=False,
+    )
+    assert resp.status_code == 409
+
+
+def test_create_final_invoice_rejects_all_blank_line_items(admin_client, db, booking):
+    page = _detail_page(admin_client, booking.id)
+    csrf_token = _csrf(page.text)
+
+    resp = admin_client.post(
+        f"/admin/bookings/{booking.id}/invoices/final",
+        data={
+            "csrf_token": csrf_token,
+            "due_date": "2026-10-01",
+            "description": ["", "", "", "", "", ""],
+            "quantity": ["1", "1", "1", "1", "1", "1"],
+            "unit_price": ["", "", "", "", "", ""],
+        },
+        follow_redirects=False,
+    )
+    assert resp.status_code == 422
 
 
 def test_send_and_revoke_wizard_link(admin_client, db, booking):

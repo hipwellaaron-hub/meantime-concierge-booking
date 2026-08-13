@@ -23,7 +23,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.models import Booking, BookingEvent, Document, Invoice
 from app.models.document import DocumentType
-from app.models.invoice import InvoiceType
+from app.models.invoice import InvoiceStatus, InvoiceType
 from app.models.wizard_session import WizardSession
 from app.services import catalogue
 from app.services import documents as documents_service
@@ -132,13 +132,6 @@ def build_special_notes(extras_response: dict | None) -> str | None:
     return "\n".join(lines) if lines else ""
 
 
-def _get_deposit_paid(db: Session, booking: Booking) -> Decimal:
-    deposit_invoices = db.scalars(
-        select(Invoice).where(Invoice.booking_id == booking.id, Invoice.type == InvoiceType.deposit)
-    ).all()
-    return sum((invoicing.get_total_paid(db, inv.id) for inv in deposit_invoices), Decimal("0.00"))
-
-
 def build_beo_content_for_session(db: Session, session: WizardSession) -> dict:
     """Real BEO content built from a wizard session's captured answers --
     the same real-data path used at automatic wizard-submission time (see
@@ -151,7 +144,7 @@ def build_beo_content_for_session(db: Session, session: WizardSession) -> dict:
     -- it isn't deciding whether to auto-route anything)."""
     booking = session.booking
     food_line_items, _ = build_food_line_items(db, booking, session.food_response)
-    deposit_paid = _get_deposit_paid(db, booking)
+    deposit_paid = invoicing.get_deposit_paid(db, booking)
     return generate_beo_content(
         booking,
         food_line_items,
@@ -185,7 +178,7 @@ def generate_beo_and_invoice(db: Session, session: WizardSession, *, actor: str)
     food_line_items, food_outstanding = build_food_line_items(db, booking, session.food_response)
     outstanding_items += food_outstanding
 
-    deposit_paid = _get_deposit_paid(db, booking)
+    deposit_paid = invoicing.get_deposit_paid(db, booking)
 
     if session.has_hard_escalation:
         outstanding_items.append("Accessibility need raised against a non-accessible space -- requires Aaron's review")
@@ -203,20 +196,37 @@ def generate_beo_and_invoice(db: Session, session: WizardSession, *, actor: str)
 
     document = documents_service.create_new_version(db, booking, DocumentType.beo, beo_content, actor=actor)
 
-    credit_line_items = (
-        [{"description": "Less: deposit credited", "quantity": 1, "unit_price": str(-deposit_paid)}]
-        if deposit_paid > 0
-        else []
-    )
-    invoice = invoicing.create_invoice(
-        db,
-        booking,
-        InvoiceType.final,
-        food_line_items,
-        due_date=booking.event_date,
-        actor=actor,
-        credit_line_items=credit_line_items,
-    )
+    # A staff-created manual final invoice (app.services.invoicing.
+    # create_final_invoice) may already exist for this booking if the
+    # client is completing the wizard after staff already invoiced them
+    # by hand. Reusing that invoice rather than creating a second one
+    # avoids a double-billed client; the mismatch is still surfaced via
+    # outstanding_items so it always escalates for a human to reconcile,
+    # never silently accepted as "clean".
+    if invoicing.has_active_final_invoice(db, booking):
+        outstanding_items.append("A final invoice already exists for this booking -- not creating a duplicate")
+        invoice = db.execute(
+            select(Invoice).where(
+                Invoice.booking_id == booking.id,
+                Invoice.type == InvoiceType.final,
+                Invoice.status != InvoiceStatus.cancelled,
+            )
+        ).scalars().first()
+    else:
+        credit_line_items = (
+            [{"description": "Less: deposit credited", "quantity": 1, "unit_price": str(-deposit_paid)}]
+            if deposit_paid > 0
+            else []
+        )
+        invoice = invoicing.create_invoice(
+            db,
+            booking,
+            InvoiceType.final,
+            food_line_items,
+            due_date=booking.event_date,
+            actor=actor,
+            credit_line_items=credit_line_items,
+        )
 
     is_clean = not outstanding_items
 

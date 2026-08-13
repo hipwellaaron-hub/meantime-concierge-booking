@@ -4,6 +4,7 @@
 {% set current_agreement = (booking.documents | selectattr('type.value', 'equalto', 'agreement') | selectattr('is_current') | list | first) %}
 {% set current_beo = (booking.documents | selectattr('type.value', 'equalto', 'beo') | selectattr('is_current') | list | first) %}
 {% set deposit_invoices = booking.invoices | selectattr('type.value', 'equalto', 'deposit') | list %}
+{% set active_final_invoices = booking.invoices | selectattr('type.value', 'equalto', 'final') | rejectattr('status.value', 'equalto', 'cancelled') | list %}
 
 <p><a href="/admin/bookings">&larr; All bookings</a></p>
 <h1>{{ booking.event_name }} <span class="badge gold">{{ booking.status.value }}</span></h1>
@@ -160,6 +161,26 @@
       <div style="flex:0 0 auto; align-self:flex-end;"><button class="btn" type="submit">Create deposit invoice</button></div>
     </div>
   </form>
+  {% endif %}
+  {% if not active_final_invoices %}
+  <details style="margin-bottom:14px;">
+    <summary style="cursor:pointer; color:var(--gold);">Create final invoice</summary>
+    <form method="post" action="/admin/bookings/{{ booking.id }}/invoices/final" style="margin-top:10px;">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <div class="field-row">
+        <div><label>Due date</label><input type="date" name="due_date" required></div>
+      </div>
+      <p class="muted" style="font-size:0.8rem;">Line items (a deposit already paid is credited automatically). Leave a row's description blank to skip it.</p>
+      {% for i in range(6) %}
+      <div class="field-row">
+        <div><label>Description</label><input type="text" name="description"></div>
+        <div style="flex:0 0 90px;"><label>Qty</label><input type="text" name="quantity" value="1"></div>
+        <div style="flex:0 0 120px;"><label>Unit price</label><input type="text" name="unit_price"></div>
+      </div>
+      {% endfor %}
+      <button class="btn" type="submit" style="margin-top:10px;">Create final invoice</button>
+    </form>
+  </details>
   {% endif %}
   {% if booking.invoices %}
   <table>

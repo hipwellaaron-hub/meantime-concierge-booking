@@ -12,11 +12,14 @@ from app.services.invoicing import (
     calculate_card_payment_amount,
     cancel_invoice,
     create_deposit_invoice,
+    create_final_invoice,
     create_invoice,
     delete_draft,
     get_by_token,
+    get_deposit_paid,
     get_payment_summary,
     gst_component,
+    has_active_final_invoice,
     is_public_holiday,
     mark_sent,
     record_payment,
@@ -370,3 +373,45 @@ def test_delete_paid_invoice_is_rejected(db, booking):
     record_payment(db, invoice, amount=Decimal("500.00"), method=PaymentMethod.card, actor="test")
     with pytest.raises(ValueError):
         delete_draft(db, invoice, actor="test")
+
+
+# --- Manual final invoice (no wizard required) ----------------------------------
+
+
+def test_create_final_invoice_with_no_deposit(db, booking):
+    invoice = create_final_invoice(db, booking, line_items=CATERING_ITEMS, due_date=dt.date(2026, 10, 1), actor="test")
+    assert invoice.type == InvoiceType.final
+    assert invoice.total == Decimal("440.00")
+    assert not any(li["description"].startswith("Less:") for li in invoice.line_items)
+
+
+def test_create_final_invoice_credits_a_paid_deposit(db, booking):
+    deposit = create_deposit_invoice(db, booking, due_date=dt.date(2026, 9, 1), actor="test")
+    mark_sent(db, deposit, actor="test")
+    record_payment(db, deposit, amount=Decimal("500.00"), method=PaymentMethod.bank_transfer, actor="test")
+
+    assert get_deposit_paid(db, booking) == Decimal("500.00")
+
+    invoice = create_final_invoice(db, booking, line_items=CATERING_ITEMS, due_date=dt.date(2026, 10, 1), actor="test")
+    assert invoice.subtotal == Decimal("440.00")  # surcharge/subtotal unaffected by the credit
+    assert invoice.total == Decimal("-60.00")  # 440 - 500 deposit credit
+    credit_lines = [li for li in invoice.line_items if li["description"] == "Less: deposit credited"]
+    assert len(credit_lines) == 1
+    assert credit_lines[0]["unit_price"] == "-500.00"
+
+
+def test_create_final_invoice_rejects_a_duplicate(db, booking):
+    create_final_invoice(db, booking, line_items=CATERING_ITEMS, due_date=dt.date(2026, 10, 1), actor="test")
+    assert has_active_final_invoice(db, booking) is True
+    with pytest.raises(ValueError):
+        create_final_invoice(db, booking, line_items=CATERING_ITEMS, due_date=dt.date(2026, 10, 1), actor="test")
+
+
+def test_create_final_invoice_allowed_again_after_cancelling_the_first(db, booking):
+    first = create_final_invoice(db, booking, line_items=CATERING_ITEMS, due_date=dt.date(2026, 10, 1), actor="test")
+    mark_sent(db, first, actor="test")
+    cancel_invoice(db, first, actor="test")
+    assert has_active_final_invoice(db, booking) is False
+
+    second = create_final_invoice(db, booking, line_items=CATERING_ITEMS, due_date=dt.date(2026, 10, 1), actor="test")
+    assert second.id != first.id

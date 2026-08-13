@@ -268,6 +268,41 @@ def create_deposit_invoice(
     return _redirect_to_detail(booking_id)
 
 
+@router.post("/{booking_id}/invoices/final", dependencies=[Depends(require_csrf)])
+def create_final_invoice(
+    booking_id: uuid.UUID,
+    request: Request,
+    due_date: dt.date = Form(...),
+    description: list[str] = Form(...),
+    quantity: list[str] = Form(...),
+    unit_price: list[str] = Form(...),
+    db: Session = Depends(get_db),
+    staff: StaffUser = Depends(require_staff),
+):
+    booking = _get_booking_or_404(db, booking_id)
+
+    line_items = []
+    for desc, qty, price in zip(description, quantity, unit_price):
+        desc = desc.strip()
+        if not desc:
+            continue  # a blank row in the form -- not a real line item
+        try:
+            parsed_qty = Decimal(qty)
+            parsed_price = Decimal(price)
+        except InvalidOperation:
+            raise HTTPException(status_code=422, detail=f"Invalid quantity or unit price for line item '{desc}'")
+        line_items.append({"description": desc, "quantity": str(parsed_qty), "unit_price": str(parsed_price)})
+
+    if not line_items:
+        raise HTTPException(status_code=422, detail="At least one line item is required")
+
+    try:
+        invoicing.create_final_invoice(db, booking, line_items=line_items, due_date=due_date, actor=_actor(staff))
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return _redirect_to_detail(booking_id)
+
+
 @router.post("/{booking_id}/invoices/{invoice_id}/send", dependencies=[Depends(require_csrf)])
 def send_invoice(
     booking_id: uuid.UUID,

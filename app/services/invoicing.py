@@ -128,6 +128,57 @@ def create_deposit_invoice(db: Session, booking: Booking, *, due_date: dt.date, 
     return create_invoice(db, booking, InvoiceType.deposit, line_items, due_date, actor=actor)
 
 
+def get_deposit_paid(db: Session, booking: Booking) -> Decimal:
+    deposit_invoices = db.scalars(
+        select(Invoice).where(Invoice.booking_id == booking.id, Invoice.type == InvoiceType.deposit)
+    ).all()
+    return sum((get_total_paid(db, inv.id) for inv in deposit_invoices), Decimal("0.00"))
+
+
+def has_active_final_invoice(db: Session, booking: Booking) -> bool:
+    return (
+        db.execute(
+            select(Invoice.id).where(
+                Invoice.booking_id == booking.id,
+                Invoice.type == InvoiceType.final,
+                Invoice.status != InvoiceStatus.cancelled,
+            )
+        ).first()
+        is not None
+    )
+
+
+def create_final_invoice(
+    db: Session, booking: Booking, *, line_items: list[dict], due_date: dt.date, actor: str
+) -> Invoice:
+    """The manual, staff-facing counterpart to
+    app.services.wizard_generation.generate_beo_and_invoice's automatic
+    final invoice -- a booking whose client never completes the wizard
+    (or never gets sent one) must still be invoiceable for the balance.
+    Applies the same "Less: deposit credited" line automatically, so a
+    manually-created final invoice can't accidentally double-charge a
+    deposit that's already been paid.
+
+    Refuses a second final invoice while a non-cancelled one already
+    exists -- cancel or delete-if-draft the existing one first, same
+    "surface, don't silently duplicate" rule as everywhere else in this
+    module."""
+    if has_active_final_invoice(db, booking):
+        raise ValueError(
+            "a final invoice already exists for this booking -- cancel or delete the existing one first"
+        )
+
+    deposit_paid = get_deposit_paid(db, booking)
+    credit_line_items = (
+        [{"description": "Less: deposit credited", "quantity": 1, "unit_price": str(-deposit_paid)}]
+        if deposit_paid > 0
+        else []
+    )
+    return create_invoice(
+        db, booking, InvoiceType.final, line_items, due_date, actor=actor, credit_line_items=credit_line_items
+    )
+
+
 def delete_draft(db: Session, invoice: Invoice, *, actor: str) -> None:
     """Only a draft can be deleted -- same reasoning as
     app.services.documents.delete_draft. Anything sent/paid/cancelled must
