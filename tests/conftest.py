@@ -5,6 +5,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.config import settings
+from app.models import Contact
 from app.seed import seed as seed_hamilton
 from app.seed_catalogue import seed as seed_catalogue
 from app.seed_public_holidays import seed as seed_public_holidays
@@ -67,11 +68,19 @@ def unassigned_space(hamilton, db):
 
 
 @pytest.fixture()
-def booking(db, loft):
+def contact(db):
+    c = Contact(name="Pat Wilson", email="pat.wilson@example.com", phone="0400000000")
+    db.add(c)
+    db.flush()
+    return c
+
+
+@pytest.fixture()
+def booking(db, loft, contact):
     return create_booking(
         db,
         space_id=loft.id,
-        contact_id=None,
+        contact_id=contact.id,
         event_date=dt.date(2026, 10, 3),
         start_time=dt.time(12, 0),
         end_time=dt.time(17, 0),

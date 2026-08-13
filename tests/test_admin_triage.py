@@ -1,6 +1,7 @@
 import datetime as dt
 import re
 
+from app.models import Contact
 from app.models.booking import BookingStatus
 from app.models.document import DocumentType
 from app.models.invoice import InvoiceType
@@ -8,6 +9,13 @@ from app.models.payment import PaymentMethod
 from app.services import documents as documents_service
 from app.services import invoicing
 from app.services.booking import change_status, create_booking
+
+
+def _contact(db):
+    contact = Contact(name="Triage Test Contact", email="triage.test@example.com")
+    db.add(contact)
+    db.flush()
+    return contact
 
 
 def _csrf(html: str) -> str:
@@ -69,7 +77,7 @@ def test_triage_assign_space_moves_booking_out_of_worklist(admin_client, db, una
 
 def test_triage_lists_wizard_ready_bookings(admin_client, db, loft):
     booking = create_booking(
-        db, space_id=loft.id, contact_id=None, event_date=dt.date.today() + dt.timedelta(days=3),
+        db, space_id=loft.id, contact_id=_contact(db).id, event_date=dt.date.today() + dt.timedelta(days=3),
         start_time=dt.time(18, 0), end_time=dt.time(23, 0), event_name="Wizard Ready Booking",
         event_type=None, adult_count=20, child_count=0, notes=None, actor="test", status=BookingStatus.confirmed,
     )
@@ -156,7 +164,7 @@ def test_triage_does_not_list_recorded_minimum_reduction(admin_client, db, loft)
 
 def test_triage_send_wizard_link_creates_session(admin_client, db, loft):
     booking = create_booking(
-        db, space_id=loft.id, contact_id=None, event_date=dt.date.today() + dt.timedelta(days=3),
+        db, space_id=loft.id, contact_id=_contact(db).id, event_date=dt.date.today() + dt.timedelta(days=3),
         start_time=dt.time(18, 0), end_time=dt.time(23, 0), event_name="Wizard Ready Booking",
         event_type=None, adult_count=20, child_count=0, notes=None, actor="test", status=BookingStatus.confirmed,
     )

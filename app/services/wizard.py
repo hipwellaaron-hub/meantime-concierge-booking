@@ -32,6 +32,7 @@ from app.services.validation import (
     validate_setup_access_time,
     validate_trading_hours,
 )
+from app.utils import is_valid_email
 
 BOOKING_EVENT_ACTOR_MAX_LENGTH = 255
 
@@ -63,11 +64,25 @@ def get_or_create_session(db: Session, booking: Booking, *, actor: str) -> Wizar
     if existing is not None:
         return existing
 
+    if booking.parent_booking_id is not None:
+        # Same reasoning as app.services.documents.create_new_version: a
+        # linked child (see app.services.booking.add_linked_space) is a
+        # second room for the parent's event -- the wizard belongs on the
+        # parent, which is the booking the client actually has a
+        # relationship with.
+        raise ValueError("cannot send a wizard link for a linked booking -- use the parent booking instead")
+
     if booking.event_date is None:
         # The wizard's own weekday-dependent checks (trading hours, setup
         # access) have nothing to check against without one -- confirm the
         # date on the booking first (see the "Space & time" card).
         raise ValueError("cannot send a wizard link before the event date is confirmed")
+
+    # Same "don't hand out a link with nowhere to send it" rule as
+    # app.services.documents.mark_sent / app.services.invoicing.mark_sent.
+    contact = booking.contact
+    if contact is None or not is_valid_email(contact.email):
+        raise ValueError("cannot send a wizard link: this booking has no contact with a valid email address on file")
 
     session = WizardSession(
         booking_id=booking.id,

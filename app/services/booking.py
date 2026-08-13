@@ -165,6 +165,9 @@ def change_status(
     return booking
 
 
+TERMINAL_STATUSES = (BookingStatus.completed, BookingStatus.cancelled, BookingStatus.dead)
+
+
 def transition_status(
     db: Session, booking: Booking, new_status: BookingStatus, *, actor: str, reason: str | None = None
 ) -> Booking:
@@ -172,14 +175,35 @@ def transition_status(
     its lifecycle. Enforces LEGAL_TRANSITIONS; raises ValueError (-> 422 at
     the API layer) on an illegal move rather than allowing it silently.
     Re-submitting the current status is treated as a harmless no-op (e.g. a
-    double form submission) rather than an illegal transition."""
+    double form submission) rather than an illegal transition.
+
+    If this booking is a linked-spaces parent (see add_linked_space), every
+    still-active linked child moves with it -- they're the same real event,
+    just occupying a second room, so cancelling/confirming/completing the
+    event must free or hold every room it touches, not just this one. A
+    child already ended independently (e.g. that room was released early
+    while the event carried on elsewhere) is left alone. Transitioning a
+    *child* directly does not cascade back up or sideways -- only the
+    parent's own move propagates."""
     if new_status == booking.status:
-        return change_status(db, booking, new_status, actor=actor, reason=reason)
-    legal = LEGAL_TRANSITIONS.get(booking.status, ())
-    if new_status not in legal:
-        allowed = ", ".join(s.value for s in legal) or "none -- this is a terminal status"
-        raise ValueError(f"Cannot move from '{booking.status.value}' to '{new_status.value}'. Allowed: {allowed}.")
-    return change_status(db, booking, new_status, actor=actor, reason=reason)
+        result = change_status(db, booking, new_status, actor=actor, reason=reason)
+    else:
+        legal = LEGAL_TRANSITIONS.get(booking.status, ())
+        if new_status not in legal:
+            allowed = ", ".join(s.value for s in legal) or "none -- this is a terminal status"
+            raise ValueError(f"Cannot move from '{booking.status.value}' to '{new_status.value}'. Allowed: {allowed}.")
+        result = change_status(db, booking, new_status, actor=actor, reason=reason)
+
+    # Queried directly rather than via booking.linked_bookings: the
+    # session here has expire_on_commit=False (see tests/conftest.py), so
+    # a relationship collection accessed earlier in the same session
+    # (e.g. right after add_linked_space created a child) would otherwise
+    # keep returning its stale value instead of the child just created.
+    children = db.scalars(select(Booking).where(Booking.parent_booking_id == booking.id)).all()
+    for child in children:
+        if child.status not in TERMINAL_STATUSES:
+            change_status(db, child, new_status, actor=actor, reason=reason)
+    return result
 
 
 def search_bookings(
@@ -480,3 +504,74 @@ def set_hold_expiry(db: Session, booking: Booking, *, hold_expires_at: dt.date |
     db.commit()
     db.refresh(booking)
     return booking
+
+
+def add_linked_space(
+    db: Session,
+    parent: Booking,
+    *,
+    space_id: uuid.UUID,
+    start_time: dt.time | None = None,
+    end_time: dt.time | None = None,
+    actor: str,
+) -> Booking:
+    """A real event that needs two physical spaces at once (see the iVvy
+    reconciliation's "multi-space" cases) is modelled as a second real
+    Booking row linked to the first, not a pseudo Space that would lie
+    about capacity/minimums for a room that doesn't actually exist. The
+    parent alone carries the contact, documents, invoices, and wizard
+    session -- see the guards in app.services.documents/invoicing/wizard
+    that refuse to create any of those on a linked child directly.
+
+    Mirrors the parent's event_date/event_name/event_type/status/contact
+    onto the child so it reads as "the same event" everywhere it's shown
+    (the calendar, triage, the audit trail), and defaults times to the
+    parent's own -- pass explicit start_time/end_time when the second room
+    is used for a different window (e.g. an afterparty space that opens
+    later than the main room)."""
+    if parent.parent_booking_id is not None:
+        raise ValueError("cannot link a space to a booking that is itself a linked child -- link it to the parent")
+
+    space = db.get(Space, space_id)
+    if space is None or not space.is_bookable:
+        raise ValueError(f"Unknown or non-bookable space {space_id}")
+    # Queried directly rather than read off parent.linked_bookings: the
+    # session here has expire_on_commit=False (see tests/conftest.py), so
+    # a relationship collection already accessed once (e.g. by an earlier
+    # call in the same request/test) would otherwise keep returning the
+    # stale value it had at first load, silently letting the same space
+    # be linked twice.
+    existing_child_space_ids = set(
+        db.execute(select(Booking.space_id).where(Booking.parent_booking_id == parent.id)).scalars().all()
+    )
+    if space_id == parent.space_id or space_id in existing_child_space_ids:
+        raise ValueError("this space is already part of this booking")
+
+    child = create_booking(
+        db,
+        space_id=space_id,
+        contact_id=parent.contact_id,
+        event_date=parent.event_date,
+        start_time=start_time if start_time is not None else parent.start_time,
+        end_time=end_time if end_time is not None else parent.end_time,
+        event_name=parent.event_name,
+        event_type=parent.event_type,
+        adult_count=parent.adult_count,
+        child_count=parent.child_count,
+        notes=None,
+        actor=actor,
+        status=parent.status,
+    )
+    child.parent_booking_id = parent.id
+    db.add(
+        BookingEvent(
+            booking_id=parent.id,
+            event_type="linked_space_added",
+            field_name="linked_bookings",
+            new_value=f"{space.name} ({child.reference_code})",
+            actor=actor,
+        )
+    )
+    db.commit()
+    db.refresh(child)
+    return child

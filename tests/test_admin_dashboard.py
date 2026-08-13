@@ -1,6 +1,7 @@
 import datetime as dt
 import re
 
+from app.models import Contact
 from app.models.booking import BookingStatus
 from app.models.invoice import InvoiceType
 from app.services import invoicing
@@ -14,9 +15,13 @@ def test_dashboard_counts_match_real_data(admin_client, db, loft):
         event_type=None, adult_count=10, child_count=0, notes=None, actor="test",
     )
 
+    contact = Contact(name="Dashboard Test Contact", email="dashboard.test@example.com")
+    db.add(contact)
+    db.flush()
+
     # One confirmed booking with a sent (unpaid) invoice -- counted as unpaid.
     confirmed = create_booking(
-        db, space_id=loft.id, contact_id=None, event_date=dt.date(2027, 5, 2),
+        db, space_id=loft.id, contact_id=contact.id, event_date=dt.date(2027, 5, 2),
         start_time=dt.time(18, 0), end_time=dt.time(23, 0), event_name="Confirmed With Unpaid Invoice",
         event_type=None, adult_count=10, child_count=0, notes=None, actor="test", status=BookingStatus.confirmed,
     )

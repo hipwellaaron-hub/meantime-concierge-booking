@@ -12,7 +12,7 @@ import threading
 import uuid
 from decimal import Decimal
 
-from app.models import Space, Venue
+from app.models import Contact, Space, Venue
 from app.models.invoice import InvoiceStatus
 from app.models.payment import PaymentMethod
 from app.services.booking import create_booking
@@ -33,13 +33,14 @@ def test_concurrent_split_payments_correctly_flip_invoice_to_paid():
         wheelchair_accessible=False,
         has_per_head_shortfall_fee=True,
     )
-    setup.add_all([venue, space])
+    contact = Contact(name="Payment Concurrency Test Contact", email="payment-concurrency@example.com")
+    setup.add_all([venue, space, contact])
     setup.commit()
 
     booking = create_booking(
         setup,
         space_id=space.id,
-        contact_id=None,
+        contact_id=contact.id,
         event_date=dt.date(2027, 3, 6),
         start_time=dt.time(12, 0),
         end_time=dt.time(17, 0),

@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.models import Booking, BookingEvent, Document
 from app.models.document import DocumentStatus, DocumentType
-from app.utils import truncate
+from app.utils import is_valid_email, truncate
 
 BOOKING_EVENT_ACTOR_MAX_LENGTH = 255
 
@@ -33,6 +33,11 @@ def get_by_token(db: Session, token: str) -> Document | None:
 
 
 def create_new_version(db: Session, booking: Booking, doc_type: DocumentType, content: dict, *, actor: str) -> Document:
+    if booking.parent_booking_id is not None:
+        # A linked child (see app.services.booking.add_linked_space) is
+        # just a second room for the parent's event -- its own documents
+        # would duplicate the parent's, not describe anything real.
+        raise ValueError("cannot create a document on a linked booking -- use the parent booking instead")
     previous = get_current(db, booking.id, doc_type)
     next_version = 1
     if previous is not None:
@@ -86,13 +91,23 @@ def _transition(db: Session, document: Document, new_status: DocumentStatus, *, 
 
 def mark_sent(db: Session, document: Document, *, actor: str) -> Document:
     """Nothing auto-sends: this is the explicit human action that makes a
-    draft visible at its public link."""
+    draft visible at its public link -- staff then paste that link into
+    their own email to the client. Refuses to make that link "sent" at all
+    if there's nowhere to actually send it: a missing contact or a
+    malformed address would make the sent/viewed/signed status lie about
+    a client ever having a chance to see it, rather than genuinely
+    reflecting what happened."""
     # Locks the row for the rest of this transaction: two concurrent calls
     # (e.g. a double-clicked "send" in a future admin UI) must not both
     # pass a stale in-Python status check and both append a transition.
     db.refresh(document, with_for_update=True)
     if document.status != DocumentStatus.draft:
         raise ValueError(f"cannot send a document that is already {document.status.value}")
+    contact = document.booking.contact
+    if contact is None or not is_valid_email(contact.email):
+        raise ValueError(
+            "cannot send: this booking has no contact with a valid email address on file"
+        )
     return _transition(db, document, DocumentStatus.sent, actor=actor)
 
 

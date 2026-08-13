@@ -1,11 +1,12 @@
 import datetime as dt
 import uuid
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.database import get_db
 from app.main import app
-from app.models import MenuItem
+from app.models import Contact, MenuItem
 from app.models.booking import BookingStatus, MinReductionReasonCode
 from app.models.document import DocumentType
 from app.models.invoice import InvoiceType
@@ -20,10 +21,13 @@ from app.services.wizard import BarStructure, CakeChoiceType, MusicType
 
 
 def _make_booking(db, space, *, event_date=dt.date(2027, 3, 6), adult_count=50):
+    contact = Contact(name="Wizard Test Contact", email="wizard.test@example.com")
+    db.add(contact)
+    db.flush()
     return create_booking(
         db,
         space_id=space.id,
-        contact_id=None,
+        contact_id=contact.id,
         event_date=event_date,
         start_time=dt.time(18, 0),
         end_time=dt.time(23, 0),
@@ -130,6 +134,16 @@ def test_get_or_create_session_is_idempotent(db, loft):
     first = wizard_service.get_or_create_session(db, booking, actor="test")
     second = wizard_service.get_or_create_session(db, booking, actor="test")
     assert first.id == second.id
+
+
+def test_cannot_send_wizard_link_when_booking_has_no_contact(db, loft):
+    booking = create_booking(
+        db, space_id=loft.id, contact_id=None, event_date=dt.date(2027, 3, 6),
+        start_time=dt.time(18, 0), end_time=dt.time(23, 0), event_name="No Contact Wizard Booking",
+        event_type="birthday", adult_count=50, child_count=0, notes=None, actor="test",
+    )
+    with pytest.raises(ValueError, match="valid email"):
+        wizard_service.get_or_create_session(db, booking, actor="test")
 
 
 def test_food_step_saves_and_resumes(db, loft, menu_items):

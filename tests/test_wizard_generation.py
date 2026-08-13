@@ -2,6 +2,7 @@ import datetime as dt
 from decimal import Decimal
 from unittest.mock import patch
 
+from app.models import Contact
 from app.models.booking import BookingStatus
 from app.models.document import DocumentStatus
 from app.models.invoice import InvoiceStatus, InvoiceType
@@ -14,8 +15,11 @@ from app.services.wizard import BarStructure, CakeChoiceType, MusicType
 
 
 def _make_booking(db, space, *, event_date=dt.date(2027, 3, 6), adult_count=50, created_at=None):
+    contact = Contact(name="Generation Test Contact", email="generation.test@example.com")
+    db.add(contact)
+    db.flush()
     booking = create_booking(
-        db, space_id=space.id, contact_id=None, event_date=event_date,
+        db, space_id=space.id, contact_id=contact.id, event_date=event_date,
         start_time=dt.time(18, 0), end_time=dt.time(23, 0), event_name="Generation Test Booking",
         event_type="birthday", adult_count=adult_count, child_count=0, notes=None, actor="test",
     )

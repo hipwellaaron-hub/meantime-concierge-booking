@@ -20,6 +20,7 @@ from app.services.policy import (
     STANDARD_DEPOSIT,
     is_card_surcharge_permitted,
 )
+from app.utils import is_valid_email
 
 
 def _round_money(value: Decimal) -> Decimal:
@@ -89,6 +90,11 @@ def create_invoice(
     class of mistake that already produced a wrong invoice for a live
     client -- see app.services.wizard_generation.
     """
+    if booking.parent_booking_id is not None:
+        # Same reasoning as app.services.documents.create_new_version: a
+        # linked child is a second room for the parent's event, not a
+        # separate billable booking of its own.
+        raise ValueError("cannot create an invoice on a linked booking -- use the parent booking instead")
     subtotal, surcharge, gross_total = compute_totals(db, booking.event_date, line_items)
     credit_line_items = credit_line_items or []
     credit_total = sum(
@@ -210,6 +216,14 @@ def mark_sent(db: Session, invoice: Invoice, *, actor: str) -> Invoice:
     db.refresh(invoice, with_for_update=True)
     if invoice.status != InvoiceStatus.draft:
         raise ValueError(f"cannot send an invoice that is already {invoice.status.value}")
+    # Same reasoning as app.services.documents.mark_sent: "sent" is a
+    # claim that a client has a real link, and a missing/malformed
+    # address makes that claim false.
+    contact = invoice.booking.contact
+    if contact is None or not is_valid_email(contact.email):
+        raise ValueError(
+            "cannot send: this booking has no contact with a valid email address on file"
+        )
     old_status = invoice.status
     invoice.status = InvoiceStatus.sent
     db.add(

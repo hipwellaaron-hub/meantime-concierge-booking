@@ -1,6 +1,7 @@
 import datetime as dt
 from decimal import Decimal
 
+from app.models import Contact
 from app.models.booking import BookingStatus
 from app.models.document import DocumentType
 from app.models.payment import PaymentMethod
@@ -12,8 +13,11 @@ from app.services.document_generation import generate_agreement_content
 
 
 def _make_booking(db, space, *, event_date=dt.date(2027, 3, 6), status=BookingStatus.enquiry, event_name="Digest Test Booking"):
+    contact = Contact(name="Digest Test Contact", email="digest.test@example.com")
+    db.add(contact)
+    db.flush()
     booking = create_booking(
-        db, space_id=space.id, contact_id=None, event_date=event_date,
+        db, space_id=space.id, contact_id=contact.id, event_date=event_date,
         start_time=dt.time(18, 0), end_time=dt.time(23, 0), event_name=event_name,
         event_type="birthday", adult_count=50, child_count=0, notes=None, actor="test",
     )

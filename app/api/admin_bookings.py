@@ -26,7 +26,7 @@ from app.services import wizard as wizard_service
 from app.services import wizard_generation
 from app.services.document_generation import generate_agreement_content, generate_beo_content
 from app.templating import templates
-from app.utils import truncate
+from app.utils import is_valid_email, truncate
 
 router = APIRouter(prefix="/admin/bookings", tags=["admin-bookings"], dependencies=[Depends(require_staff)])
 
@@ -176,6 +176,7 @@ def booking_detail(
             min_reduction_reasons=list(MinReductionReasonCode),
             payment_methods=list(PaymentMethod),
             legal_next_statuses=booking_service.LEGAL_TRANSITIONS.get(booking.status, ()),
+            contact_email_valid=booking.contact is not None and is_valid_email(booking.contact.email),
         ),
     )
 
@@ -242,6 +243,25 @@ def assign_space(
             event_date=parsed_event_date,
             actor=_actor(staff),
         )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="That space is already booked for an overlapping time") from exc
+    return _redirect_to_detail(booking_id)
+
+
+@router.post("/{booking_id}/linked-spaces", dependencies=[Depends(require_csrf)])
+def add_linked_space(
+    booking_id: uuid.UUID,
+    request: Request,
+    space_id: uuid.UUID = Form(...),
+    db: Session = Depends(get_db),
+    staff: StaffUser = Depends(require_staff),
+):
+    booking = _get_booking_or_404(db, booking_id)
+    try:
+        booking_service.add_linked_space(db, booking, space_id=space_id, actor=_actor(staff))
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except IntegrityError as exc:

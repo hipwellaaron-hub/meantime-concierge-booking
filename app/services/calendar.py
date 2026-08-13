@@ -103,6 +103,11 @@ def get_week_grid(db: Session, venue: Venue, week_start: dt.date, *, today: dt.d
                 # tests/test_calendar.py that checks this against
                 # is_space_free directly).
                 "is_blocking": booking.status in BLOCKING_STATUSES,
+                # A linked child (see app.services.booking.add_linked_space)
+                # is a second room for the same real event, not an
+                # unrelated second booking that happens to share a name --
+                # the template uses this to label it as such.
+                "is_linked_child": booking.parent_booking_id is not None,
             })
 
     return {

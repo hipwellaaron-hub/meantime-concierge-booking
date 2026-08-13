@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 
 from app.database import get_db
 from app.main import app
-from app.models.invoice import InvoiceType
+from app.models.invoice import InvoiceStatus, InvoiceType
 from app.models.payment import PaymentMethod
 from app.services.invoicing import (
     calculate_card_payment_amount,
@@ -140,6 +140,40 @@ def test_cannot_send_invoice_twice(db, booking):
     invoice = create_deposit_invoice(db, booking, due_date=dt.date(2026, 9, 1), actor="test")
     mark_sent(db, invoice, actor="test")
     with pytest.raises(ValueError):
+        mark_sent(db, invoice, actor="test")
+
+
+# --- email-validity guard on the send path --------------------------------
+
+
+def test_cannot_send_invoice_when_booking_has_no_contact(db, loft):
+    from app.services.booking import create_booking as _create_booking
+
+    contactless_booking = _create_booking(
+        db, space_id=loft.id, contact_id=None, event_date=dt.date(2027, 5, 1),
+        start_time=dt.time(12, 0), end_time=dt.time(17, 0), event_name="No Contact Booking",
+        event_type="party", adult_count=10, child_count=0, notes=None, actor="test",
+    )
+    invoice = create_deposit_invoice(db, contactless_booking, due_date=dt.date(2027, 5, 1), actor="test")
+    with pytest.raises(ValueError, match="valid email"):
+        mark_sent(db, invoice, actor="test")
+    assert invoice.status == InvoiceStatus.draft
+
+
+def test_cannot_send_invoice_when_contact_email_is_malformed(db, loft):
+    from app.models import Contact
+    from app.services.booking import create_booking as _create_booking
+
+    bad_contact = Contact(name="Bad Email Contact", email="not-an-email")
+    db.add(bad_contact)
+    db.flush()
+    bad_booking = _create_booking(
+        db, space_id=loft.id, contact_id=bad_contact.id, event_date=dt.date(2027, 5, 1),
+        start_time=dt.time(12, 0), end_time=dt.time(17, 0), event_name="Bad Email Booking",
+        event_type="party", adult_count=10, child_count=0, notes=None, actor="test",
+    )
+    invoice = create_deposit_invoice(db, bad_booking, due_date=dt.date(2027, 5, 1), actor="test")
+    with pytest.raises(ValueError, match="valid email"):
         mark_sent(db, invoice, actor="test")
 
 

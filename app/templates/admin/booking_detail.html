@@ -16,6 +16,16 @@
 <p class="muted">{{ booking.contact.name }} &middot; {{ booking.contact.email }}{% if booking.contact.phone %} &middot; {{ booking.contact.phone }}{% endif %}</p>
 {% endif %}
 
+{% if booking.parent_booking %}
+<div class="card" style="border-color: var(--gold-dim);">
+  <p style="margin:0;">
+    This is a linked booking -- a second space for
+    <a href="/admin/bookings/{{ booking.parent_booking.id }}">{{ booking.parent_booking.event_name }} ({{ booking.parent_booking.reference_code }})</a>.
+    Documents, invoices, and the wizard live on that parent booking, not here.
+  </p>
+</div>
+{% endif %}
+
 <div class="card">
   <h2>Status</h2>
   {% if legal_next_statuses %}
@@ -49,6 +59,15 @@
   </form>
   {% endif %}
 </div>
+
+{% if not contact_email_valid %}
+<div class="card" style="border-color: var(--wine);">
+  <p style="margin:0; color: var(--wine);">
+    {% if booking.contact %}This booking's contact email ({{ booking.contact.email }}) doesn't look valid.{% else %}This booking has no contact on file.{% endif %}
+    Sending a document, invoice, or wizard link will be refused until it's fixed.
+  </p>
+</div>
+{% endif %}
 
 {% set clarification_flags = booking.events | selectattr('event_type', 'equalto', 'enquiry_flagged') | list %}
 {% if clarification_flags %}
@@ -88,6 +107,40 @@
       <button class="btn" type="submit">Save</button>
     </div>
   </form>
+</div>
+
+{% if not booking.parent_booking_id %}
+<div class="card">
+  <h2>Linked spaces</h2>
+  <p class="muted" style="font-size:0.85rem;">For one event that needs two rooms at once. A linked space shares this booking's contact, documents, invoices, and wizard -- it is not billed separately.</p>
+  {% if booking.linked_bookings %}
+  <table>
+    <thead><tr><th>Space</th><th>Status</th><th>Actions</th></tr></thead>
+    <tbody>
+    {% for child in booking.linked_bookings %}
+      <tr>
+        <td>{{ child.space.name }}</td>
+        <td><span class="badge">{{ child.status.value }}</span></td>
+        <td><a href="/admin/bookings/{{ child.id }}">View &rarr;</a></td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+  {% set linked_space_ids = booking.linked_bookings | map(attribute='space_id') | list %}
+  {% set available_spaces = bookable_spaces | rejectattr('id', 'equalto', booking.space_id) | rejectattr('id', 'in', linked_space_ids) | list %}
+  {% if available_spaces %}
+  <form method="post" action="/admin/bookings/{{ booking.id }}/linked-spaces" class="field-row" style="margin-top:10px;">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div>
+      <label>Add linked space</label>
+      <select name="space_id">
+        {% for space in available_spaces %}<option value="{{ space.id }}">{{ space.name }}</option>{% endfor %}
+      </select>
+    </div>
+    <div style="flex:0 0 auto; align-self:flex-end;"><button class="btn secondary" type="submit">Add</button></div>
+  </form>
+  {% endif %}
 </div>
 
 <div class="card">
@@ -261,6 +314,7 @@
   </form>
   {% endif %}
 </div>
+{% endif %}
 
 <div class="card">
   <h2>Policy overrides</h2>

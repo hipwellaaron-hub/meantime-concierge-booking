@@ -100,6 +100,44 @@ def test_cannot_send_a_document_twice(db, booking):
         mark_sent(db, document, actor="test")
 
 
+# --- email-validity guard on the send path --------------------------------
+
+
+def test_cannot_send_document_when_booking_has_no_contact(db, loft):
+    from app.services.booking import create_booking as _create_booking
+
+    contactless_booking = _create_booking(
+        db, space_id=loft.id, contact_id=None, event_date=dt.date(2027, 5, 1),
+        start_time=dt.time(12, 0), end_time=dt.time(17, 0), event_name="No Contact Booking",
+        event_type="party", adult_count=10, child_count=0, notes=None, actor="test",
+    )
+    document = create_new_version(
+        db, contactless_booking, DocumentType.agreement, generate_agreement_content(contactless_booking), actor="test"
+    )
+    with pytest.raises(ValueError, match="valid email"):
+        mark_sent(db, document, actor="test")
+    assert document.status == DocumentStatus.draft  # refused, not silently "sent"
+
+
+def test_cannot_send_document_when_contact_email_is_malformed(db, loft):
+    from app.models import Contact
+    from app.services.booking import create_booking as _create_booking
+
+    bad_contact = Contact(name="Bad Email Contact", email="not-an-email")
+    db.add(bad_contact)
+    db.flush()
+    bad_booking = _create_booking(
+        db, space_id=loft.id, contact_id=bad_contact.id, event_date=dt.date(2027, 5, 1),
+        start_time=dt.time(12, 0), end_time=dt.time(17, 0), event_name="Bad Email Booking",
+        event_type="party", adult_count=10, child_count=0, notes=None, actor="test",
+    )
+    document = create_new_version(
+        db, bad_booking, DocumentType.agreement, generate_agreement_content(bad_booking), actor="test"
+    )
+    with pytest.raises(ValueError, match="valid email"):
+        mark_sent(db, document, actor="test")
+
+
 def test_beo_generation_flags_missing_data_for_review(db, booking):
     content = generate_beo_content(booking)
     assert "[REVIEW]" in content["bar_structure"]
@@ -303,12 +341,16 @@ def test_event_name_with_html_is_escaped_in_rendered_document(db, loft):
     (event_name, notes, etc. are all client-controlled at enquiry time)
     must be HTML-escaped, or a booking name like this becomes stored XSS
     against anyone who opens the document link."""
+    from app.models import Contact
     from app.services.booking import create_booking as _create_booking
 
+    xss_contact = Contact(name="XSS Test Contact", email="xss-test@example.com")
+    db.add(xss_contact)
+    db.flush()
     malicious_booking = _create_booking(
         db,
         space_id=loft.id,
-        contact_id=None,
+        contact_id=xss_contact.id,
         event_date=dt.date(2027, 5, 1),
         start_time=dt.time(12, 0),
         end_time=dt.time(17, 0),

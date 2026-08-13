@@ -1,4 +1,4 @@
-from app.utils import looks_like_a_token, truncate
+from app.utils import is_valid_email, looks_like_a_token, truncate
 
 
 def test_truncate_leaves_short_strings_alone():
@@ -27,3 +27,23 @@ def test_looks_like_a_token_rejects_empty_string():
 
 def test_looks_like_a_token_rejects_path_traversal_shape():
     assert looks_like_a_token("../../etc/passwd") is False
+
+
+def test_is_valid_email_accepts_real_address():
+    assert is_valid_email("aaron@meantime.com.au") is True
+
+
+def test_is_valid_email_rejects_none():
+    assert is_valid_email(None) is False
+
+
+def test_is_valid_email_rejects_empty_string():
+    assert is_valid_email("") is False
+
+
+def test_is_valid_email_rejects_missing_at_sign():
+    assert is_valid_email("not-an-email") is False
+
+
+def test_is_valid_email_rejects_no_domain():
+    assert is_valid_email("someone@") is False

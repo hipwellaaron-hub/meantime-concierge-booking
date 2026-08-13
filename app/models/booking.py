@@ -65,6 +65,17 @@ class Booking(Base):
     space_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("spaces.id"), nullable=False)
     contact_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("contacts.id"), nullable=True)
 
+    # NULL for a normal, single-space booking. Set when a single real event
+    # needs two physical spaces at once -- see app.services.booking.
+    # add_linked_space. The row this points at is the "parent": it alone
+    # carries the contact, documents, invoices, and wizard session. This
+    # row is purely a second space-and-time slot for the same event, and
+    # sits behind the exact same exclusion constraint as any other booking
+    # -- nothing about double-booking protection changes for a linked row.
+    parent_booking_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("bookings.id"), nullable=True
+    )
+
     # Nullable: a real enquiry can arrive with no date locked in yet
     # ("not sure of dates, are you flexible?") -- see
     # app.services.enquiry_classification's missing_event_date flag rather
@@ -182,6 +193,10 @@ class Booking(Base):
     documents: Mapped[list["Document"]] = relationship(back_populates="booking", order_by="Document.version")
     invoices: Mapped[list["Invoice"]] = relationship(back_populates="booking", order_by="Invoice.created_at")
     wizard_session: Mapped["WizardSession | None"] = relationship(back_populates="booking", uselist=False)
+    parent_booking: Mapped["Booking | None"] = relationship(
+        remote_side=[id], back_populates="linked_bookings"
+    )
+    linked_bookings: Mapped[list["Booking"]] = relationship(back_populates="parent_booking")
 
     __table_args__ = (
         CheckConstraint("end_time > start_time", name="ck_booking_end_after_start"),

@@ -2,7 +2,7 @@ import datetime as dt
 import re
 from decimal import Decimal
 
-from app.models import Booking
+from app.models import Booking, Contact
 from app.models.booking import BookingStatus, MinReductionReasonCode
 from app.models.document import DocumentStatus, DocumentType
 from app.models.invoice import InvoiceStatus
@@ -53,6 +53,67 @@ def test_booking_detail_renders(admin_client, booking):
     resp = _detail_page(admin_client, booking.id)
     assert resp.status_code == 200
     assert "Wilson Wedding" in resp.text
+
+
+# --- Linked spaces (one event, two rooms) ---------------------------------------
+
+
+def test_add_linked_space_via_dashboard(admin_client, db, booking, mezzanine):
+    page = _detail_page(admin_client, booking.id)
+    csrf_token = _csrf(page.text)
+    resp = admin_client.post(
+        f"/admin/bookings/{booking.id}/linked-spaces",
+        data={"csrf_token": csrf_token, "space_id": str(mezzanine.id)},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+
+    db.refresh(booking)
+    assert len(booking.linked_bookings) == 1
+    child = booking.linked_bookings[0]
+    assert child.space_id == mezzanine.id
+    assert child.parent_booking_id == booking.id
+
+    parent_page = _detail_page(admin_client, booking.id)
+    assert "The Mezzanine" in parent_page.text
+
+    child_page = _detail_page(admin_client, child.id)
+    assert "linked booking" in child_page.text
+    assert "Wilson Wedding" in child_page.text  # links back to the parent by name
+
+
+def test_linked_child_page_hides_documents_invoices_and_wizard(admin_client, db, booking, mezzanine):
+    from app.services.booking import add_linked_space
+
+    child = add_linked_space(db, booking, space_id=mezzanine.id, actor="test")
+    resp = _detail_page(admin_client, child.id)
+    assert resp.status_code == 200
+    assert "<h2>Documents</h2>" not in resp.text
+    assert "<h2>Invoices</h2>" not in resp.text
+    assert "<h2>Guided Booking Wizard</h2>" not in resp.text
+    assert "<h2>Policy overrides</h2>" in resp.text  # still available on a child
+
+
+def test_adding_a_conflicting_linked_space_returns_409(admin_client, db, booking, mezzanine):
+    from app.models.booking import BookingStatus
+    from app.services.booking import change_status, create_booking
+
+    change_status(db, booking, BookingStatus.confirmed, actor="test")
+    create_booking(
+        db, space_id=mezzanine.id, contact_id=None, event_date=booking.event_date,
+        start_time=booking.start_time, end_time=booking.end_time, event_name="Unrelated",
+        event_type=None, adult_count=10, child_count=0, notes=None, actor="test",
+        status=BookingStatus.confirmed,
+    )
+
+    page = _detail_page(admin_client, booking.id)
+    csrf_token = _csrf(page.text)
+    resp = admin_client.post(
+        f"/admin/bookings/{booking.id}/linked-spaces",
+        data={"csrf_token": csrf_token, "space_id": str(mezzanine.id)},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 409
 
 
 # --- Staff-created bookings (phone / direct email / iVvy marketplace) -----------
@@ -195,6 +256,33 @@ def test_generate_and_send_beo(admin_client, db, booking):
     assert resp2.status_code == 303
     db.refresh(beo)
     assert beo.status == DocumentStatus.sent
+
+
+def test_send_document_refused_and_flagged_when_booking_has_no_contact(admin_client, db, loft):
+    contactless_booking = create_booking(
+        db, space_id=loft.id, contact_id=None, event_date=dt.date(2027, 5, 1),
+        start_time=dt.time(12, 0), end_time=dt.time(17, 0), event_name="No Contact Booking",
+        event_type="party", adult_count=10, child_count=0, notes=None, actor="test",
+    )
+    page = _detail_page(admin_client, contactless_booking.id)
+    assert "no contact on file" in page.text  # the visible flag
+    csrf_token = _csrf(page.text)
+    admin_client.post(
+        f"/admin/bookings/{contactless_booking.id}/documents/agreement/generate",
+        data={"csrf_token": csrf_token}, follow_redirects=False,
+    )
+    db.refresh(contactless_booking)
+
+    page2 = _detail_page(admin_client, contactless_booking.id)
+    csrf_token2 = _csrf(page2.text)
+    agreement = documents_service.get_current(db, contactless_booking.id, DocumentType.agreement)
+    resp = admin_client.post(
+        f"/admin/bookings/{contactless_booking.id}/documents/{agreement.id}/send",
+        data={"csrf_token": csrf_token2}, follow_redirects=False,
+    )
+    assert resp.status_code == 409
+    db.refresh(agreement)
+    assert agreement.status == DocumentStatus.draft
 
 
 def test_create_send_and_pay_deposit_invoice(admin_client, db, booking):
@@ -664,8 +752,11 @@ def test_dashboard_beo_regenerate_uses_real_wizard_data_when_submitted(admin_cli
     from app.services.booking import create_booking
     from app.services.wizard import BarStructure, CakeChoiceType, MusicType
 
+    contact = Contact(name="Wizard BEO Test Contact", email="wizard-beo-test@example.com")
+    db.add(contact)
+    db.flush()
     wizard_booking = create_booking(
-        db, space_id=loft.id, contact_id=None, event_date=dt.date(2027, 6, 12),
+        db, space_id=loft.id, contact_id=contact.id, event_date=dt.date(2027, 6, 12),
         start_time=dt.time(18, 0), end_time=dt.time(23, 0), event_name="Wizard BEO Test",
         event_type="birthday", adult_count=60, child_count=0, notes=None, actor="test",
     )

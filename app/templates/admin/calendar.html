@@ -74,7 +74,7 @@
           {% if entries %}
             {% for entry in entries %}
             <div class="cal-chip cal-chip-{{ entry.kind }}" data-kind="{{ entry.kind }}" data-booking-id="{{ entry.booking.id }}">
-              <a href="/admin/bookings/{{ entry.booking.id }}">{{ entry.booking.event_name }}</a>
+              <a href="/admin/bookings/{{ entry.booking.id }}">{{ entry.booking.event_name }}{% if entry.is_linked_child %} (linked){% endif %}</a>
               <div class="cal-chip-meta">
                 {{ entry.booking.adult_count }} adults
                 {% if entry.booking.start_time %}&middot; {{ entry.booking.start_time.strftime("%I%p").lstrip("0").lower() }}{% endif %}
