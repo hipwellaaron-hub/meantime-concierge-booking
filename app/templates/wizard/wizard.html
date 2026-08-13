@@ -722,15 +722,15 @@
   }
 
   function submitReview() {
-    return api("review", {}).then(function (data) {
-      var box = document.getElementById("review-result");
-      if (data.is_clean) {
-        box.innerHTML = '<div class="info-banner">All set — thanks! We\'ll be in touch shortly to finalise everything.</div>';
-      } else {
-        box.innerHTML = '<div class="warning-banner">Thanks — we\'ve got everything you\'ve told us. A couple of things need a quick check on our end before we finalise, so we\'ll follow up directly.</div>';
-      }
-      root.querySelector(".card").insertBefore(document.getElementById("review-result"), null);
-      document.getElementById("bottom-nav").style.display = "none";
+    // submit_review() (server) sets the session to "submitted" in the same
+    // transaction as this call succeeding -- reloading now serves
+    // wizard/submitted.html, the real "you're done" confirmation page
+    // (see GET /w/{token}), instead of hand-rolling a second, thinner
+    // version of that same state in place here. A client landing on a
+    // half-empty card with the button simply gone read as broken, not
+    // finished -- see the incident this fixed.
+    return api("review", {}).then(function () {
+      window.location.reload();
     });
   }
 
