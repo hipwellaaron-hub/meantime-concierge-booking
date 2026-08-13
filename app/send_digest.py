@@ -4,10 +4,10 @@ module, not the always-on web service -- see the deploy notes wherever
 this is wired up), but safe to run manually any time: it's pure read +
 send, no state is written.
 
-If DIGEST_API_KEY/DIGEST_FROM_EMAIL/DIGEST_RECIPIENT_EMAIL aren't set
-yet, prints the digest to stdout instead of failing the whole run --
-useful for a dry run against real data before the email side is wired
-up, and means a misconfigured schedule doesn't need special-casing.
+If DIGEST_GMAIL_ADDRESS/DIGEST_GMAIL_APP_PASSWORD/DIGEST_RECIPIENT_EMAIL
+aren't set yet, prints the digest to stdout instead of failing the whole
+run -- useful for a dry run against real data before the email side is
+wired up, and means a misconfigured schedule doesn't need special-casing.
 
     python -m app.send_digest
 """
@@ -28,7 +28,7 @@ def main() -> None:
         subject, body = render_digest_text(content, dashboard_base_url=DASHBOARD_BASE_URL)
 
         if not notifications.is_digest_email_configured():
-            print("DIGEST_API_KEY/DIGEST_FROM_EMAIL/DIGEST_RECIPIENT_EMAIL not set -- printing instead of sending.")
+            print("DIGEST_GMAIL_ADDRESS/DIGEST_GMAIL_APP_PASSWORD/DIGEST_RECIPIENT_EMAIL not set -- printing instead of sending.")
             print(f"Subject: {subject}\n")
             print(body)
             return

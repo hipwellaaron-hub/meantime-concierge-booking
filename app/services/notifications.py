@@ -5,22 +5,26 @@ it plugs in once built, not a working implementation. It deliberately
 does nothing today rather than fake a notification that was never sent.
 
 Also: the staff notification digest (app.services.digest), which is a
-real, working send -- unlike notify_new_enquiry below, DIGEST_API_KEY
-configures a genuine outbound email via Resend's API. Failing loudly
-when unconfigured beats silently pretending a digest went out (same
-reasoning as app.services.stripe_integration.is_configured()).
+real, working send -- unlike notify_new_enquiry below, DIGEST_GMAIL_*
+configures a genuine outbound email sent via Gmail's own SMTP, so it
+actually arrives from meantimehamilton@gmail.com (a third-party sender
+like Resend can never send "from" a Gmail address -- only Google's own
+servers, authenticated as that real account, can). Failing loudly when
+unconfigured beats silently pretending a digest went out (same reasoning
+as app.services.stripe_integration.is_configured()).
 """
 
 import os
-
-import httpx
+import smtplib
+from email.message import EmailMessage
 
 from app.models import Booking
 
-RESEND_API_URL = "https://api.resend.com/emails"
+GMAIL_SMTP_HOST = "smtp.gmail.com"
+GMAIL_SMTP_PORT = 465
 
-DIGEST_API_KEY = os.environ.get("DIGEST_API_KEY")
-DIGEST_FROM_EMAIL = os.environ.get("DIGEST_FROM_EMAIL")
+DIGEST_GMAIL_ADDRESS = os.environ.get("DIGEST_GMAIL_ADDRESS")
+DIGEST_GMAIL_APP_PASSWORD = os.environ.get("DIGEST_GMAIL_APP_PASSWORD")
 DIGEST_RECIPIENT_EMAIL = os.environ.get("DIGEST_RECIPIENT_EMAIL")
 
 
@@ -42,28 +46,34 @@ def notify_new_enquiry(booking: Booking) -> None:
 
 
 def is_digest_email_configured() -> bool:
-    return bool(DIGEST_API_KEY and DIGEST_FROM_EMAIL and DIGEST_RECIPIENT_EMAIL)
+    return bool(DIGEST_GMAIL_ADDRESS and DIGEST_GMAIL_APP_PASSWORD and DIGEST_RECIPIENT_EMAIL)
 
 
 def send_digest_email(subject: str, text_body: str) -> None:
-    """Sends the staff digest via Resend's API. Raises
-    DigestEmailNotConfigured if the required environment variables aren't
-    set -- failing loudly beats silently skipping a digest that was
-    never sent."""
+    """Sends the staff digest via Gmail's own SMTP, authenticated with an
+    app password -- not a third-party API, so the email genuinely arrives
+    from DIGEST_GMAIL_ADDRESS. Raises DigestEmailNotConfigured if the
+    required environment variables aren't set -- failing loudly beats
+    silently skipping a digest that was never sent."""
     if not is_digest_email_configured():
         raise DigestEmailNotConfigured(
-            "DIGEST_API_KEY, DIGEST_FROM_EMAIL, and DIGEST_RECIPIENT_EMAIL must all be set "
-            "before the digest can actually send an email."
+            "DIGEST_GMAIL_ADDRESS, DIGEST_GMAIL_APP_PASSWORD, and DIGEST_RECIPIENT_EMAIL must all be "
+            "set before the digest can actually send an email."
         )
 
-    response = httpx.post(
-        RESEND_API_URL,
-        headers={"Authorization": f"Bearer {DIGEST_API_KEY}"},
-        json={"from": DIGEST_FROM_EMAIL, "to": [DIGEST_RECIPIENT_EMAIL], "subject": subject, "text": text_body},
-        timeout=15.0,
-    )
-    if response.is_error:
-        # httpx's own raise_for_status() only surfaces the status line, not
-        # Resend's actual error body -- which is where the real reason
-        # ("invalid from address", "domain not verified", etc.) lives.
-        raise DigestEmailRejected(f"Resend rejected the digest email ({response.status_code}): {response.text}")
+    message = EmailMessage()
+    message["From"] = DIGEST_GMAIL_ADDRESS
+    message["To"] = DIGEST_RECIPIENT_EMAIL
+    message["Subject"] = subject
+    message.set_content(text_body)
+
+    try:
+        with smtplib.SMTP_SSL(GMAIL_SMTP_HOST, GMAIL_SMTP_PORT, timeout=15.0) as smtp:
+            smtp.login(DIGEST_GMAIL_ADDRESS, DIGEST_GMAIL_APP_PASSWORD)
+            smtp.send_message(message)
+    except smtplib.SMTPException as exc:
+        # Surfaces Gmail's actual rejection reason (bad app password,
+        # account not enrolled in 2-step verification, etc.) rather than
+        # a generic failure -- same reasoning as the Resend error body
+        # that used to be swallowed here.
+        raise DigestEmailRejected(f"Gmail rejected the digest email: {exc}") from exc
