@@ -79,5 +79,10 @@ class WizardSession(Base):
     expires_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     revoked_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     submitted_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Set once, the first time the link is opened. `status` alone can't
+    # tell "never opened" apart from "opened, but closed before saving
+    # anything" -- both sit at pending/basics until a step is actually
+    # saved (see app.services.wizard's editable-guard).
+    opened_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     booking: Mapped["Booking"] = relationship(back_populates="wizard_session")

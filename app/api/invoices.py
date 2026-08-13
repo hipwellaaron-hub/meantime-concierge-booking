@@ -72,6 +72,7 @@ def _build_invoice_context(db: Session, invoice, *, include_card_payment: bool) 
 @router.get("/i/{token}", response_class=HTMLResponse)
 def view_invoice(token: str, request: Request, db: Session = Depends(get_db)):
     invoice = _get_viewable_invoice_or_404(db, token)
+    invoice = invoicing.record_view(db, invoice)
     context = _build_invoice_context(db, invoice, include_card_payment=True)
     return templates.TemplateResponse(request, "invoice.html", context)
 

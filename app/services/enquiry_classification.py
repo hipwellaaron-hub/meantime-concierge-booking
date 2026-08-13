@@ -289,7 +289,7 @@ def get_enquiries_needing_clarification(db: Session, venue: Venue) -> list[Booki
                 Booking.status == BookingStatus.enquiry,
                 Booking.id.in_(flagged),
             )
-            .order_by(Booking.created_at)
+            .order_by(Booking.event_date)
         ).all()
     )
 
@@ -312,6 +312,6 @@ def get_flagged_bookings_in_progress(db: Session, venue: Venue) -> list[Booking]
                 Booking.status.in_(open_past_enquiry),
                 Booking.id.in_(flagged),
             )
-            .order_by(Booking.created_at)
+            .order_by(Booking.event_date)
         ).all()
     )

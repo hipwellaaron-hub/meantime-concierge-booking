@@ -364,6 +364,52 @@ def test_invoice_view_shows_totals_and_split_payments(db, booking):
         app.dependency_overrides.clear()
 
 
+# --- link-open tracking (viewed_at) ---------------------------------------------
+
+
+def test_invoice_view_records_viewed_at_once(db, booking):
+    invoice = create_invoice(db, booking, InvoiceType.final, CATERING_ITEMS, dt.date(2026, 10, 1), actor="test")
+    mark_sent(db, invoice, actor="test")
+    assert invoice.viewed_at is None
+
+    app.dependency_overrides[get_db] = lambda: db
+    try:
+        client = TestClient(app)
+        client.get(f"/i/{invoice.access_token}")
+        db.refresh(invoice)
+        assert invoice.viewed_at is not None
+        assert invoice.status == InvoiceStatus.sent  # unchanged -- see the field's own comment
+
+        first_viewed_at = invoice.viewed_at
+        client.get(f"/i/{invoice.access_token}")  # a second visit must not move the timestamp
+        db.refresh(invoice)
+        assert invoice.viewed_at == first_viewed_at
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_invoice_still_counts_as_unpaid_after_being_viewed(db, hamilton, booking):
+    """The whole reason viewed_at is a separate field rather than a new
+    status: every "what's still owed" query reads status == sent, and a
+    viewed invoice must not silently vanish from those."""
+    from app.services.digest import get_overdue_invoices
+
+    invoice = create_invoice(db, booking, InvoiceType.final, CATERING_ITEMS, dt.date(2020, 1, 1), actor="test")
+    mark_sent(db, invoice, actor="test")
+
+    app.dependency_overrides[get_db] = lambda: db
+    try:
+        client = TestClient(app)
+        client.get(f"/i/{invoice.access_token}")
+    finally:
+        app.dependency_overrides.clear()
+
+    db.refresh(invoice)
+    assert invoice.viewed_at is not None
+    overdue = get_overdue_invoices(db, hamilton, as_of=dt.date(2026, 1, 1))
+    assert invoice.id in {o.invoice.id for o in overdue}
+
+
 # --- GST breakdown --------------------------------------------------------------
 
 

@@ -113,9 +113,12 @@ def mark_sent(db: Session, document: Document, *, actor: str) -> Document:
 
 def record_view(db: Session, document: Document) -> Document:
     """Called on the client's first GET of the public link. Only moves
-    sent -> viewed; never regresses an already-viewed or signed document."""
+    sent -> viewed; never regresses an already-viewed or signed document.
+    viewed_at is set here too, once -- status alone says "was this ever
+    opened", the timestamp says when."""
     db.refresh(document, with_for_update=True)
     if document.status == DocumentStatus.sent:
+        document.viewed_at = dt.datetime.now(dt.timezone.utc)
         return _transition(db, document, DocumentStatus.viewed, actor="client (auto)")
     return document
 

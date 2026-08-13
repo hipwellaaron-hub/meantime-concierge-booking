@@ -68,6 +68,7 @@ def _catalogue_payload(db: Session, booking, category: MenuItemCategory) -> list
 @router.get("/w/{token}", response_class=HTMLResponse)
 def view_wizard(token: str, request: Request, db: Session = Depends(get_db)):
     session = _get_usable_session(db, token)
+    session = wizard_service.record_open(db, session)
     booking = session.booking
 
     if session.status == WizardSessionStatus.submitted:

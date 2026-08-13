@@ -488,6 +488,25 @@ def test_wizard_bootstrap_includes_the_cake_catalogue(db, loft, menu_items):
         app.dependency_overrides.clear()
 
 
+def test_first_open_records_opened_at(db, loft):
+    booking = _make_booking(db, loft)
+    session = wizard_service.get_or_create_session(db, booking, actor="test")
+    assert session.opened_at is None
+
+    client = _client(db)
+    try:
+        client.get(f"/w/{session.access_token}")
+        db.refresh(session)
+        assert session.opened_at is not None
+
+        first_opened_at = session.opened_at
+        client.get(f"/w/{session.access_token}")  # a second visit must not move the timestamp
+        db.refresh(session)
+        assert session.opened_at == first_opened_at
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_submitted_session_still_resolves_read_only(db, loft):
     booking = _make_booking(db, loft)
     session = wizard_service.get_or_create_session(db, booking, actor="test")

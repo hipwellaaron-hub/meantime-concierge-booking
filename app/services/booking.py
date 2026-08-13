@@ -217,7 +217,11 @@ def search_bookings(
         stmt = stmt.outerjoin(Contact, Booking.contact_id == Contact.id).where(
             or_(Booking.event_name.ilike(like), Booking.reference_code.ilike(like), Contact.name.ilike(like))
         )
-    return list(db.scalars(stmt.order_by(Booking.event_date.desc()).limit(limit)).all())
+    # Soonest event first -- Postgres' default ASC null ordering already
+    # puts a booking with no event_date yet (see event_date's own nullable
+    # comment) at the end rather than the top, where it would misleadingly
+    # look most urgent.
+    return list(db.scalars(stmt.order_by(Booking.event_date).limit(limit)).all())
 
 
 def confirm_setup_access(db: Session, booking: Booking, *, actor: str) -> Booking:
@@ -426,7 +430,7 @@ def get_bookings_with_unrecorded_minimum_reduction(db: Session, venue_id: uuid.U
                 Booking.agreed_min_reduction_reason.is_(None),
                 Booking.status.in_(open_statuses),
             )
-            .order_by(Booking.created_at)
+            .order_by(Booking.event_date)
         ).all()
     )
 

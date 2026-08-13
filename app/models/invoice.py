@@ -57,6 +57,13 @@ class Invoice(Base):
     status: Mapped[InvoiceStatus] = mapped_column(invoice_status_enum, nullable=False, default=InvoiceStatus.draft)
     due_date: Mapped[dt.date] = mapped_column(Date, nullable=False)
     paid_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Set once, the first time the public link is opened. Deliberately not
+    # a new `status` value (e.g. "viewed") -- every place that currently
+    # means "sent and not yet paid" (the unpaid-invoices dashboard count,
+    # the overdue-invoice digest) reads status == sent, and a viewed
+    # invoice is still exactly that; a separate status would silently
+    # drop it from both.
+    viewed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     access_token: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, default=generate_access_token)
 

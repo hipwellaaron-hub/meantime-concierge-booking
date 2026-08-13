@@ -264,6 +264,19 @@ def mark_sent(db: Session, invoice: Invoice, *, actor: str) -> Invoice:
     return invoice
 
 
+def record_view(db: Session, invoice: Invoice) -> Invoice:
+    """Called on the client's first GET of the public link. Sets
+    viewed_at once, if not already set -- deliberately does not touch
+    `status` (see the field's own comment on the model: every "unpaid"
+    query already reads status == sent, and a viewed invoice is still
+    exactly that)."""
+    if invoice.viewed_at is None:
+        invoice.viewed_at = dt.datetime.now(dt.timezone.utc)
+        db.commit()
+        db.refresh(invoice)
+    return invoice
+
+
 def cancel_invoice(db: Session, invoice: Invoice, *, actor: str) -> Invoice:
     db.refresh(invoice, with_for_update=True)
     if invoice.status == InvoiceStatus.paid:

@@ -72,6 +72,12 @@ def test_full_lifecycle_view_then_sign(db, booking):
         assert "Wilson Wedding" in resp.text
         db.refresh(document)
         assert document.status == DocumentStatus.viewed
+        assert document.viewed_at is not None
+
+        first_viewed_at = document.viewed_at
+        client.get(f"/d/{document.access_token}")  # a second visit must not move the timestamp
+        db.refresh(document)
+        assert document.viewed_at == first_viewed_at
 
         resp = client.post(f"/d/{document.access_token}/sign", data={"signer_name": "Pat Wilson"})
         assert resp.status_code in (200, 303)

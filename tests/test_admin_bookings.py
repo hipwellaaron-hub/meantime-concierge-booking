@@ -41,6 +41,21 @@ def test_bookings_list_unknown_status_returns_422_not_500(admin_client):
     assert resp.status_code == 422
 
 
+def test_bookings_list_sorts_soonest_event_date_first(admin_client, db, loft):
+    later = create_booking(
+        db, space_id=loft.id, contact_id=None, event_date=dt.date(2027, 8, 1), event_name="Later Booking",
+        event_type=None, adult_count=10, child_count=0, notes=None, actor="test",
+    )
+    sooner = create_booking(
+        db, space_id=loft.id, contact_id=None, event_date=dt.date(2026, 9, 1), event_name="Sooner Booking",
+        event_type=None, adult_count=10, child_count=0, notes=None, actor="test",
+    )
+
+    resp = admin_client.get("/admin/bookings")
+    assert resp.status_code == 200
+    assert resp.text.index("Sooner Booking") < resp.text.index("Later Booking")
+
+
 def test_bookings_list_search_filters(admin_client, booking):
     resp = admin_client.get("/admin/bookings", params={"q": "does-not-exist"})
     assert "Wilson Wedding" not in resp.text

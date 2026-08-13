@@ -119,6 +119,19 @@ def is_usable(session: WizardSession, *, now: dt.datetime | None = None) -> bool
     return session.expires_at > now
 
 
+def record_open(db: Session, session: WizardSession) -> WizardSession:
+    """Called on the client's first GET of the wizard link. Sets
+    opened_at once, if not already set -- status alone can't tell "never
+    opened" apart from "opened, but closed before saving a step" (both
+    sit at pending/basics until save_basics_step's editable-guard flips
+    status to in_progress)."""
+    if session.opened_at is None:
+        session.opened_at = dt.datetime.now(dt.timezone.utc)
+        db.commit()
+        db.refresh(session)
+    return session
+
+
 def revoke_session(db: Session, session: WizardSession, *, actor: str) -> WizardSession:
     db.refresh(session, with_for_update=True)
     if session.status == WizardSessionStatus.submitted:

@@ -50,6 +50,11 @@ class Document(Base):
 
     access_token: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, default=generate_access_token)
 
+    # Set once, the first time the public link is opened -- distinct from
+    # `status == viewed` (which a client's subsequent visits don't change)
+    # so staff can see *when* a sent link was actually opened, not just
+    # whether it eventually was.
+    viewed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     signed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     signer_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     signer_ip: Mapped[str | None] = mapped_column(String(45), nullable=True)  # long enough for IPv6

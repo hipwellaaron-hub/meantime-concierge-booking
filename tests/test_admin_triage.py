@@ -144,6 +144,23 @@ def test_triage_lists_unrecorded_minimum_reduction(admin_client, db, loft):
     assert "Agreed minimum differs from standard" in resp.text
 
 
+def test_triage_unrecorded_minimum_reduction_sorts_soonest_first(admin_client, db, loft):
+    create_booking(
+        db, space_id=loft.id, contact_id=None, event_date=dt.date(2027, 9, 1),
+        event_name="Later Reduced Minimum", event_type=None, adult_count=20, child_count=0,
+        notes=None, actor="test", agreed_min_adults=loft.standard_min_adults - 10,
+    )
+    create_booking(
+        db, space_id=loft.id, contact_id=None, event_date=dt.date(2027, 6, 1),
+        event_name="Sooner Reduced Minimum", event_type=None, adult_count=20, child_count=0,
+        notes=None, actor="test", agreed_min_adults=loft.standard_min_adults - 10,
+    )
+
+    resp = admin_client.get("/admin/triage")
+    assert resp.status_code == 200
+    assert resp.text.index("Sooner Reduced Minimum") < resp.text.index("Later Reduced Minimum")
+
+
 def test_triage_does_not_list_recorded_minimum_reduction(admin_client, db, loft):
     from app.models.booking import MinReductionReasonCode
     from app.services.booking import set_agreed_minimum
