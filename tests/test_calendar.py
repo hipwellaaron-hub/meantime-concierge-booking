@@ -14,7 +14,7 @@ import pytest
 from sqlalchemy.exc import IntegrityError
 
 from app.models import Space, Venue
-from app.models.booking import Booking, BookingStatus
+from app.models.booking import BLOCKING_STATUSES, Booking, BookingStatus
 from app.services import calendar as calendar_service
 from app.services.availability import is_space_free
 from app.services.booking import change_status, create_booking, create_hold, set_hold_expiry
@@ -23,6 +23,33 @@ from tests.conftest import TestSessionLocal
 
 def _csrf(html: str) -> str:
     return re.search(r'name="csrf_token" value="([^"]+)"', html).group(1)
+
+
+# --- CALENDAR_STATUSES must never drift from BLOCKING_STATUSES --------------
+
+
+def test_calendar_statuses_is_built_from_blocking_statuses_not_a_separate_list():
+    # BLOCKING_STATUSES (app.models.booking) is what the exclusion
+    # constraint and is_space_free() actually enforce. If CALENDAR_STATUSES
+    # were ever hand-edited back into an independent tuple, this is the
+    # test that would catch it drifting out of sync.
+    assert set(BLOCKING_STATUSES) <= set(calendar_service.CALENDAR_STATUSES)
+    for status in BLOCKING_STATUSES:
+        assert status in calendar_service.CALENDAR_STATUSES
+
+
+def test_calendar_entry_is_blocking_matches_blocking_statuses(db, hamilton, loft):
+    date = dt.date(2027, 4, 10)  # a Saturday
+    blocking = _make_booking(
+        db, loft, event_date=date, event_name="Confirmed Blocking", status=BookingStatus.confirmed,
+        start_time=dt.time(12, 0), end_time=dt.time(17, 0),
+    )
+    non_blocking = _make_booking(db, loft, event_date=date, event_name="Enquiry Not Blocking", status=BookingStatus.enquiry)
+
+    grid = calendar_service.get_week_grid(db, hamilton, calendar_service.week_start_for(date))
+    entries_by_id = {e["booking"].id: e for e in grid["cells"][loft.id][date]}
+    assert entries_by_id[blocking.id]["is_blocking"] is True
+    assert entries_by_id[non_blocking.id]["is_blocking"] is False
 
 
 def _make_booking(db, space, *, status=BookingStatus.enquiry, event_date, event_name="Cal Test", adult_count=40, **overrides):
@@ -432,9 +459,7 @@ def test_calendar_agrees_with_availability_endpoint_across_random_scenarios(admi
         for space in spaces:
             for day in grid["days"]:
                 entries = grid["cells"][space.id][day]
-                calendar_says_occupied = any(
-                    e["kind"] in ("confirmed", "completed", "hold_active", "hold_expired") for e in entries
-                )
+                calendar_says_occupied = any(e["is_blocking"] for e in entries)
                 free, _ = is_space_free(db, space.id, day)
                 availability_says_occupied = not free
                 assert calendar_says_occupied == availability_says_occupied, (

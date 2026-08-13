@@ -18,25 +18,23 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import Booking, Space, Venue
-from app.models.booking import BookingStatus
+from app.models.booking import BLOCKING_STATUSES, BookingStatus
 
-# What actually shows on the calendar. cancelled/dead are deliberately
-# excluded -- they're not live, and showing them would make a genuinely
-# free room look occupied.
-CALENDAR_STATUSES = (
-    BookingStatus.enquiry,
-    BookingStatus.offered,
-    BookingStatus.tentative,
-    BookingStatus.confirmed,
-    BookingStatus.completed,
-)
+# What actually shows on the calendar. Built from BLOCKING_STATUSES (the
+# same tuple the exclusion constraint and app.services.availability read)
+# plus enquiry/offered, which are shown for visibility but never block --
+# not a second, independently hand-typed list, so this can't silently fall
+# out of sync if BLOCKING_STATUSES ever changes. cancelled/dead are
+# deliberately excluded -- they're not live, and showing them would make a
+# genuinely free room look occupied.
+CALENDAR_STATUSES = (BookingStatus.enquiry, BookingStatus.offered) + BLOCKING_STATUSES
 
 # Rendering categories. "hold_active" and "hold_expired" are both status
 # 'tentative' underneath -- the split is purely a display distinction
 # (see Booking.hold_expires_at), not a different blocking state, so an
 # expired hold still counts as occupying the space exactly like an active
 # one does under the exclusion constraint.
-CalendarEntry = dict  # {"booking": Booking, "kind": str}
+CalendarEntry = dict  # {"booking": Booking, "kind": str, "is_blocking": bool}
 
 
 def week_start_for(any_date: dt.date) -> dt.date:
@@ -95,7 +93,17 @@ def get_week_grid(db: Session, venue: Venue, week_start: dt.date, *, today: dt.d
     for booking in bookings:
         space_cells = cells.get(booking.space_id)
         if space_cells is not None and booking.event_date in space_cells:
-            space_cells[booking.event_date].append({"booking": booking, "kind": classify(booking, today=today)})
+            space_cells[booking.event_date].append({
+                "booking": booking,
+                "kind": classify(booking, today=today),
+                # Same BLOCKING_STATUSES the exclusion constraint and
+                # is_space_free() read -- so "does this entry actually
+                # hold the space" has one answer, not a kind-string list
+                # re-derived at each call site (see the property test in
+                # tests/test_calendar.py that checks this against
+                # is_space_free directly).
+                "is_blocking": booking.status in BLOCKING_STATUSES,
+            })
 
     return {
         "spaces": spaces,
