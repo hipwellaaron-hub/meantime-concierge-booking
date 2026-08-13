@@ -1,4 +1,5 @@
 from fastapi import FastAPI, Request
+from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.responses import PlainTextResponse, RedirectResponse
 
@@ -59,6 +60,8 @@ def _redirect_to_login(request: Request, exc: NotAuthenticated) -> RedirectRespo
     # staff route should land back on the login form, not a bare 401.
     return RedirectResponse(url=f"/admin/login?next={request.url.path}", status_code=303)
 
+
+app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
 app.include_router(availability_router)
 app.include_router(documents_router)

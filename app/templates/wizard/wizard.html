@@ -110,6 +110,7 @@
   .option-card.selected { border-color: var(--gold); background: rgba(201,169,110,0.08); }
   .option-card .opt-title { font-weight: 700; margin-bottom: 3px; color: var(--cream); }
   .option-card .opt-desc { font-size: 0.82rem; color: var(--muted); }
+  .option-card-photo { display: flex; align-items: center; gap: 12px; }
 
   /* Food catalogue grid */
   .catalogue-section-title { font-family: var(--font-head); font-size: 0.95rem; letter-spacing: 0.02em; color: var(--gold); margin: 22px 0 10px; }
@@ -123,9 +124,23 @@
     margin-bottom: 8px;
   }
   .catalogue-photo {
-    width: 64px; height: 64px; border-radius: 9px; flex-shrink: 0;
+    width: 96px; height: 96px; border-radius: 9px; flex-shrink: 0;
     object-fit: cover;
     border: 1px solid var(--border);
+    position: relative;
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+  }
+  /* Doubles in place on hover/tap so guests on a small screen can actually
+     see what a platter or cake looks like -- transform (not width/height)
+     so it doesn't reflow the row, transform-origin keeps it growing away
+     from the row's other content, and the z-index lift + shadow keep it
+     readable on top of whatever it now overlaps. */
+  .catalogue-photo:not(.placeholder):hover,
+  .catalogue-photo:not(.placeholder):focus-visible {
+    transform: scale(2);
+    transform-origin: left center;
+    z-index: 5;
+    box-shadow: 0 6px 20px rgba(0,0,0,0.45);
   }
   .catalogue-photo.placeholder {
     background: var(--surface-hi);
@@ -341,7 +356,9 @@
   // current catalogue items have no photo on the live site yet (Shoestring
   // Fries, Vegetarian Pizza -- both newer/less-common additions): they fall
   // through to the placeholder tile below rather than reusing an unrelated
-  // photo. Cake photos intentionally left out -- coming separately.
+  // photo. Cake photos are real Meantime photography, served locally from
+  // app/static/menu_images (see app/main.py's StaticFiles mount) rather
+  // than the live site, since they aren't published there.
   var PHOTO_MAP = {
     "Pork Belly Bites": "https://meantime.com.au/images/pork-belly-bites.jpg",
     "Chicken Tender Skewers": "https://meantime.com.au/images/chicken-tender-skewers.jpg",
@@ -354,7 +371,16 @@
     "Margherita Pizza": "https://meantime.com.au/images/pizza-margherita.jpg",
     "Prosciutto & Pear": "https://meantime.com.au/images/pizza-prosciutto-pear.jpg",
     "Spiced Lamb": "https://meantime.com.au/images/pizza-spiced-lamb.jpg",
-    "Calabrese": "https://meantime.com.au/images/pizza-calabrese.jpg"
+    "Calabrese": "https://meantime.com.au/images/pizza-calabrese.jpg",
+    "Vanilla Cake (2 Layer)": "/static/menu_images/vanilla-cake.jpg",
+    "Vanilla Cake (3 Layer)": "/static/menu_images/vanilla-cake.jpg",
+    "Vanilla Cake (4 Layer)": "/static/menu_images/vanilla-cake.jpg",
+    "Chocolate Cake (2 Layer)": "/static/menu_images/chocolate-cake.jpg",
+    "Chocolate Cake (3 Layer)": "/static/menu_images/chocolate-cake.jpg",
+    "Chocolate Cake (4 Layer)": "/static/menu_images/chocolate-cake.jpg",
+    "Chocolate Mud Cake": "/static/menu_images/chocolate-mud-cake.jpg",
+    "White Chocolate, Vanilla & Raspberry Cake": "/static/menu_images/white-choc-vanilla-raspberry-cake.jpg",
+    "Tiramisu Cake": "/static/menu_images/tiramisu-cake.jpg"
   };
 
   function catalogueRow(item, list) {
@@ -517,7 +543,12 @@
     var cakeOptions = "";
     if (DATA.catalogue.cakes.length > 0) {
       DATA.catalogue.cakes.forEach(function (c) {
-        cakeOptions += '<div class="option-card" data-cake-id="' + c.id + '"><div class="opt-title">' + c.name + "</div><div class=\"opt-desc\">" + money(c.price) + "</div></div>";
+        var photoUrl = PHOTO_MAP[c.name];
+        var photoHtml = photoUrl
+          ? '<img class="catalogue-photo" src="' + photoUrl + '" alt="' + c.name + '" onerror="this.outerHTML=\'<div class=&quot;catalogue-photo placeholder&quot;>' + c.name.split(" ").slice(0, 2).join(" ") + '</div>\'">'
+          : '<div class="catalogue-photo placeholder">' + c.name.split(" ").slice(0, 2).join(" ") + '</div>';
+        cakeOptions += '<div class="option-card option-card-photo" data-cake-id="' + c.id + '">' + photoHtml +
+          '<div><div class="opt-title">' + c.name + "</div><div class=\"opt-desc\">" + money(c.price) + "</div></div></div>";
       });
     } else {
       cakeOptions = '<p class="field-hint">Our current cake options are being finalized — describe what you\'d like below and we\'ll confirm with you.</p>';

@@ -4,7 +4,7 @@ import secrets
 import uuid
 from decimal import Decimal
 
-from sqlalchemy import Date, DateTime, ForeignKey, Numeric, String, func
+from sqlalchemy import Date, DateTime, ForeignKey, Integer, Numeric, String, func, text
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -37,6 +37,15 @@ class Invoice(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     booking_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("bookings.id"), nullable=False)
+    # A short, human-readable reference for a client to quote back ("my
+    # invoice number is 1004") -- the UUID id/access_token are never fit
+    # for that. Assigned by a Postgres sequence (invoice_number_seq, see
+    # the migration) starting fresh at 1001: this is Concierge's own
+    # numbering, not a continuation of the prior iVvy sequence, since
+    # there's no reliable source for exactly where that one left off.
+    invoice_number: Mapped[int] = mapped_column(
+        Integer, nullable=False, unique=True, server_default=text("nextval('invoice_number_seq')")
+    )
     type: Mapped[InvoiceType] = mapped_column(invoice_type_enum, nullable=False)
     line_items: Mapped[list] = mapped_column(JSONB, nullable=False)
     subtotal: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)

@@ -475,6 +475,19 @@ def test_expired_unsubmitted_session_404s(db, loft):
         app.dependency_overrides.clear()
 
 
+def test_wizard_bootstrap_includes_the_cake_catalogue(db, loft, menu_items):
+    booking = _make_booking(db, loft)
+    session = wizard_service.get_or_create_session(db, booking, actor="test")
+    client = _client(db)
+    try:
+        resp = client.get(f"/w/{session.access_token}")
+        assert resp.status_code == 200
+        assert "Chocolate Mud Cake" in resp.text
+        assert "Vanilla Cake (2 Layer)" in resp.text
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_submitted_session_still_resolves_read_only(db, loft):
     booking = _make_booking(db, loft)
     session = wizard_service.get_or_create_session(db, booking, actor="test")

@@ -46,11 +46,23 @@ def _build_invoice_context(db: Session, invoice, *, include_card_payment: bool) 
             logger.exception("Stripe payment link creation failed for invoice %s", invoice.id)
             card_payment_url = None
 
+    # Other invoices for the same booking -- a deposit invoice references
+    # its final invoice and vice versa, matching what a client would see
+    # in a real accounting system. Drafts are excluded: same "not human-
+    # approved to show a client yet" rule as _get_viewable_invoice_or_404
+    # applies to this invoice itself.
+    other_invoices = [
+        inv for inv in invoice.booking.invoices
+        if inv.id != invoice.id and inv.status != InvoiceStatus.draft
+    ]
+
     return {
         "invoice": invoice,
         "booking": invoice.booking,
         "summary": summary,
         "gst_component": invoicing.gst_component(invoice.total),
+        "line_items": invoicing.line_item_breakdown(invoice.line_items),
+        "other_invoices": other_invoices,
         "stripe_configured": card_payment_url is not None,
         "card_payment_url": card_payment_url,
         "card_payment_amount": card_payment_amount,

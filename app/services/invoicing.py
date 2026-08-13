@@ -35,6 +35,29 @@ def gst_component(gst_inclusive_amount: Decimal) -> Decimal:
     return _round_money(gst_inclusive_amount / Decimal("11"))
 
 
+def line_item_breakdown(line_items: list[dict]) -> list[dict]:
+    """Per-line GST split for the invoice view -- unit_price is always
+    GST-inclusive (see gst_component above), so each line's own tax
+    amount is derived the same way the invoice total's is, rather than
+    just dividing the total's tax evenly across lines (which would drift
+    from the true per-line figure whenever quantities/prices differ)."""
+    rows = []
+    for item in line_items:
+        quantity = Decimal(str(item["quantity"]))
+        unit_price = Decimal(str(item["unit_price"]))
+        amount_incl = _round_money(quantity * unit_price)
+        tax_amount = gst_component(amount_incl)
+        rows.append({
+            "description": item["description"],
+            "quantity": item["quantity"],
+            "unit_price": unit_price,
+            "amount_incl": amount_incl,
+            "tax_amount": tax_amount,
+            "amount_excl": amount_incl - tax_amount,
+        })
+    return rows
+
+
 def is_public_holiday(db: Session, event_date: dt.date) -> bool:
     holiday = db.execute(
         select(PublicHoliday).where(

@@ -13,14 +13,14 @@
     background: #f5f5f3; color: #1f2420; line-height: 1.5;
   }
   .card {
-    max-width: 640px; margin: 0 auto; background: #fff;
+    max-width: 760px; margin: 0 auto; background: #fff;
     border-radius: 12px; padding: 1.5rem; box-shadow: 0 1px 3px rgba(0,0,0,0.08);
   }
   h1 { font-size: 1.25rem; margin: 0 0 0.25rem; }
   .subtitle { color: #6b7268; font-size: 0.9rem; margin-bottom: 1.25rem; }
   .status {
     display: inline-block; padding: 0.2rem 0.6rem; border-radius: 999px;
-    font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em;
+    font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em;
   }
   .status-draft, .status-sent { background: #fdf2d0; color: #7a5b00; }
   .status-paid { background: #dcf3e3; color: #1c6b3c; }
@@ -31,52 +31,162 @@
   table { width: 100%; border-collapse: collapse; font-size: 0.92rem; }
   td { padding: 0.3rem 0; vertical-align: top; }
   td.label { color: #6b7268; width: 45%; }
-  .items th, .items td { text-align: left; padding: 0.3rem 0.4rem; border-bottom: 1px solid #ececea; font-size: 0.9rem; }
-  .items th { color: #6b7268; font-weight: 600; font-size: 0.8rem; }
+  .items th, .items td { text-align: left; padding: 0.35rem 0.4rem; border-bottom: 1px solid #ececea; font-size: 0.85rem; }
+  .items th { color: #6b7268; font-weight: 600; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.02em; }
+  .items td.num, .items th.num { text-align: right; }
   .totals td { padding: 0.25rem 0; }
-  .totals .balance td { font-weight: 700; font-size: 1.05rem; padding-top: 0.5rem; }
+  .totals .balance td { font-weight: 700; font-size: 1.05rem; padding-top: 0.5rem; border-top: 1px solid #ececea; }
   .review { color: #b45309; font-style: italic; font-size: 0.9rem; }
   .paid-note { background: #dcf3e3; color: #1c6b3c; padding: 0.9rem; border-radius: 8px; font-size: 0.9rem; }
   .venue-header { color: #6b7268; font-size: 0.82rem; margin: -0.5rem 0 1.25rem; }
   .bank-details td.label { width: auto; padding-right: 1rem; }
+
+  /* Two-column info boxes -- plain tables, not flex/grid, so this also
+     renders correctly through xhtml2pdf (see app.services.pdf), which
+     has no reliable flexbox/grid support. */
+  .box-row { width: 100%; border-collapse: collapse; margin-bottom: 1.25rem; }
+  .box-row td { padding: 0 6px; vertical-align: top; width: 50%; }
+  .box-row td:first-child { padding-left: 0; }
+  .box-row td:last-child { padding-right: 0; }
+  .box {
+    border: 1px solid #ececea; border-radius: 10px; padding: 0.9rem 1rem;
+    background: #fbfbfa;
+  }
+  .box-title { font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; color: #6b7268; margin-bottom: 0.5rem; }
+  .box-title-row { display: block; margin-bottom: 0.5rem; }
+  .box .kv td { padding: 0.15rem 0; font-size: 0.88rem; }
+  .box .kv td.label { width: 44%; color: #6b7268; }
+  .box .name { font-weight: 600; }
+  .box .muted { color: #6b7268; font-size: 0.85rem; }
+  .related th, .related td { text-align: left; padding: 0.3rem 0.4rem; border-bottom: 1px solid #ececea; font-size: 0.88rem; }
+  .related th { color: #6b7268; font-weight: 600; font-size: 0.72rem; text-transform: uppercase; }
+  .related a { color: #1c6b3c; text-decoration: none; }
 </style>
 </head>
 <body>
 <div class="card">
   <h1>{{ booking.event_name }}</h1>
   <div class="subtitle">
-    {{ "Deposit Invoice" if invoice.type.value == "deposit" else "Final Invoice" }}
+    {{ "Tax Invoice — Deposit" if invoice.type.value == "deposit" else "Tax Invoice" }}
     · Ref {{ booking.reference_code }}
     · <span class="status status-{{ invoice.status.value }}">{{ invoice.status.value }}</span>
   </div>
 
   <div class="venue-header">
     {{ venue_trading_name }} &middot; ABN {{ venue_abn }}<br>
-    {{ venue_address }}<br>
-    Contact: {{ venue_contact_name }} ({{ venue_contact_email }})
+    {{ venue_address }}
   </div>
 
+  <table class="box-row">
+    <tr>
+      <td>
+        <div class="box">
+          <div class="box-title">Booking Details</div>
+          <table class="kv">
+            <tr><td class="label">Reference Code</td><td>{{ booking.reference_code }}</td></tr>
+            <tr><td class="label">Name</td><td>{{ booking.event_name }}</td></tr>
+            <tr><td class="label">Date</td><td>{{ booking.event_date if booking.event_date else "TBD" }}</td></tr>
+            <tr><td class="label">Your contact</td><td>{{ venue_contact_name }} ({{ venue_contact_email }})</td></tr>
+          </table>
+        </div>
+      </td>
+      <td>
+        <div class="box">
+          <div class="box-title-row"><span class="box-title">Invoice Details</span> <span class="status status-{{ invoice.status.value }}">{{ invoice.status.value }}</span></div>
+          <table class="kv">
+            <tr><td class="label">Invoice #</td><td>{{ invoice.invoice_number }}</td></tr>
+            <tr><td class="label">Date of issue</td><td>{{ invoice.created_at | sydney_time("%d %b %Y") }}</td></tr>
+            <tr><td class="label">Currency</td><td>AUD</td></tr>
+            <tr><td class="label">Due Date</td><td>{{ invoice.due_date }}</td></tr>
+            <tr><td class="label">Amount Owing</td><td>${{ summary.balance_due }}</td></tr>
+          </table>
+        </div>
+      </td>
+    </tr>
+  </table>
+
+  <table class="box-row">
+    <tr>
+      <td>
+        <div class="box">
+          <div class="box-title">Customer Details</div>
+          {% if booking.contact %}
+          <div class="name">{{ booking.contact.name }}</div>
+          <div class="muted">{{ booking.contact.email }}{% if booking.contact.phone %} &middot; {{ booking.contact.phone }}{% endif %}</div>
+          {% else %}
+          <div class="muted">No contact on file</div>
+          {% endif %}
+        </div>
+      </td>
+      <td>
+        <div class="box">
+          <div class="box-title">Payment Terms</div>
+          {% for inv in booking.invoices | rejectattr("status.value", "equalto", "draft") | rejectattr("status.value", "equalto", "cancelled") | sort(attribute="type.value") %}
+          <div>{{ "Deposit" if inv.type.value == "deposit" else "Balance" }} Due on {{ inv.due_date }}</div>
+          {% endfor %}
+        </div>
+      </td>
+    </tr>
+  </table>
+
   <section>
+    <h2>Items</h2>
     <table class="items">
-      <tr><th>Description</th><th>Qty</th><th>Unit price</th></tr>
-      {% for item in invoice.line_items %}
-      <tr><td>{{ item.description }}</td><td>{{ item.quantity }}</td><td>${{ item.unit_price }}</td></tr>
+      <tr>
+        <th>Date of Service</th><th>Description</th><th class="num">Qty</th>
+        <th class="num">Unit Price (Incl Tax)</th><th>Tax Rate</th>
+        <th class="num">Tax Amount</th><th class="num">Amount (Excl Tax)</th><th class="num">Amount (Incl Tax)</th>
+      </tr>
+      {% for item in line_items %}
+      <tr>
+        <td>{{ booking.event_date if booking.event_date else "TBD" }}</td>
+        <td>{{ item.description }}</td>
+        <td class="num">{{ item.quantity }}</td>
+        <td class="num">${{ item.unit_price }}</td>
+        <td>GST (10%)</td>
+        <td class="num">${{ item.tax_amount }}</td>
+        <td class="num">${{ item.amount_excl }}</td>
+        <td class="num">${{ item.amount_incl }}</td>
+      </tr>
       {% endfor %}
     </table>
   </section>
 
-  <section>
-    <table class="totals">
-      <tr><td class="label">Subtotal</td><td>${{ invoice.subtotal }}</td></tr>
-      {% if invoice.surcharge and invoice.surcharge != "0.00" %}
-      <tr><td class="label">Public holiday surcharge</td><td>${{ invoice.surcharge }}</td></tr>
-      {% endif %}
-      <tr><td class="label">Total</td><td>${{ invoice.total }}</td></tr>
-      <tr><td class="label">GST included</td><td>${{ gst_component }}</td></tr>
-      <tr><td class="label">Paid to date</td><td>${{ summary.total_paid }}</td></tr>
-      <tr class="balance"><td class="label">Balance due</td><td>${{ summary.balance_due }}</td></tr>
-    </table>
-  </section>
+  <table class="box-row">
+    <tr>
+      <td>
+        <div class="box">
+          <div class="box-title">Invoice Summary</div>
+          <table class="totals">
+            <tr><td class="label">Total Excl Tax</td><td>${{ invoice.total - gst_component }}</td></tr>
+            <tr><td class="label">GST Included</td><td>${{ gst_component }}</td></tr>
+            <tr><td class="label">Total Incl Tax</td><td>${{ invoice.total }}</td></tr>
+            <tr><td class="label">Total Discount Applied</td><td>$0.00</td></tr>
+            <tr><td class="label">Received</td><td>${{ summary.total_paid }}</td></tr>
+            <tr class="balance"><td class="label">Amount Owing</td><td>${{ summary.balance_due }}</td></tr>
+          </table>
+        </div>
+      </td>
+      <td>
+        {% if other_invoices %}
+        <div class="box">
+          <div class="box-title">Related Invoices</div>
+          <table class="related">
+            <tr><th>Invoice #</th><th>Type</th><th>Status</th><th class="num">Total</th></tr>
+            {% for inv in other_invoices %}
+            <tr>
+              <td>{{ inv.invoice_number }}</td>
+              <td>{{ "Deposit" if inv.type.value == "deposit" else "Final" }}</td>
+              <td><span class="status status-{{ inv.status.value }}">{{ inv.status.value }}</span></td>
+              <td class="num">${{ inv.total }}</td>
+            </tr>
+            {% endfor %}
+          </table>
+        </div>
+        {% endif %}
+      </td>
+    </tr>
+  </table>
 
   {% if summary.payments %}
   <section>

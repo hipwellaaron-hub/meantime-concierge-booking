@@ -91,3 +91,36 @@ def test_platters_have_no_legacy_variant_always_current_price(db, loft, menu_ite
     grazing_platter = menu_items["Grazing Platter"]
 
     assert resolve_price(grazing_platter, booking) == Decimal("250.00")
+
+
+# --- cake catalogue (Desserts menu, August 2026) -----------------------------
+
+
+def test_cake_catalogue_has_all_nine_items(db, loft, menu_items):
+    from app.models.menu_item import MenuItemCategory
+
+    cakes = {i.name for i in get_active_items(db, MenuItemCategory.cake)}
+    assert cakes == {
+        "Vanilla Cake (2 Layer)", "Vanilla Cake (3 Layer)", "Vanilla Cake (4 Layer)",
+        "Chocolate Cake (2 Layer)", "Chocolate Cake (3 Layer)", "Chocolate Cake (4 Layer)",
+        "Chocolate Mud Cake", "White Chocolate, Vanilla & Raspberry Cake", "Tiramisu Cake",
+    }
+
+
+def test_cake_prices_match_the_desserts_menu(db, loft, menu_items):
+    before_cutover = dt.datetime.combine(
+        PIZZA_LEGACY_PRICING_CUTOVER_DATE - dt.timedelta(days=30), dt.time(9, 0), tzinfo=dt.timezone.utc
+    )
+    booking = _booking_created_at(db, loft, before_cutover)
+    assert resolve_price(menu_items["Vanilla Cake (2 Layer)"], booking) == Decimal("80.00")
+    assert resolve_price(menu_items["Vanilla Cake (3 Layer)"], booking) == Decimal("95.00")
+    assert resolve_price(menu_items["Vanilla Cake (4 Layer)"], booking) == Decimal("115.00")
+    assert resolve_price(menu_items["Chocolate Mud Cake"], booking) == Decimal("80.00")
+    # Cakes have no legacy variant, same as platters -- a pre-cutover
+    # booking still prices at current_price.
+
+
+def test_dessert_platter_seeded_as_one_platter_item(db, loft, menu_items):
+    assert menu_items["Dessert Platter"].current_price == Decimal("140.00")
+    from app.models.menu_item import MenuItemCategory
+    assert menu_items["Dessert Platter"].category == MenuItemCategory.platter

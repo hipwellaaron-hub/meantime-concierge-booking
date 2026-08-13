@@ -41,6 +41,46 @@ def test_deposit_invoice_matches_policy(db, booking):
     assert invoice.total == Decimal("500.00")
 
 
+# --- invoice_number -----------------------------------------------------------
+
+
+def test_invoice_gets_a_real_sequential_number(db, booking):
+    invoice = create_deposit_invoice(db, booking, due_date=dt.date(2026, 9, 1), actor="test")
+    assert isinstance(invoice.invoice_number, int)
+    assert invoice.invoice_number > 0
+
+
+def test_two_invoices_get_different_numbers(db, booking):
+    first = create_deposit_invoice(db, booking, due_date=dt.date(2026, 9, 1), actor="test")
+    second = create_invoice(
+        db, booking, InvoiceType.final, CATERING_ITEMS, dt.date(2026, 9, 15), actor="test",
+    )
+    assert first.invoice_number != second.invoice_number
+
+
+# --- per-line GST breakdown ----------------------------------------------------
+
+
+def test_line_item_breakdown_splits_gst_per_line():
+    from app.services.invoicing import line_item_breakdown
+
+    rows = line_item_breakdown([{"description": "Catering", "quantity": 1, "unit_price": "110.00"}])
+    assert len(rows) == 1
+    assert rows[0]["amount_incl"] == Decimal("110.00")
+    assert rows[0]["tax_amount"] == Decimal("10.00")
+    assert rows[0]["amount_excl"] == Decimal("100.00")
+
+
+def test_line_item_breakdown_handles_negative_credit_lines():
+    from app.services.invoicing import line_item_breakdown
+
+    rows = line_item_breakdown([{"description": "Less: deposit credited", "quantity": 1, "unit_price": "-500.00"}])
+    assert rows[0]["amount_incl"] == Decimal("-500.00")
+    # 1/11 of a negative amount is still negative -- the credit's own GST
+    # component nets correctly against the gross line it offsets.
+    assert rows[0]["tax_amount"] == Decimal("-45.45")
+
+
 def test_no_surcharge_on_non_holiday_date(db, booking, public_holidays):
     # booking.event_date is 2026-10-03, a Saturday, not a public holiday
     invoice = create_invoice(db, booking, InvoiceType.final, CATERING_ITEMS, dt.date(2026, 10, 1), actor="test")
@@ -344,11 +384,61 @@ def test_invoice_pdf_shows_gst_and_bank_details(db, booking):
         client = TestClient(app)
         resp = client.get(f"/i/{invoice.access_token}")
         assert resp.status_code == 200
-        assert "GST included" in resp.text
+        assert "GST Included" in resp.text
         assert "45.45" in resp.text
         assert "063-519" in resp.text
         assert "10315591" in resp.text
         assert "[REVIEW]" not in resp.text
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_invoice_page_shows_invoice_number_and_booking_details(db, booking):
+    invoice = create_deposit_invoice(db, booking, due_date=dt.date(2026, 9, 1), actor="test")
+    invoice = mark_sent(db, invoice, actor="test")
+
+    app.dependency_overrides[get_db] = lambda: db
+    try:
+        client = TestClient(app)
+        resp = client.get(f"/i/{invoice.access_token}")
+        assert resp.status_code == 200
+        assert str(invoice.invoice_number) in resp.text
+        assert booking.reference_code in resp.text
+        assert booking.event_name in resp.text
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_invoice_page_lists_the_bookings_other_invoices(db, booking):
+    deposit = create_deposit_invoice(db, booking, due_date=dt.date(2026, 9, 1), actor="test")
+    deposit = mark_sent(db, deposit, actor="test")
+    final = create_invoice(db, booking, InvoiceType.final, CATERING_ITEMS, dt.date(2026, 9, 15), actor="test")
+    final = mark_sent(db, final, actor="test")
+
+    app.dependency_overrides[get_db] = lambda: db
+    try:
+        client = TestClient(app)
+        resp = client.get(f"/i/{deposit.access_token}")
+        assert resp.status_code == 200
+        assert str(final.invoice_number) in resp.text  # the OTHER invoice's number, cross-referenced
+
+        resp2 = client.get(f"/i/{final.access_token}")
+        assert str(deposit.invoice_number) in resp2.text
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_invoice_page_draft_invoices_never_appear_in_related_list(db, booking):
+    deposit = create_deposit_invoice(db, booking, due_date=dt.date(2026, 9, 1), actor="test")
+    deposit = mark_sent(db, deposit, actor="test")
+    draft_final = create_invoice(db, booking, InvoiceType.final, CATERING_ITEMS, dt.date(2026, 9, 15), actor="test")
+
+    app.dependency_overrides[get_db] = lambda: db
+    try:
+        client = TestClient(app)
+        resp = client.get(f"/i/{deposit.access_token}")
+        assert resp.status_code == 200
+        assert str(draft_final.invoice_number) not in resp.text
     finally:
         app.dependency_overrides.clear()
 
