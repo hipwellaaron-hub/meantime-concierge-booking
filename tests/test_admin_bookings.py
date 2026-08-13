@@ -2,6 +2,7 @@ import datetime as dt
 import re
 from decimal import Decimal
 
+from app.models import Booking
 from app.models.booking import BookingStatus, MinReductionReasonCode
 from app.models.document import DocumentStatus, DocumentType
 from app.models.invoice import InvoiceStatus
@@ -52,6 +53,78 @@ def test_booking_detail_renders(admin_client, booking):
     resp = _detail_page(admin_client, booking.id)
     assert resp.status_code == 200
     assert "Wilson Wedding" in resp.text
+
+
+# --- Staff-created bookings (phone / direct email / iVvy marketplace) -----------
+
+
+def _new_booking_payload(**overrides):
+    payload = dict(
+        first_name="Jordan",
+        last_name="Reyes",
+        email="jordan.reyes@example.com",
+        phone="0411222333",
+        event_name="Reyes 40th",
+        event_date="2026-12-05",
+        dates_flexible="false",
+        event_type="Birthday",
+        attendee_count="70",
+        proposed_time_slot="Evening",
+        comments="Called in, wants The Loft.",
+        lead_source="phone",
+    )
+    payload.update(overrides)
+    return payload
+
+
+def test_new_booking_form_renders(admin_client):
+    resp = admin_client.get("/admin/bookings/new")
+    assert resp.status_code == 200
+    assert "How did this lead reach you?" in resp.text
+
+
+def test_staff_create_booking_via_phone(admin_client, db, unassigned_space):
+    page = admin_client.get("/admin/bookings/new")
+    csrf_token = _csrf(page.text)
+
+    resp = admin_client.post(
+        "/admin/bookings/new", data={**_new_booking_payload(), "csrf_token": csrf_token}, follow_redirects=False
+    )
+    assert resp.status_code == 303
+    assert resp.headers["location"].startswith("/admin/bookings/")
+
+    booking = db.query(Booking).filter_by(event_name="Reyes 40th").one()
+    assert booking.status == BookingStatus.enquiry
+    assert booking.space_id == unassigned_space.id
+    assert booking.lead_source == "phone"
+    assert booking.contact.email == "jordan.reyes@example.com"
+    # Went through the same classification pipeline as the public form --
+    # a generic "Birthday" enquiry gets flagged the same way regardless of
+    # who entered it.
+    events = [e.new_value for e in booking.events if e.event_type == "enquiry_flagged"]
+    assert any("Generic 'Birthday'" in e for e in events)
+
+
+def test_staff_create_booking_requires_a_lead_source(admin_client):
+    page = admin_client.get("/admin/bookings/new")
+    csrf_token = _csrf(page.text)
+
+    payload = _new_booking_payload()
+    del payload["lead_source"]
+    resp = admin_client.post("/admin/bookings/new", data={**payload, "csrf_token": csrf_token}, follow_redirects=False)
+    assert resp.status_code == 422
+
+
+def test_staff_create_booking_reuses_recent_duplicate_not_a_second_booking(admin_client, db):
+    page = admin_client.get("/admin/bookings/new")
+    csrf_token = _csrf(page.text)
+    payload = {**_new_booking_payload(), "csrf_token": csrf_token}
+
+    resp1 = admin_client.post("/admin/bookings/new", data=payload, follow_redirects=False)
+    resp2 = admin_client.post("/admin/bookings/new", data=payload, follow_redirects=False)
+
+    assert resp1.headers["location"] == resp2.headers["location"]
+    assert db.query(Booking).filter_by(event_name="Reyes 40th").count() == 1
 
 
 def test_draft_document_has_no_dead_view_link(admin_client, db, booking):

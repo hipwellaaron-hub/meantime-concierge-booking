@@ -14,7 +14,13 @@ from sqlalchemy.orm import Session
 
 from app.models import Booking
 
-KNOWN_SOURCES = {"own_website", "google", "ivvy_marketplace", "referral", "other", "direct"}
+KNOWN_SOURCES = {
+    "own_website", "google", "ivvy_marketplace", "referral", "other", "direct",
+    # Staff-entered sources (app.api.admin_bookings) -- a phone call or a
+    # direct email has no Referer header to classify from, staff know the
+    # real source directly.
+    "phone", "direct_email",
+}
 
 
 def classify_lead_source(explicit_source: str | None, referrer: str | None) -> str:

@@ -4,6 +4,7 @@ from decimal import Decimal, InvalidOperation
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -16,8 +17,10 @@ from app.models.document import DocumentType
 from app.models.payment import PaymentMethod
 from app.models.staff_user import StaffUser
 from app.models.wizard_session import WizardSessionStatus
+from app.schemas.enquiry import EVENT_TYPES, EnquiryCreate
 from app.services import booking as booking_service
 from app.services import documents as documents_service
+from app.services import enquiry_classification
 from app.services import invoicing
 from app.services import wizard as wizard_service
 from app.services import wizard_generation
@@ -28,6 +31,11 @@ from app.utils import truncate
 router = APIRouter(prefix="/admin/bookings", tags=["admin-bookings"], dependencies=[Depends(require_staff)])
 
 BOOKING_EVENT_ACTOR_MAX_LENGTH = 255
+
+# A staff member entering a lead by hand always knows exactly how it
+# reached them -- no Referer header to guess from, unlike the public
+# /enquire form (app.services.lead_analytics.classify_lead_source).
+STAFF_LEAD_SOURCES: tuple[str, ...] = ("phone", "direct_email", "ivvy_marketplace", "own_website", "other")
 
 
 def _actor(staff: StaffUser) -> str:
@@ -73,6 +81,80 @@ def list_bookings(
         "admin/bookings_list.html",
         admin_ctx(request, staff, bookings=bookings, status=parsed_status, q=q or "", statuses=list(BookingStatus)),
     )
+
+
+@router.get("/new", response_class=HTMLResponse)
+def new_booking_form(request: Request, staff: StaffUser = Depends(require_staff)):
+    return templates.TemplateResponse(
+        request,
+        "admin/booking_new.html",
+        admin_ctx(request, staff, event_types=EVENT_TYPES, lead_sources=STAFF_LEAD_SOURCES),
+    )
+
+
+@router.post("/new", dependencies=[Depends(require_csrf)])
+def create_new_booking(
+    request: Request,
+    first_name: str = Form(...),
+    last_name: str = Form(...),
+    email: str = Form(...),
+    phone: str | None = Form(None),
+    company_name: str | None = Form(None),
+    event_name: str = Form(...),
+    event_date: str | None = Form(None),
+    dates_flexible: bool = Form(...),
+    event_type: str = Form(...),
+    attendee_count: str | None = Form(None),
+    adult_count: str | None = Form(None),
+    proposed_time_slot: str | None = Form(None),
+    comments: str | None = Form(None),
+    lead_source: str | None = Form(None),
+    db: Session = Depends(get_db),
+    staff: StaffUser = Depends(require_staff),
+):
+    # require_csrf (this route's own dependency) already binds its own
+    # scalar `csrf_token: str = Form(...)` field -- FastAPI can't also bind
+    # a full Pydantic model via Form() in the same request alongside that,
+    # so the fields are collected individually here (matching every other
+    # route in this file) and handed to EnquiryCreate for the same
+    # validation the public /enquiries form gets, rather than duplicating
+    # it by hand.
+    try:
+        payload = EnquiryCreate(
+            first_name=first_name, last_name=last_name, email=email, phone=phone,
+            company_name=company_name, event_name=event_name, event_date=event_date,
+            dates_flexible=dates_flexible, event_type=event_type, attendee_count=attendee_count,
+            adult_count=adult_count, proposed_time_slot=proposed_time_slot, comments=comments,
+            lead_source=lead_source,
+        )
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=exc.errors()) from exc
+
+    if payload.lead_source not in STAFF_LEAD_SOURCES:
+        raise HTTPException(status_code=422, detail="Choose how this lead reached you")
+
+    venue = _venue(db)
+    full_name = truncate(f"{payload.first_name} {payload.last_name}", 255)
+    booking, _duplicate_candidates, _is_new = enquiry_classification.create_enquiry_booking(
+        db,
+        venue=venue,
+        full_name=full_name,
+        email=payload.email,
+        phone=payload.phone,
+        event_name=payload.event_name,
+        event_type=payload.event_type,
+        event_date=payload.event_date,
+        proposed_time_slot=payload.proposed_time_slot,
+        attendee_count=payload.attendee_count,
+        adult_count=payload.adult_count,
+        company_name=payload.company_name,
+        dates_flexible=payload.dates_flexible,
+        comments=payload.comments,
+        lead_source=payload.lead_source,
+        lead_referrer=None,
+        actor=_actor(staff),
+    )
+    return _redirect_to_detail(booking.id)
 
 
 @router.get("/{booking_id}", response_class=HTMLResponse)

@@ -1,0 +1,78 @@
+{% extends "admin/_base.html" %}
+{% block title %}New booking{% endblock %}
+{% block content %}
+<p><a href="/admin/bookings">&larr; All bookings</a></p>
+<h1>New booking</h1>
+<p class="muted">For a lead that arrived by phone, direct email, or the iVvy marketplace -- goes through the same classification and duplicate checks as a client submitting the enquiry form themselves.</p>
+
+<form method="post" action="/admin/bookings/new">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+  <div class="card">
+    <h2>Contact</h2>
+    <div class="field-row">
+      <div><label>First name</label><input type="text" name="first_name" required maxlength="255"></div>
+      <div><label>Last name</label><input type="text" name="last_name" required maxlength="255"></div>
+    </div>
+    <div class="field-row">
+      <div><label>Email</label><input type="email" name="email" required maxlength="320"></div>
+      <div><label>Phone</label><input type="tel" name="phone" maxlength="50"></div>
+    </div>
+    <div class="field-row">
+      <div><label>Company name</label><input type="text" name="company_name" maxlength="255"></div>
+      <div>
+        <label>How did this lead reach you?</label>
+        <select name="lead_source" required>
+          <option value="" disabled selected>Choose…</option>
+          {% for s in lead_sources %}<option value="{{ s }}">{{ s.replace('_', ' ') }}</option>{% endfor %}
+        </select>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Event</h2>
+    <div class="field-row">
+      <div><label>Event name</label><input type="text" name="event_name" required maxlength="255"></div>
+      <div>
+        <label>Event type</label>
+        <select name="event_type" required>
+          <option value="" disabled selected>Choose…</option>
+          {% for t in event_types %}<option value="{{ t }}">{{ t }}</option>{% endfor %}
+        </select>
+      </div>
+    </div>
+    <div class="field-row">
+      <div>
+        <label>Event date</label>
+        <input type="date" name="event_date">
+        <p class="muted" style="font-size:0.78rem;">Leave blank if not confirmed yet.</p>
+      </div>
+      <div><label>Proposed time</label><input type="text" name="proposed_time_slot" maxlength="100" placeholder="e.g. 6pm-11pm"></div>
+    </div>
+    <div class="field-row">
+      <div><label>Number of attendees</label><input type="number" name="attendee_count" min="1" max="5000"></div>
+      <div>
+        <label>Number of adults</label>
+        <input type="number" name="adult_count" min="0" max="5000">
+        <p class="muted" style="font-size:0.78rem;">Only if known -- minimum spend counts adults only.</p>
+      </div>
+    </div>
+    <div class="field-row">
+      <div>
+        <label>Dates flexible?</label>
+        <select name="dates_flexible" required>
+          <option value="" disabled selected>Choose…</option>
+          <option value="true">Yes</option>
+          <option value="false">No</option>
+        </select>
+      </div>
+      <div></div>
+    </div>
+    <label>Comments</label>
+    <textarea name="comments" maxlength="5000"></textarea>
+  </div>
+
+  <button class="btn" type="submit">Create booking</button>
+</form>
+{% endblock %}

@@ -18,6 +18,7 @@ never the dropdown itself, so both are searched, not just the Event Type
 field.
 """
 
+import datetime as dt
 import re
 
 from sqlalchemy import func, select
@@ -25,8 +26,18 @@ from sqlalchemy.orm import Session
 
 from app.models import Booking, BookingEvent, Space, Venue
 from app.models.booking import BookingStatus
+from app.services import ivvy_import
+from app.services.booking import create_booking
+from app.services.contact_matching import DuplicateCandidate, find_or_create_contact
+from app.services.notifications import notify_new_enquiry
 
 GENERIC_EVENT_TYPES = {"party", "event", "other", "not sure yet", ""}
+
+# A double-click (or a client/staff-member retrying a slow/ambiguous
+# response) fires two near-identical submissions within a second or two
+# of each other -- this window is intentionally short so a genuine second
+# enquiry made minutes later is never mistaken for a duplicate.
+DUPLICATE_SUBMISSION_WINDOW = dt.timedelta(seconds=15)
 
 BIRTHDAY_CLARIFICATION_QUESTION = (
     "Just so I can set everything up properly, is this a milestone birthday, "
@@ -152,6 +163,114 @@ def classify_and_flag(
     if flags:
         db.commit()
     return flags
+
+
+def _find_recent_duplicate(db: Session, *, contact_id, event_date, event_name) -> Booking | None:
+    cutoff = dt.datetime.now(dt.timezone.utc) - DUPLICATE_SUBMISSION_WINDOW
+    return db.execute(
+        select(Booking)
+        .where(
+            Booking.contact_id == contact_id,
+            Booking.event_date == event_date,
+            Booking.event_name == event_name,
+            Booking.created_at >= cutoff,
+        )
+        .order_by(Booking.created_at.desc())
+    ).scalars().first()
+
+
+def create_enquiry_booking(
+    db: Session,
+    *,
+    venue: Venue,
+    full_name: str,
+    email: str,
+    phone: str | None,
+    event_name: str,
+    event_type: str,
+    event_date: dt.date | None,
+    proposed_time_slot: str | None,
+    attendee_count: int | None,
+    adult_count: int | None,
+    company_name: str | None,
+    dates_flexible: bool,
+    comments: str | None,
+    lead_source: str,
+    lead_referrer: str | None,
+    actor: str,
+) -> tuple[Booking, list[DuplicateCandidate], bool]:
+    """The single path an enquiry becomes a Booking, regardless of whether
+    a client submitted it themselves (app.api.enquiries) or staff entered
+    it on their behalf (app.api.admin_bookings) -- a phone call, a direct
+    email, or an iVvy marketplace lead all go through exactly the same
+    contact-matching, duplicate-guard, and classify_and_flag logic a web
+    form submission gets. Returns (booking, duplicate_candidates,
+    is_new) -- is_new is False when a near-identical submission already
+    exists within DUPLICATE_SUBMISSION_WINDOW and that existing booking
+    was reused instead of creating a second one."""
+    contact, duplicate_candidates = find_or_create_contact(db, full_name, email, phone)
+
+    existing = _find_recent_duplicate(db, contact_id=contact.id, event_date=event_date, event_name=event_name)
+    if existing is not None:
+        return existing, duplicate_candidates, False
+
+    unassigned_space_id = ivvy_import.get_unassigned_space_id(db, venue)
+
+    notes_parts = []
+    if company_name:
+        notes_parts.append(f"Company: {company_name}")
+    if dates_flexible:
+        notes_parts.append("Dates flexible: yes")
+    if comments:
+        notes_parts.append(comments)
+    notes = "\n".join(notes_parts) or None
+
+    # Adult/child split: only known if adult_count was volunteered. Left
+    # unknown, every attendee is conservatively treated as an adult for
+    # minimum-spend purposes. If even the total guest count is unknown,
+    # both are recorded as 0 (the model's own default) --
+    # classify_and_flag raises a missing-guest-count flag so this is
+    # never silent.
+    if attendee_count is None:
+        resolved_adult_count, resolved_child_count = 0, 0
+    elif adult_count is not None:
+        resolved_adult_count = adult_count
+        resolved_child_count = attendee_count - adult_count
+    else:
+        resolved_adult_count = attendee_count
+        resolved_child_count = 0
+
+    booking = create_booking(
+        db,
+        space_id=unassigned_space_id,
+        contact_id=contact.id,
+        event_date=event_date,
+        proposed_time_slot=proposed_time_slot,
+        event_name=event_name,
+        event_type=event_type,
+        adult_count=resolved_adult_count,
+        child_count=resolved_child_count,
+        notes=notes,
+        actor=actor,
+        lead_source=lead_source,
+        lead_referrer=lead_referrer,
+    )
+
+    classify_and_flag(
+        db,
+        booking,
+        event_type=event_type,
+        adult_count=adult_count,
+        attendee_count=attendee_count,
+        actor=actor,
+        possible_duplicate_contact=len(duplicate_candidates) > 0,
+    )
+
+    # Nothing auto-sends: this only marks where a future draft pipeline
+    # would pick up the enquiry, it does not send anything itself.
+    notify_new_enquiry(booking)
+
+    return booking, duplicate_candidates, True
 
 
 def get_enquiries_needing_clarification(db: Session, venue: Venue) -> list[Booking]:
