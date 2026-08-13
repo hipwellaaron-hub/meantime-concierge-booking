@@ -23,8 +23,21 @@ from app.models import Booking
 GMAIL_SMTP_HOST = "smtp.gmail.com"
 GMAIL_SMTP_PORT = 465
 
+def _strip_all_whitespace(value: str | None) -> str | None:
+    # Google displays an app password as 4 space-separated groups for
+    # readability; copying it from the page (or pasting through some
+    # clipboard managers) can carry a non-breaking space (U+00A0) rather
+    # than a plain ASCII one, which smtplib's AUTH exchange then fails to
+    # base64-encode. The password works identically with or without the
+    # spaces, so stripping every whitespace character -- not just leading/
+    # trailing -- makes this immune to exactly how it was pasted in.
+    if value is None:
+        return None
+    return "".join(ch for ch in value if not ch.isspace()) or None
+
+
 DIGEST_GMAIL_ADDRESS = os.environ.get("DIGEST_GMAIL_ADDRESS")
-DIGEST_GMAIL_APP_PASSWORD = os.environ.get("DIGEST_GMAIL_APP_PASSWORD")
+DIGEST_GMAIL_APP_PASSWORD = _strip_all_whitespace(os.environ.get("DIGEST_GMAIL_APP_PASSWORD"))
 DIGEST_RECIPIENT_EMAIL = os.environ.get("DIGEST_RECIPIENT_EMAIL")
 
 

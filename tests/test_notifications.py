@@ -38,6 +38,18 @@ def test_send_logs_in_and_sends_via_gmail_smtp():
     assert sent_message.get_content().strip() == "Test Body"
 
 
+def test_app_password_whitespace_is_stripped_including_non_breaking_space():
+    # Real incident: Google displays the app password as 4 space-separated
+    # groups; a copy from the page carried a non-breaking space (U+00A0)
+    # rather than a plain one, which crashed smtplib's AUTH exchange.
+    raw = "abcd\xa0efgh ijkl\tmnop"
+    assert notifications._strip_all_whitespace(raw) == "abcdefghijklmnop"
+
+
+def test_strip_all_whitespace_handles_none():
+    assert notifications._strip_all_whitespace(None) is None
+
+
 def test_send_raises_with_gmail_error_on_rejection():
     mock_smtp = MagicMock()
     mock_smtp.__enter__.return_value = mock_smtp
