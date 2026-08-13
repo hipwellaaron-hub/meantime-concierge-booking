@@ -111,6 +111,16 @@
   .option-card .opt-title { font-weight: 700; margin-bottom: 3px; color: var(--cream); }
   .option-card .opt-desc { font-size: 0.82rem; color: var(--muted); }
   .option-card-photo { display: flex; align-items: center; gap: 12px; }
+  .layer-options { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+  .layer-pill {
+    border: 1px solid var(--border-bright); background: transparent; color: var(--cream);
+    border-radius: 999px; padding: 5px 11px; font-size: 0.78rem; font-weight: 600;
+    cursor: pointer; font-family: inherit;
+  }
+  .layer-pill.selected { border-color: var(--gold); background: rgba(201,169,110,0.18); color: var(--gold); }
+  /* The card itself picks no size on its own -- only its pills do -- so it
+     shouldn't look clickable the way a single-price option-card does. */
+  .cake-group { cursor: default; }
 
   /* Food catalogue grid */
   .catalogue-section-title { font-family: var(--font-head); font-size: 0.95rem; letter-spacing: 0.02em; color: var(--gold); margin: 22px 0 10px; }
@@ -539,16 +549,58 @@
   }
 
   // ---- EXTRAS ----
+
+  // Cakes offered at more than one size (currently Vanilla/Chocolate, each
+  // at 2/3/4 layer) are separate MenuItem rows -- each size is genuinely a
+  // different priced product -- but showing three near-identical photo
+  // cards for the same cake reads as three different cakes. Grouped here
+  // by stripping a trailing "(N Layer)" so they render as one card with a
+  // size picker instead; a cake with only one size (Chocolate Mud Cake,
+  // Tiramisu, etc.) still renders as a single plain card, unchanged.
+  var LAYER_SUFFIX_RE = /^(.*) \((\d+) Layer\)$/;
+
+  function groupCakesBySize(cakes) {
+    var order = [];
+    var groups = {};
+    cakes.forEach(function (c) {
+      var m = c.name.match(LAYER_SUFFIX_RE);
+      var baseName = m ? m[1] : c.name;
+      var layer = m ? parseInt(m[2], 10) : null;
+      if (!groups[baseName]) { groups[baseName] = { name: baseName, variants: [] }; order.push(baseName); }
+      groups[baseName].variants.push({ id: c.id, layer: layer, price: c.price, fullName: c.name });
+    });
+    order.forEach(function (baseName) {
+      groups[baseName].variants.sort(function (a, b) { return (a.layer || 0) - (b.layer || 0); });
+    });
+    return order.map(function (baseName) { return groups[baseName]; });
+  }
+
+  function cakePhotoHtml(displayName, lookupName) {
+    var photoUrl = PHOTO_MAP[lookupName];
+    return photoUrl
+      ? '<img class="catalogue-photo" src="' + photoUrl + '" alt="' + displayName + '" onerror="this.outerHTML=\'<div class=&quot;catalogue-photo placeholder&quot;>' + displayName.split(" ").slice(0, 2).join(" ") + '</div>\'">'
+      : '<div class="catalogue-photo placeholder">' + displayName.split(" ").slice(0, 2).join(" ") + '</div>';
+  }
+
+  function renderCakeGroup(group) {
+    var photoHtml = cakePhotoHtml(group.name, group.variants[0].fullName);
+    if (group.variants.length === 1) {
+      var only = group.variants[0];
+      return '<div class="option-card option-card-photo" data-cake-id="' + only.id + '">' + photoHtml +
+        '<div><div class="opt-title">' + group.name + '</div><div class="opt-desc">' + money(only.price) + '</div></div></div>';
+    }
+    var pills = group.variants.map(function (v) {
+      return '<button type="button" class="layer-pill" data-cake-id="' + v.id + '">' + v.layer + ' Layer &middot; ' + money(v.price) + '</button>';
+    }).join("");
+    return '<div class="option-card option-card-photo cake-group">' + photoHtml +
+      '<div><div class="opt-title">' + group.name + '</div><div class="layer-options">' + pills + '</div></div></div>';
+  }
+
   function renderExtras() {
     var cakeOptions = "";
     if (DATA.catalogue.cakes.length > 0) {
-      DATA.catalogue.cakes.forEach(function (c) {
-        var photoUrl = PHOTO_MAP[c.name];
-        var photoHtml = photoUrl
-          ? '<img class="catalogue-photo" src="' + photoUrl + '" alt="' + c.name + '" onerror="this.outerHTML=\'<div class=&quot;catalogue-photo placeholder&quot;>' + c.name.split(" ").slice(0, 2).join(" ") + '</div>\'">'
-          : '<div class="catalogue-photo placeholder">' + c.name.split(" ").slice(0, 2).join(" ") + '</div>';
-        cakeOptions += '<div class="option-card option-card-photo" data-cake-id="' + c.id + '">' + photoHtml +
-          '<div><div class="opt-title">' + c.name + "</div><div class=\"opt-desc\">" + money(c.price) + "</div></div></div>";
+      groupCakesBySize(DATA.catalogue.cakes).forEach(function (group) {
+        cakeOptions += renderCakeGroup(group);
       });
     } else {
       cakeOptions = '<p class="field-hint">Our current cake options are being finalized — describe what you\'d like below and we\'ll confirm with you.</p>';
