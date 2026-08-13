@@ -24,6 +24,21 @@ def test_bookings_list_shows_booking(admin_client, booking):
     assert booking.reference_code in resp.text
 
 
+def test_bookings_list_any_status_filter_shows_all(admin_client, booking):
+    """Regression: submitting the "Any" option in the status filter posts
+    status="", which Optional[BookingStatus] does not coerce to None the
+    way Optional[str] does -- this used to 422 instead of showing the
+    unfiltered list."""
+    resp = admin_client.get("/admin/bookings", params={"status": ""})
+    assert resp.status_code == 200
+    assert "Wilson Wedding" in resp.text
+
+
+def test_bookings_list_unknown_status_returns_422_not_500(admin_client):
+    resp = admin_client.get("/admin/bookings", params={"status": "not-a-real-status"})
+    assert resp.status_code == 422
+
+
 def test_bookings_list_search_filters(admin_client, booking):
     resp = admin_client.get("/admin/bookings", params={"q": "does-not-exist"})
     assert "Wilson Wedding" not in resp.text

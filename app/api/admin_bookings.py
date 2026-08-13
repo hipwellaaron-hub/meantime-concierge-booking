@@ -52,17 +52,26 @@ def _redirect_to_detail(booking_id: uuid.UUID) -> RedirectResponse:
 @router.get("", response_class=HTMLResponse)
 def list_bookings(
     request: Request,
-    status: BookingStatus | None = None,
+    status: str | None = None,
     q: str | None = None,
     db: Session = Depends(get_db),
     staff: StaffUser = Depends(require_staff),
 ):
+    # The "Any" option in the status filter submits status="" -- FastAPI's
+    # Optional[BookingStatus] does not coerce an empty string to None the
+    # way Optional[str] does, so this was parsed as a plain str and
+    # converted by hand instead of declared as BookingStatus directly.
+    try:
+        parsed_status = BookingStatus(status) if status else None
+    except ValueError:
+        raise HTTPException(status_code=422, detail=f"Unknown status '{status}'")
+
     venue = _venue(db)
-    bookings = booking_service.search_bookings(db, venue.id, status=status, query=q)
+    bookings = booking_service.search_bookings(db, venue.id, status=parsed_status, query=q)
     return templates.TemplateResponse(
         request,
         "admin/bookings_list.html",
-        admin_ctx(request, staff, bookings=bookings, status=status, q=q or "", statuses=list(BookingStatus)),
+        admin_ctx(request, staff, bookings=bookings, status=parsed_status, q=q or "", statuses=list(BookingStatus)),
     )
 
 
