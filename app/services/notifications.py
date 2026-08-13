@@ -28,6 +28,10 @@ class DigestEmailNotConfigured(RuntimeError):
     pass
 
 
+class DigestEmailRejected(RuntimeError):
+    pass
+
+
 def notify_new_enquiry(booking: Booking) -> None:
     """Called once a new enquiry is captured. Once the draft pipeline
     exists, this is where it gets triggered to read the booking's
@@ -58,4 +62,8 @@ def send_digest_email(subject: str, text_body: str) -> None:
         json={"from": DIGEST_FROM_EMAIL, "to": [DIGEST_RECIPIENT_EMAIL], "subject": subject, "text": text_body},
         timeout=15.0,
     )
-    response.raise_for_status()
+    if response.is_error:
+        # httpx's own raise_for_status() only surfaces the status line, not
+        # Resend's actual error body -- which is where the real reason
+        # ("invalid from address", "domain not verified", etc.) lives.
+        raise DigestEmailRejected(f"Resend rejected the digest email ({response.status_code}): {response.text}")

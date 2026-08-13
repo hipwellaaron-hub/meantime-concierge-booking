@@ -20,8 +20,7 @@ def test_send_raises_when_not_configured():
 
 def test_send_posts_to_resend_with_expected_payload():
     class FakeResponse:
-        def raise_for_status(self):
-            return None
+        is_error = False
 
     with patch.object(notifications, "DIGEST_API_KEY", "re_fake_key"), \
          patch.object(notifications, "DIGEST_FROM_EMAIL", "digest@meantime.com.au"), \
@@ -40,14 +39,15 @@ def test_send_posts_to_resend_with_expected_payload():
     }
 
 
-def test_send_propagates_http_errors():
+def test_send_raises_with_resend_error_body_on_rejection():
     class FakeResponse:
-        def raise_for_status(self):
-            raise Exception("Resend said no")
+        is_error = True
+        status_code = 400
+        text = '{"message": "invalid `from` field"}'
 
     with patch.object(notifications, "DIGEST_API_KEY", "re_fake_key"), \
          patch.object(notifications, "DIGEST_FROM_EMAIL", "digest@meantime.com.au"), \
          patch.object(notifications, "DIGEST_RECIPIENT_EMAIL", "aaron@meantime.com.au"), \
          patch.object(notifications.httpx, "post", return_value=FakeResponse()):
-        with pytest.raises(Exception, match="Resend said no"):
+        with pytest.raises(notifications.DigestEmailRejected, match="invalid `from` field"):
             notifications.send_digest_email("Subject", "Body")
