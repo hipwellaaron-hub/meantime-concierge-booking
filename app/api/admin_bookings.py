@@ -14,6 +14,7 @@ from app.database import get_db
 from app.models import Booking, Document, Invoice, Space, Venue
 from app.models.booking import BookingStatus, MinReductionReasonCode
 from app.models.document import DocumentType
+from app.models.invoice import InvoiceStatus
 from app.models.payment import PaymentMethod
 from app.models.staff_user import StaffUser
 from app.models.wizard_session import WizardSessionStatus
@@ -319,6 +320,29 @@ def send_document(
     return _redirect_to_detail(booking_id)
 
 
+@router.get("/{booking_id}/documents/{document_id}/preview", response_class=HTMLResponse)
+def preview_document(
+    booking_id: uuid.UUID,
+    document_id: uuid.UUID,
+    request: Request,
+    db: Session = Depends(get_db),
+    staff: StaffUser = Depends(require_staff),
+):
+    """The public /d/{token} view refuses a draft outright (never human-
+    approved for client eyes) -- this is the staff-only equivalent so
+    someone can actually read a generated BEO/agreement's content, not
+    just Send/Regenerate/Delete it blind. Reuses the exact template a
+    client would see; does not call record_view, since a staff read must
+    never be mistaken for the client having seen it."""
+    _get_booking_or_404(db, booking_id)
+    document = db.get(Document, document_id)
+    if document is None or document.booking_id != booking_id:
+        raise HTTPException(status_code=404, detail="Document not found on this booking")
+    return templates.TemplateResponse(
+        request, "document.html", {"document": document, "booking": document.booking, "is_staff_preview": True}
+    )
+
+
 @router.post("/{booking_id}/documents/{document_id}/delete", dependencies=[Depends(require_csrf)])
 def delete_document(
     booking_id: uuid.UUID,
@@ -422,6 +446,45 @@ def send_invoice(
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return _redirect_to_detail(booking_id)
+
+
+@router.get("/{booking_id}/invoices/{invoice_id}/preview", response_class=HTMLResponse)
+def preview_invoice(
+    booking_id: uuid.UUID,
+    invoice_id: uuid.UUID,
+    request: Request,
+    db: Session = Depends(get_db),
+    staff: StaffUser = Depends(require_staff),
+):
+    """Staff-only equivalent of /i/{token} for a draft invoice, same
+    reasoning as preview_document above. No live Stripe card-payment-link
+    call here -- irrelevant for a draft nobody can pay yet, and a wasted
+    API call on every preview."""
+    _get_booking_or_404(db, booking_id)
+    invoice = db.get(Invoice, invoice_id)
+    if invoice is None or invoice.booking_id != booking_id:
+        raise HTTPException(status_code=404, detail="Invoice not found on this booking")
+    summary = invoicing.get_payment_summary(db, invoice)
+    other_invoices = [
+        inv for inv in invoice.booking.invoices
+        if inv.id != invoice.id and inv.status != InvoiceStatus.draft
+    ]
+    return templates.TemplateResponse(
+        request,
+        "invoice.html",
+        {
+            "invoice": invoice,
+            "booking": invoice.booking,
+            "summary": summary,
+            "gst_component": invoicing.gst_component(invoice.total),
+            "line_items": invoicing.line_item_breakdown(invoice.line_items),
+            "other_invoices": other_invoices,
+            "stripe_configured": False,
+            "card_payment_url": None,
+            "card_payment_amount": None,
+            "is_staff_preview": True,
+        },
+    )
 
 
 @router.post("/{booking_id}/invoices/{invoice_id}/payments", dependencies=[Depends(require_csrf)])

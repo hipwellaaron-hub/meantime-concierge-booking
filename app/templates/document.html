@@ -47,10 +47,14 @@
   }
   .signed-note { background: #dcf3e3; color: #1c6b3c; padding: 0.9rem; border-radius: 8px; font-size: 0.9rem; }
   .consent-text { font-size: 0.78rem; color: #6b7268; margin-top: 0.5rem; }
+  .staff-preview-banner { background: #fdf2d0; color: #7a5b00; padding: 0.7rem 0.9rem; border-radius: 8px; font-size: 0.85rem; margin-bottom: 1.25rem; }
 </style>
 </head>
 <body>
 <div class="card">
+  {% if is_staff_preview %}
+  <div class="staff-preview-banner">Staff preview — this has not been sent to the client.</div>
+  {% endif %}
   <h1>{{ booking.event_name }}</h1>
   <div class="subtitle">
     {{ "Booking Agreement" if document.type.value == "agreement" else "Event Order (BEO)" }}

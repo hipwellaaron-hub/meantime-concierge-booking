@@ -191,7 +191,8 @@ def test_staff_create_booking_reuses_recent_duplicate_not_a_second_booking(admin
 def test_draft_document_has_no_dead_view_link(admin_client, db, booking):
     """The public /d/{token} route 404s on a draft document by design (not
     yet human-approved for client eyes) -- the detail page must not offer a
-    View link that leads straight into that 404."""
+    View link that leads straight into that 404. It should instead offer
+    the staff-only Preview link, which works on a draft."""
     page = _detail_page(admin_client, booking.id)
     csrf_token = _csrf(page.text)
     resp = admin_client.post(
@@ -204,7 +205,46 @@ def test_draft_document_has_no_dead_view_link(admin_client, db, booking):
     db.refresh(booking)
     page2 = _detail_page(admin_client, booking.id)
     assert "View" not in page2.text
-    assert "Send it to get a viewable link" in page2.text
+    assert "Preview" in page2.text
+    agreement = documents_service.get_current(db, booking.id, DocumentType.agreement)
+    assert f"/admin/bookings/{booking.id}/documents/{agreement.id}/preview" in page2.text
+
+
+def test_staff_can_preview_a_draft_document(admin_client, db, booking):
+    page = _detail_page(admin_client, booking.id)
+    csrf_token = _csrf(page.text)
+    admin_client.post(
+        f"/admin/bookings/{booking.id}/documents/agreement/generate",
+        data={"csrf_token": csrf_token}, follow_redirects=False,
+    )
+    db.refresh(booking)
+    agreement = documents_service.get_current(db, booking.id, DocumentType.agreement)
+
+    resp = admin_client.get(f"/admin/bookings/{booking.id}/documents/{agreement.id}/preview")
+    assert resp.status_code == 200
+    assert "Staff preview" in resp.text
+    assert booking.event_name in resp.text
+
+    # Staff looking at the preview must never be mistaken for the client
+    # having seen it -- status stays exactly as it was.
+    db.refresh(agreement)
+    assert agreement.status == DocumentStatus.draft
+
+
+def test_document_preview_404s_for_a_document_on_another_booking(admin_client, db, booking, loft):
+    from app.services.booking import create_booking as _create_booking
+    from app.services.document_generation import generate_agreement_content
+
+    other_booking = _create_booking(
+        db, space_id=loft.id, contact_id=None, event_date=dt.date(2027, 6, 1),
+        start_time=dt.time(12, 0), end_time=dt.time(17, 0), event_name="Other Booking",
+        event_type=None, adult_count=10, child_count=0, notes=None, actor="test",
+    )
+    other_doc = documents_service.create_new_version(
+        db, other_booking, DocumentType.agreement, generate_agreement_content(other_booking), actor="test"
+    )
+    resp = admin_client.get(f"/admin/bookings/{booking.id}/documents/{other_doc.id}/preview")
+    assert resp.status_code == 404
 
 
 def test_sent_document_has_a_working_view_link(admin_client, db, booking):
@@ -283,6 +323,34 @@ def test_send_document_refused_and_flagged_when_booking_has_no_contact(admin_cli
     assert resp.status_code == 409
     db.refresh(agreement)
     assert agreement.status == DocumentStatus.draft
+
+
+def test_staff_can_preview_a_draft_invoice(admin_client, db, booking):
+    from app.services.invoicing import create_deposit_invoice
+
+    invoice = create_deposit_invoice(db, booking, due_date=dt.date(2026, 9, 1), actor="test")
+
+    resp = admin_client.get(f"/admin/bookings/{booking.id}/invoices/{invoice.id}/preview")
+    assert resp.status_code == 200
+    assert "Staff preview" in resp.text
+    assert str(invoice.invoice_number) in resp.text
+
+    db.refresh(invoice)
+    assert invoice.status == InvoiceStatus.draft
+
+
+def test_invoice_preview_404s_for_an_invoice_on_another_booking(admin_client, db, booking, loft):
+    from app.services.booking import create_booking as _create_booking
+    from app.services.invoicing import create_deposit_invoice
+
+    other_booking = _create_booking(
+        db, space_id=loft.id, contact_id=None, event_date=dt.date(2027, 6, 1),
+        start_time=dt.time(12, 0), end_time=dt.time(17, 0), event_name="Other Booking",
+        event_type=None, adult_count=10, child_count=0, notes=None, actor="test",
+    )
+    other_invoice = create_deposit_invoice(db, other_booking, due_date=dt.date(2026, 9, 1), actor="test")
+    resp = admin_client.get(f"/admin/bookings/{booking.id}/invoices/{other_invoice.id}/preview")
+    assert resp.status_code == 404
 
 
 def test_create_send_and_pay_deposit_invoice(admin_client, db, booking):

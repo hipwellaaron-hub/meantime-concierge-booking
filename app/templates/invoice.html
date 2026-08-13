@@ -61,10 +61,14 @@
   .related th, .related td { text-align: left; padding: 0.3rem 0.4rem; border-bottom: 1px solid #ececea; font-size: 0.88rem; }
   .related th { color: #6b7268; font-weight: 600; font-size: 0.72rem; text-transform: uppercase; }
   .related a { color: #1c6b3c; text-decoration: none; }
+  .staff-preview-banner { background: #fdf2d0; color: #7a5b00; padding: 0.7rem 0.9rem; border-radius: 8px; font-size: 0.85rem; margin-bottom: 1.25rem; }
 </style>
 </head>
 <body>
 <div class="card">
+  {% if is_staff_preview %}
+  <div class="staff-preview-banner">Staff preview — this has not been sent to the client.</div>
+  {% endif %}
   <h1>{{ booking.event_name }}</h1>
   <div class="subtitle">
     {{ "Tax Invoice — Deposit" if invoice.type.value == "deposit" else "Tax Invoice" }}
