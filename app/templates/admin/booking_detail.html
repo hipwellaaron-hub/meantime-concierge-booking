@@ -16,6 +16,21 @@
 <p class="muted">{{ booking.contact.name }} &middot; {{ booking.contact.email }}{% if booking.contact.phone %} &middot; {{ booking.contact.phone }}{% endif %}</p>
 {% endif %}
 
+{% if booking.event_type or booking.proposed_time_slot or booking.notes or booking.lead_source %}
+<div class="card">
+  <h2>Enquiry details</h2>
+  {% if booking.event_type %}<p style="margin:0 0 6px;"><b>Event type:</b> {{ booking.event_type }}</p>{% endif %}
+  {% if booking.proposed_time_slot %}<p style="margin:0 0 6px;"><b>Proposed time:</b> {{ booking.proposed_time_slot }}</p>{% endif %}
+  {% if booking.lead_source %}
+  <p style="margin:0 0 6px;"><b>Lead source:</b> {{ booking.lead_source.replace('_', ' ') }}{% if booking.lead_referrer %} <span class="muted">({{ booking.lead_referrer }})</span>{% endif %}</p>
+  {% endif %}
+  {% if booking.notes %}
+  <p style="margin:12px 0 4px;"><b>Notes</b></p>
+  <p class="muted" style="white-space: pre-wrap; margin:0;">{{ booking.notes }}</p>
+  {% endif %}
+</div>
+{% endif %}
+
 <div class="card">
   <h2>Traffic source</h2>
   {% if not booking.first_touch_attribution and not booking.last_touch_attribution %}

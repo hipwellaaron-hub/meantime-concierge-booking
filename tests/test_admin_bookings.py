@@ -26,6 +26,30 @@ def test_bookings_list_shows_booking(admin_client, booking):
     assert booking.reference_code in resp.text
 
 
+def test_booking_detail_shows_enquiry_details_and_notes(admin_client, booking):
+    """Regression: the free-text comments, company name, and dates-flexible
+    answer a client gave on the enquiry form were captured correctly into
+    Booking.notes but never rendered anywhere on the booking detail page --
+    staff had no way to see what a client actually wrote."""
+    resp = _detail_page(admin_client, booking.id)
+    assert resp.status_code == 200
+    assert "Enquiry details" in resp.text
+    assert "Bride requests no seafood." in resp.text
+    assert booking.event_type in resp.text
+
+
+def test_booking_detail_omits_enquiry_details_card_when_nothing_to_show(admin_client, db, unassigned_space):
+    from app.services.booking import create_booking
+
+    bare = create_booking(
+        db, space_id=unassigned_space.id, contact_id=None, event_date=dt.date(2027, 5, 1),
+        event_name="Bare Booking", event_type=None, adult_count=10, child_count=0,
+        notes=None, actor="test",
+    )
+    resp = _detail_page(admin_client, bare.id)
+    assert "Enquiry details" not in resp.text
+
+
 def test_bookings_list_any_status_filter_shows_all(admin_client, booking):
     """Regression: submitting the "Any" option in the status filter posts
     status="", which Optional[BookingStatus] does not coerce to None the
