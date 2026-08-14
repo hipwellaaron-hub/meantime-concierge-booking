@@ -25,6 +25,7 @@ from app.services import enquiry_classification
 from app.services import invoicing
 from app.services import wizard as wizard_service
 from app.services import wizard_generation
+from app.services.attribution import summarize_channel
 from app.services.document_generation import generate_agreement_content, generate_beo_content
 from app.templating import templates
 from app.utils import is_valid_email, truncate
@@ -181,6 +182,9 @@ def booking_detail(
             enquiry_notification_failed=any(
                 e.event_type == "enquiry_notification_failed" for e in booking.events
             ) and booking.enquiry_notification_sent_at is None,
+            first_touch_channel=summarize_channel(booking.first_touch_attribution),
+            last_touch_channel=summarize_channel(booking.last_touch_attribution),
+            touches_differ=booking.first_touch_attribution != booking.last_touch_attribution,
         ),
     )
 

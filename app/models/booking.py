@@ -131,6 +131,26 @@ class Booking(Base):
     lead_source: Mapped[str | None] = mapped_column(String(50), nullable=True)
     lead_referrer: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
+    # Fine-grained ad-attribution data -- UTM parameters and click IDs
+    # (gclid, fbclid), captured client-side at first landing and persisted
+    # through the whole browsing session so a return visit or a
+    # later-in-session enquiry still carries them (see
+    # app/templates/enquiry.html and app.services.attribution). Deliberately
+    # separate from lead_source/lead_referrer above -- that is a coarser,
+    # staff-facing bucket; this is the ad-platform-level record.
+    #
+    # NULL on both columns means attribution was never attempted -- a
+    # staff-entered, iVvy-imported, or phone booking. That's a different,
+    # honest fact from a real visitor who genuinely had nothing to
+    # attribute (a real bundle exists, with referrer_category "unknown")
+    # -- see app.services.attribution.build_touch's own comment.
+    #
+    # Pure data. Nothing in this codebase may ever branch pricing, routing,
+    # classification, or policy on these values -- they arrive
+    # unauthenticated from the client and are trivially forgeable.
+    first_touch_attribution: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    last_touch_attribution: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
     # Provenance for bookings imported from a prior system (e.g. iVvy).
     # migration_external_ref is the source system's own booking code --
     # unique per source so re-running an import is idempotent, and useful

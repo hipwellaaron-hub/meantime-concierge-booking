@@ -181,6 +181,25 @@ def test_staff_create_booking_via_phone(admin_client, db, unassigned_space):
     assert any("Generic 'Birthday'" in e for e in events)
 
 
+def test_staff_created_booking_records_unknown_attribution(admin_client, db, unassigned_space):
+    """A phone call has no page load to capture UTM/referrer data from --
+    both columns must stay NULL (genuinely "never tracked"), never
+    silently defaulted into "direct" or "organic"."""
+    page = admin_client.get("/admin/bookings/new")
+    csrf_token = _csrf(page.text)
+
+    admin_client.post(
+        "/admin/bookings/new", data={**_new_booking_payload(), "csrf_token": csrf_token}, follow_redirects=False
+    )
+
+    booking = db.query(Booking).filter_by(event_name="Reyes 40th").one()
+    assert booking.first_touch_attribution is None
+    assert booking.last_touch_attribution is None
+
+    detail = admin_client.get(f"/admin/bookings/{booking.id}")
+    assert "Unknown -- not tracked" in detail.text
+
+
 def test_staff_create_booking_requires_a_lead_source(admin_client):
     page = admin_client.get("/admin/bookings/new")
     csrf_token = _csrf(page.text)

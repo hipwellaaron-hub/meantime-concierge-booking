@@ -1,0 +1,73 @@
+{% extends "admin/_base.html" %}
+{% block title %}Attribution report{% endblock %}
+{% block content %}
+<h1>Attribution report</h1>
+<p class="muted">Where enquiries actually came from, by first touch -- the campaign or referrer that originally brought the visitor in, not whatever they clicked last before submitting. See a booking's own page for its full first- and last-touch detail.</p>
+
+<form method="get" class="field-row" style="margin: 18px 0 28px; align-items: flex-end;">
+  <div>
+    <label>From</label>
+    <input type="date" name="since" value="{{ range_since }}">
+  </div>
+  <div>
+    <label>To</label>
+    <input type="date" name="until" value="{{ range_until }}">
+  </div>
+  <div style="flex: 0 0 auto;">
+    <button class="btn" type="submit">Update</button>
+  </div>
+</form>
+
+<div class="grid cols-4" style="margin-bottom: 28px;">
+  <div class="card stat">
+    <div class="num">{{ all_total }}</div>
+    <div class="label">Enquiries in range</div>
+  </div>
+  <div class="card stat">
+    <div class="num">{{ confirmed_total }}</div>
+    <div class="label">Confirmed bookings in range</div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Confirmed bookings by channel</h2>
+  <p class="muted" style="font-size:0.85rem;">This is the number that matters for judging ad spend -- an enquiry that never became a booking never cost the venue anything to fulfil.</p>
+  {% if confirmed_breakdown %}
+  <table>
+    <thead><tr><th>Channel</th><th>Confirmed bookings</th><th>Share</th></tr></thead>
+    <tbody>
+    {% for channel, count in confirmed_breakdown.items() %}
+      <tr>
+        <td>{{ channel }}</td>
+        <td class="muted">{{ count }}</td>
+        <td class="muted">{{ ((count / confirmed_total) * 100) | round(1) }}%</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty-state">No confirmed bookings in this range.</div>
+  {% endif %}
+</div>
+
+<div class="card section-gap">
+  <h2>All enquiries by channel</h2>
+  <p class="muted" style="font-size:0.85rem;">Every enquiry regardless of outcome -- useful for comparing enquiry volume against the confirmed count above to see which channels convert.</p>
+  {% if all_breakdown %}
+  <table>
+    <thead><tr><th>Channel</th><th>Enquiries</th><th>Share</th></tr></thead>
+    <tbody>
+    {% for channel, count in all_breakdown.items() %}
+      <tr>
+        <td>{{ channel }}</td>
+        <td class="muted">{{ count }}</td>
+        <td class="muted">{{ ((count / all_total) * 100) | round(1) }}%</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty-state">No enquiries in this range.</div>
+  {% endif %}
+</div>
+{% endblock %}

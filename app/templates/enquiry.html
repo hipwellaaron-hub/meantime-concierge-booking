@@ -84,6 +84,7 @@
   <p class="venue-tag">Hamilton</p>
 
   <form method="post" action="/enquiries" id="enquiry-form">
+    <input type="hidden" name="attribution" id="attribution-field">
     <div class="card">
       <section id="step-1">
         <p class="step-header">1 · Your Details</p>
@@ -169,6 +170,81 @@
   </form>
 </main>
 
+<script>
+(function () {
+  // Ad-attribution capture: UTM params, Google's gclid, Meta's fbclid, and
+  // the raw referrer -- captured once at first landing and persisted in
+  // localStorage so a visitor who browses the site and enquires later in
+  // the session, or on a return visit, still has their original touch
+  // attached rather than whatever happens to be in the URL at submit
+  // time. See app.services.attribution for how this is classified and
+  // stored server-side; nothing here decides anything, it only captures.
+  var STORAGE_FIRST = "mtc_attribution_first";
+  var STORAGE_LAST = "mtc_attribution_last";
+  var UTM_AND_CLICK_ID_FIELDS = ["utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content", "gclid", "fbclid"];
+
+  function readStorage(key) {
+    try {
+      var raw = window.localStorage.getItem(key);
+      return raw ? JSON.parse(raw) : null;
+    } catch (e) {
+      return null; // storage unavailable (private browsing, disabled) -- just no persistence this visit
+    }
+  }
+
+  function writeStorage(key, value) {
+    try {
+      window.localStorage.setItem(key, JSON.stringify(value));
+    } catch (e) {
+      // Never block the form over storage being unavailable.
+    }
+  }
+
+  function captureTouch() {
+    var params = new URLSearchParams(window.location.search);
+    var touch = { referrer: document.referrer || null, captured_at: new Date().toISOString() };
+    var hasSignal = false;
+    UTM_AND_CLICK_ID_FIELDS.forEach(function (field) {
+      var value = params.get(field);
+      touch[field] = value;
+      if (value) hasSignal = true;
+    });
+    if (!hasSignal && document.referrer) {
+      try {
+        hasSignal = new URL(document.referrer).origin !== window.location.origin;
+      } catch (e) { /* malformed referrer -- ignore, hasSignal stays false */ }
+    }
+    return { touch: touch, hasSignal: hasSignal };
+  }
+
+  var captured = captureTouch();
+  if (captured.hasSignal) {
+    // A real fresh touch (a campaign link or an external referrer) --
+    // always becomes the new last touch, and the first touch too if none
+    // is recorded yet for this visitor.
+    writeStorage(STORAGE_LAST, captured.touch);
+    if (!readStorage(STORAGE_FIRST)) writeStorage(STORAGE_FIRST, captured.touch);
+  } else {
+    // Nothing to attribute on this particular load (a reload, or internal
+    // navigation) -- never overwrite an existing touch with a blank one,
+    // but a visitor with no history at all still gets an honest "unknown"
+    // bundle rather than submitting with no attribution data at all.
+    if (!readStorage(STORAGE_FIRST)) writeStorage(STORAGE_FIRST, captured.touch);
+    if (!readStorage(STORAGE_LAST)) writeStorage(STORAGE_LAST, captured.touch);
+  }
+
+  var attributionField = document.getElementById("attribution-field");
+  var attributionForm = document.getElementById("enquiry-form");
+  if (attributionField && attributionForm) {
+    attributionForm.addEventListener("submit", function () {
+      attributionField.value = JSON.stringify({
+        first_touch: readStorage(STORAGE_FIRST) || captured.touch,
+        last_touch: readStorage(STORAGE_LAST) || captured.touch,
+      });
+    });
+  }
+})();
+</script>
 <script>
 (function () {
   const form = document.getElementById("enquiry-form");

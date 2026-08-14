@@ -9,6 +9,7 @@ from app.database import get_db
 from app.models import Booking, Venue
 from app.rate_limit import InMemoryRateLimiter, rate_limit_dependency
 from app.schemas.enquiry import EVENT_TYPES, EnquiryCreate
+from app.services.attribution import parse_attribution_payload
 from app.services.enquiry_classification import create_enquiry_booking
 from app.services.lead_analytics import classify_lead_source
 from app.templating import templates
@@ -42,6 +43,7 @@ def submit_enquiry(request: Request, payload: Annotated[EnquiryCreate, Form()], 
     referrer = request.headers.get("referer")
     lead_source = classify_lead_source(payload.lead_source, referrer)
     actor = truncate(f"public_enquiry:{payload.email}", BOOKING_EVENT_ACTOR_MAX_LENGTH)
+    first_touch, last_touch = parse_attribution_payload(payload.attribution, fallback_referrer=referrer)
 
     booking, _duplicate_candidates, _is_new = create_enquiry_booking(
         db,
@@ -61,6 +63,8 @@ def submit_enquiry(request: Request, payload: Annotated[EnquiryCreate, Form()], 
         lead_source=lead_source,
         lead_referrer=referrer,
         actor=actor,
+        first_touch_attribution=first_touch,
+        last_touch_attribution=last_touch,
     )
 
     return RedirectResponse(url=f"/enquiries/{booking.id}/thanks", status_code=303)

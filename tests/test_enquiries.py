@@ -1,4 +1,5 @@
 import datetime as dt
+import json
 
 from fastapi.testclient import TestClient
 
@@ -469,3 +470,130 @@ def test_empty_string_event_date_is_accepted_not_rejected(db, unassigned_space):
         assert booking.event_date is None
     finally:
         app.dependency_overrides.clear()
+
+
+# --- ad-attribution capture --------------------------------------------------
+
+
+def test_enquiry_with_utm_and_click_ids_records_them(db, unassigned_space):
+    attribution_json = json.dumps({
+        "first_touch": {
+            "utm_source": "google", "utm_medium": "cpc", "utm_campaign": "spring-2026",
+            "utm_term": "function venue newcastle", "utm_content": "ad-variant-a",
+            "gclid": "Cj0KCQjw_test_gclid", "referrer": "https://www.google.com/",
+            "captured_at": "2026-08-01T09:00:00.000Z",
+        },
+        "last_touch": {
+            "utm_source": "google", "utm_medium": "cpc", "utm_campaign": "spring-2026",
+            "gclid": "Cj0KCQjw_test_gclid", "referrer": "https://www.google.com/",
+            "captured_at": "2026-08-01T09:00:00.000Z",
+        },
+    })
+    app.dependency_overrides[get_db] = lambda: db
+    try:
+        client = TestClient(app, follow_redirects=False)
+        resp = client.post("/enquiries", data=_payload(attribution=attribution_json))
+        assert resp.status_code == 303
+    finally:
+        app.dependency_overrides.clear()
+
+    booking = db.query(Booking).filter_by(event_name="Wilson Wedding").one()
+    assert booking.first_touch_attribution["utm_source"] == "google"
+    assert booking.first_touch_attribution["utm_medium"] == "cpc"
+    assert booking.first_touch_attribution["utm_campaign"] == "spring-2026"
+    assert booking.first_touch_attribution["utm_term"] == "function venue newcastle"
+    assert booking.first_touch_attribution["utm_content"] == "ad-variant-a"
+    assert booking.first_touch_attribution["gclid"] == "Cj0KCQjw_test_gclid"
+    assert booking.last_touch_attribution["gclid"] == "Cj0KCQjw_test_gclid"
+
+
+def test_enquiry_without_utm_records_referrer_classification(db, unassigned_space):
+    attribution_json = json.dumps({
+        "first_touch": {"referrer": "https://www.facebook.com/somepage", "captured_at": "2026-08-01T09:00:00.000Z"},
+        "last_touch": {"referrer": "https://www.facebook.com/somepage", "captured_at": "2026-08-01T09:00:00.000Z"},
+    })
+    app.dependency_overrides[get_db] = lambda: db
+    try:
+        client = TestClient(app, follow_redirects=False)
+        resp = client.post("/enquiries", data=_payload(attribution=attribution_json))
+        assert resp.status_code == 303
+    finally:
+        app.dependency_overrides.clear()
+
+    booking = db.query(Booking).filter_by(event_name="Wilson Wedding").one()
+    assert booking.first_touch_attribution["utm_source"] is None
+    assert booking.first_touch_attribution["referrer"] == "https://www.facebook.com/somepage"
+    assert booking.first_touch_attribution["referrer_category"] == "social"
+
+
+def test_enquiry_with_neither_utm_nor_referrer_records_unknown_not_a_default(db, unassigned_space):
+    attribution_json = json.dumps({
+        "first_touch": {"referrer": None, "captured_at": "2026-08-01T09:00:00.000Z"},
+        "last_touch": {"referrer": None, "captured_at": "2026-08-01T09:00:00.000Z"},
+    })
+    app.dependency_overrides[get_db] = lambda: db
+    try:
+        client = TestClient(app, follow_redirects=False)
+        resp = client.post("/enquiries", data=_payload(attribution=attribution_json))
+        assert resp.status_code == 303
+    finally:
+        app.dependency_overrides.clear()
+
+    booking = db.query(Booking).filter_by(event_name="Wilson Wedding").one()
+    # A real bundle exists (this went through the public pipeline) -- it's
+    # just genuinely empty. "unknown", never "direct" or "organic".
+    assert booking.first_touch_attribution is not None
+    assert booking.first_touch_attribution["referrer_category"] == "unknown"
+    assert booking.first_touch_attribution["utm_source"] is None
+
+
+def test_gclid_captured_at_first_landing_survives_to_a_later_submission(db, unassigned_space):
+    """The scenario the persistence design exists for: a visitor arrives
+    via a paid ad (gclid in the URL at first landing), browses, and only
+    submits later -- by which point the live request carries none of
+    that. The client is responsible for replaying what it captured
+    earlier (see app/templates/enquiry.html's localStorage persistence);
+    this proves the backend trusts that submitted bundle rather than
+    re-deriving anything from the live request, which is exactly what
+    makes the persistence meaningful."""
+    attribution_json = json.dumps({
+        "first_touch": {
+            "gclid": "gclid_captured_three_days_ago", "utm_source": "google", "utm_medium": "cpc",
+            "referrer": "https://www.google.com/", "captured_at": "2026-08-01T09:00:00.000Z",
+        },
+        # last_touch reflects a *different*, later, referrer-less visit --
+        # proving first_touch isn't just an echo of last_touch.
+        "last_touch": {"referrer": None, "captured_at": "2026-08-04T20:00:00.000Z"},
+    })
+    app.dependency_overrides[get_db] = lambda: db
+    try:
+        # The live POST itself carries no gclid anywhere -- no query
+        # string, no referrer suggesting Google. Only the submitted
+        # attribution JSON (what the client persisted) has it.
+        client = TestClient(app, follow_redirects=False)
+        resp = client.post("/enquiries", data=_payload(attribution=attribution_json))
+        assert resp.status_code == 303
+    finally:
+        app.dependency_overrides.clear()
+
+    booking = db.query(Booking).filter_by(event_name="Wilson Wedding").one()
+    assert booking.first_touch_attribution["gclid"] == "gclid_captured_three_days_ago"
+    assert booking.last_touch_attribution["gclid"] is None
+    assert booking.last_touch_attribution["referrer_category"] == "unknown"
+
+
+def test_enquiry_with_no_attribution_field_at_all_falls_back_to_server_referrer(db, unassigned_space):
+    """JS disabled/blocked -- there's no hidden field at all. Still gets
+    a real bundle from the one signal the server itself can see."""
+    app.dependency_overrides[get_db] = lambda: db
+    try:
+        client = TestClient(app, follow_redirects=False)
+        resp = client.post(
+            "/enquiries", data=_payload(), headers={"referer": "https://www.google.com/search?q=venue"}
+        )
+        assert resp.status_code == 303
+    finally:
+        app.dependency_overrides.clear()
+
+    booking = db.query(Booking).filter_by(event_name="Wilson Wedding").one()
+    assert booking.first_touch_attribution["referrer_category"] == "search"

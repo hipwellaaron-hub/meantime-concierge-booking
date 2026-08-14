@@ -16,6 +16,51 @@
 <p class="muted">{{ booking.contact.name }} &middot; {{ booking.contact.email }}{% if booking.contact.phone %} &middot; {{ booking.contact.phone }}{% endif %}</p>
 {% endif %}
 
+<div class="card">
+  <h2>Traffic source</h2>
+  {% if not booking.first_touch_attribution and not booking.last_touch_attribution %}
+  <p class="muted" style="margin:0;">Unknown -- not tracked. This booking was staff-entered, imported, or arrived by phone, so there was never a page load to capture attribution from.</p>
+  {% else %}
+  {% set ft = booking.first_touch_attribution %}
+  <p style="margin:0 0 4px;"><b>First touch:</b> <span class="badge gold">{{ first_touch_channel }}</span></p>
+  {% if ft %}
+  <p class="muted" style="font-size:0.85rem; margin:0 0 10px;">
+    {% if ft.utm_source or ft.utm_medium or ft.utm_campaign %}
+      utm_source={{ ft.utm_source or "—" }} &middot; utm_medium={{ ft.utm_medium or "—" }} &middot; utm_campaign={{ ft.utm_campaign or "—" }}
+      {% if ft.utm_term %} &middot; utm_term={{ ft.utm_term }}{% endif %}
+      {% if ft.utm_content %} &middot; utm_content={{ ft.utm_content }}{% endif %}<br>
+    {% endif %}
+    {% if ft.gclid %}gclid: <code>{{ ft.gclid }}</code><br>{% endif %}
+    {% if ft.fbclid %}fbclid: <code>{{ ft.fbclid }}</code><br>{% endif %}
+    referrer: {{ ft.referrer or "none" }} ({{ ft.referrer_category }})
+    {% if ft.captured_at %} &middot; captured {{ ft.captured_at }}{% endif %}
+  </p>
+  {% endif %}
+
+  {% if touches_differ %}
+  {% set lt = booking.last_touch_attribution %}
+  <p style="margin:0 0 4px;"><b>Last touch:</b> <span class="badge gold">{{ last_touch_channel }}</span></p>
+  {% if lt %}
+  <p class="muted" style="font-size:0.85rem; margin:0;">
+    {% if lt.utm_source or lt.utm_medium or lt.utm_campaign %}
+      utm_source={{ lt.utm_source or "—" }} &middot; utm_medium={{ lt.utm_medium or "—" }} &middot; utm_campaign={{ lt.utm_campaign or "—" }}
+      {% if lt.utm_term %} &middot; utm_term={{ lt.utm_term }}{% endif %}
+      {% if lt.utm_content %} &middot; utm_content={{ lt.utm_content }}{% endif %}<br>
+    {% endif %}
+    {% if lt.gclid %}gclid: <code>{{ lt.gclid }}</code><br>{% endif %}
+    {% if lt.fbclid %}fbclid: <code>{{ lt.fbclid }}</code><br>{% endif %}
+    referrer: {{ lt.referrer or "none" }} ({{ lt.referrer_category }})
+    {% if lt.captured_at %} &middot; captured {{ lt.captured_at }}{% endif %}
+  </p>
+  {% else %}
+  <p class="muted" style="font-size:0.85rem; margin:0;">Unknown -- not tracked.</p>
+  {% endif %}
+  {% else %}
+  <p class="muted" style="font-size:0.8rem; margin:6px 0 0;">Last touch matches first touch -- a single-session enquiry.</p>
+  {% endif %}
+  {% endif %}
+</div>
+
 {% if booking.parent_booking %}
 <div class="card" style="border-color: var(--gold-dim);">
   <p style="margin:0;">

@@ -61,6 +61,15 @@ class EnquiryCreate(BaseModel):
     # Falls back to Referer-header classification if omitted.
     lead_source: str | None = None
 
+    # Raw JSON built client-side from what app/templates/enquiry.html
+    # captured at first landing and persisted in localStorage (see
+    # app.services.attribution) -- {"first_touch": {...}, "last_touch":
+    # {...}}. Never trusted or validated beyond a length cap here; parsing
+    # and validation happen in app.services.attribution.parse_attribution_payload,
+    # which never raises -- malformed attribution data must never block a
+    # real enquiry from being captured.
+    attribution: str | None = Field(default=None, max_length=4000)
+
     @field_validator("first_name", "last_name", "event_name")
     @classmethod
     def _not_blank_after_strip(cls, value: str) -> str:

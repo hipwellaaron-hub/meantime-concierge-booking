@@ -211,6 +211,8 @@ def create_enquiry_booking(
     lead_source: str,
     lead_referrer: str | None,
     actor: str,
+    first_touch_attribution: dict | None = None,
+    last_touch_attribution: dict | None = None,
 ) -> tuple[Booking, list[DuplicateCandidate], bool]:
     """The single path an enquiry becomes a Booking, regardless of whether
     a client submitted it themselves (app.api.enquiries) or staff entered
@@ -267,6 +269,8 @@ def create_enquiry_booking(
         actor=actor,
         lead_source=lead_source,
         lead_referrer=lead_referrer,
+        first_touch_attribution=first_touch_attribution,
+        last_touch_attribution=last_touch_attribution,
     )
 
     flags = classify_and_flag(
