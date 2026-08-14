@@ -9,7 +9,7 @@ from app.models import Booking, BookingEvent, Invoice, Space, Venue
 from app.models.booking import BookingStatus
 from app.models.invoice import InvoiceStatus
 from app.models.staff_user import StaffUser
-from app.services import ivvy_import, wizard as wizard_service
+from app.services import enquiry_classification, ivvy_import, wizard as wizard_service
 from app.templating import templates
 
 router = APIRouter(prefix="/admin", tags=["admin-dashboard"], dependencies=[Depends(require_staff)])
@@ -37,6 +37,7 @@ def dashboard(request: Request, db: Session = Depends(get_db), staff: StaffUser 
         .join(Space, Booking.space_id == Space.id)
         .where(Space.venue_id == venue.id, Invoice.status == InvoiceStatus.sent)
     )
+    notification_failures_count = len(enquiry_classification.get_enquiry_notification_failures(db, venue))
 
     recent_events = db.scalars(
         select(BookingEvent)
@@ -58,6 +59,7 @@ def dashboard(request: Request, db: Session = Depends(get_db), staff: StaffUser 
                 "triage": triage_count,
                 "wizard_ready": wizard_ready_count,
                 "unpaid_invoices": unpaid_invoices,
+                "notification_failures": notification_failures_count,
             },
             recent_events=recent_events,
         ),

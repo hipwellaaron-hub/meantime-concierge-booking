@@ -899,3 +899,73 @@ def test_dashboard_beo_generate_still_blank_when_no_wizard_session(admin_client,
     beo = documents_service.get_current(db, booking.id, DocumentType.beo)
     assert "[REVIEW]" in beo.content["bar_structure"]
     assert "[REVIEW]" in beo.content["event_timeline"]["notes"]
+
+
+# --- enquiry notification failure + resend -----------------------------------
+
+
+def _create_enquiry(db, *, email, event_name, event_date):
+    from app.models import Venue
+    from app.services.enquiry_classification import create_enquiry_booking
+
+    venue = db.query(Venue).filter_by(slug="hamilton").one()
+    booking, _duplicate_candidates, _is_new = create_enquiry_booking(
+        db, venue=venue, full_name="Notify Test", email=email, phone=None,
+        event_name=event_name, event_type="Wedding", event_date=event_date,
+        proposed_time_slot=None, attendee_count=50, adult_count=50, company_name=None,
+        dates_flexible=False, comments=None, lead_source="direct", lead_referrer=None, actor="test",
+    )
+    return booking
+
+
+def test_booking_detail_shows_enquiry_notification_failed_banner_with_resend(admin_client, db, unassigned_space):
+    # Gmail SMTP isn't configured in tests, so create_enquiry_booking's
+    # own call to notify_new_enquiry records a genuine, unmocked failure --
+    # exactly the state this banner exists to surface.
+    booking = _create_enquiry(db, email="notify.detail@example.com", event_name="Notify Detail Booking", event_date=dt.date(2027, 5, 1))
+    assert booking.enquiry_notification_sent_at is None
+
+    resp = _detail_page(admin_client, booking.id)
+    assert "Enquiry notification failed to send" in resp.text
+    assert "Resend notification" in resp.text
+
+
+def test_resend_enquiry_notification_route_clears_the_failure(admin_client, db, unassigned_space):
+    from unittest.mock import patch
+
+    booking = _create_enquiry(db, email="resend.route@example.com", event_name="Resend Route Booking", event_date=dt.date(2027, 5, 2))
+    assert booking.enquiry_notification_sent_at is None
+
+    page = _detail_page(admin_client, booking.id)
+    csrf_token = _csrf(page.text)
+
+    with patch("app.services.notifications.send_enquiry_notification_email"):
+        resp = admin_client.post(
+            f"/admin/bookings/{booking.id}/enquiry-notification/resend",
+            data={"csrf_token": csrf_token},
+            follow_redirects=False,
+        )
+    assert resp.status_code == 303
+
+    db.refresh(booking)
+    assert booking.enquiry_notification_sent_at is not None
+
+    after = _detail_page(admin_client, booking.id)
+    assert "Enquiry notification failed to send" not in after.text
+
+
+def test_resend_enquiry_notification_route_surfaces_failure(admin_client, db, unassigned_space):
+    from unittest.mock import patch
+
+    booking = _create_enquiry(db, email="resend.fail@example.com", event_name="Resend Fail Booking", event_date=dt.date(2027, 5, 3))
+
+    page = _detail_page(admin_client, booking.id)
+    csrf_token = _csrf(page.text)
+
+    with patch("app.services.notifications.send_enquiry_notification_email", side_effect=RuntimeError("still down")):
+        resp = admin_client.post(
+            f"/admin/bookings/{booking.id}/enquiry-notification/resend",
+            data={"csrf_token": csrf_token},
+            follow_redirects=False,
+        )
+    assert resp.status_code == 502

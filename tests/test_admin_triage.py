@@ -1,5 +1,6 @@
 import datetime as dt
 import re
+from unittest.mock import patch
 
 from app.models import Contact
 from app.models.booking import BookingStatus
@@ -177,6 +178,42 @@ def test_triage_does_not_list_recorded_minimum_reduction(admin_client, db, loft)
 
     resp = admin_client.get("/admin/triage")
     assert "Properly Recorded Reduction" not in resp.text
+
+
+def test_triage_lists_enquiry_notification_failures_with_resend(admin_client, db):
+    from app.models import Venue
+    from app.services.enquiry_classification import create_enquiry_booking
+
+    venue = db.query(Venue).filter_by(slug="hamilton").one()
+    # Gmail SMTP isn't configured in tests, so this genuinely fails -- no
+    # mocking needed to exercise the worklist itself.
+    booking, _, _ = create_enquiry_booking(
+        db, venue=venue, full_name="Triage Notify Test", email="triage.notify@example.com", phone=None,
+        event_name="Triage Notify Booking", event_type="Wedding", event_date=dt.date(2027, 6, 5),
+        proposed_time_slot=None, attendee_count=50, adult_count=50, company_name=None,
+        dates_flexible=False, comments=None, lead_source="direct", lead_referrer=None, actor="test",
+    )
+
+    resp = admin_client.get("/admin/triage")
+    assert resp.status_code == 200
+    notification_section = resp.text.split("Enquiry notification failed to send")[1].split("Agreed minimum differs")[0]
+    assert "Triage Notify Booking" in notification_section
+
+    page = admin_client.get("/admin/triage")
+    csrf_token = _csrf(page.text)
+    with patch("app.services.notifications.send_enquiry_notification_email"):
+        resp2 = admin_client.post(
+            f"/admin/bookings/{booking.id}/enquiry-notification/resend",
+            data={"csrf_token": csrf_token},
+            follow_redirects=False,
+        )
+    assert resp2.status_code == 303
+    db.refresh(booking)
+    assert booking.enquiry_notification_sent_at is not None
+
+    after = admin_client.get("/admin/triage")
+    after_section = after.text.split("Enquiry notification failed to send")[1].split("Agreed minimum differs")[0]
+    assert "Triage Notify Booking" not in after_section
 
 
 def test_triage_send_wizard_link_creates_session(admin_client, db, loft):

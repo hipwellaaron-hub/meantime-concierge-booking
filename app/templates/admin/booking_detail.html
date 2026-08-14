@@ -60,6 +60,19 @@
   {% endif %}
 </div>
 
+{% if enquiry_notification_failed %}
+<div class="card" style="border-color: var(--ember); background: rgba(212,98,43,0.08);">
+  <h2 style="color: var(--ember); margin-bottom: 10px;">Enquiry notification failed to send</h2>
+  <p class="muted" style="margin-bottom:10px;">The email that makes this enquiry visible in Gmail for drafting a reply never went out. See the audit trail below for the reason.</p>
+  <form method="post" action="/admin/bookings/{{ booking.id }}/enquiry-notification/resend">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button class="btn" type="submit">Resend notification</button>
+  </form>
+</div>
+{% elif booking.enquiry_notification_sent_at %}
+<p class="muted" style="font-size:0.85rem;">Enquiry notification sent {{ booking.enquiry_notification_sent_at | sydney_time }}.</p>
+{% endif %}
+
 {% if not contact_email_valid %}
 <div class="card" style="border-color: var(--wine);">
   <p style="margin:0; color: var(--wine);">

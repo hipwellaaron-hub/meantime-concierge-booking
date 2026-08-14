@@ -19,17 +19,30 @@ field.
 """
 
 import datetime as dt
+import logging
 import re
+import time
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.models import Booking, BookingEvent, Space, Venue
 from app.models.booking import BookingStatus
 from app.services import ivvy_import
+from app.services import notifications
 from app.services.booking import create_booking
 from app.services.contact_matching import DuplicateCandidate, find_or_create_contact
-from app.services.notifications import notify_new_enquiry
+from app.utils import truncate
+
+logger = logging.getLogger(__name__)
+
+# One immediate retry on a transient SMTP failure (a dropped connection,
+# a momentary Gmail hiccup) before giving up and leaving it for a human --
+# see notify_new_enquiry. Short on purpose: this runs synchronously inside
+# the enquiry submission request, so the client is waiting on it.
+ENQUIRY_NOTIFICATION_RETRY_DELAY_SECONDS = 1.5
+NOTIFICATION_FAILURE_REASON_MAX_LENGTH = 2000
 
 GENERIC_EVENT_TYPES = {"party", "event", "other", "not sure yet", ""}
 
@@ -256,7 +269,7 @@ def create_enquiry_booking(
         lead_referrer=lead_referrer,
     )
 
-    classify_and_flag(
+    flags = classify_and_flag(
         db,
         booking,
         event_type=event_type,
@@ -266,11 +279,113 @@ def create_enquiry_booking(
         possible_duplicate_contact=len(duplicate_candidates) > 0,
     )
 
-    # Nothing auto-sends: this only marks where a future draft pipeline
-    # would pick up the enquiry, it does not send anything itself.
-    notify_new_enquiry(booking)
+    notify_new_enquiry(db, booking, flags=flags, actor=actor)
 
     return booking, duplicate_candidates, True
+
+
+def notify_new_enquiry(db: Session, booking: Booking, *, flags: list[str], actor: str) -> None:
+    """The one email that makes a brand-new enquiry visible outside this
+    database -- see app.services.notifications' module docstring on why a
+    client reply can only ever be drafted from what actually lands in the
+    venue's own inbox. Tries once, retries once on a transient failure,
+    and never raises: a failed send must not take the enquiry -- or the
+    client's own thank-you page -- down with it. A failure that survives
+    both attempts is instead written to the audit trail and left for a
+    human to see and resend -- see get_enquiry_notification_failures and
+    resend_enquiry_notification."""
+    if not notifications.is_gmail_smtp_configured():
+        logger.error(
+            "Enquiry notification not sent for booking %s (%s): Gmail SMTP is not configured",
+            booking.reference_code, booking.id,
+        )
+        _record_notification_failure(db, booking, reason="Gmail SMTP is not configured", actor=actor)
+        return
+
+    last_error: Exception | None = None
+    for attempt in (1, 2):
+        try:
+            notifications.send_enquiry_notification_email(
+                booking, flags=flags, dashboard_base_url=settings.dashboard_base_url
+            )
+        except Exception as exc:  # noqa: BLE001 -- a live email-provider problem must not take the
+            # enquiry submission down with it (same reasoning as the Stripe guard in app.api.invoices).
+            last_error = exc
+            logger.exception(
+                "Enquiry notification email failed (attempt %s/2) for booking %s", attempt, booking.id
+            )
+            if attempt == 1:
+                time.sleep(ENQUIRY_NOTIFICATION_RETRY_DELAY_SECONDS)
+            continue
+        _record_notification_success(db, booking, actor=actor)
+        return
+
+    _record_notification_failure(db, booking, reason=str(last_error), actor=actor)
+
+
+def resend_enquiry_notification(db: Session, booking: Booking, *, actor: str) -> None:
+    """The staff-facing recovery path once the automatic attempt above has
+    exhausted its one retry. Re-derives flags from the booking's own audit
+    trail (classify_and_flag already wrote them there) rather than
+    re-running classification, so a resend reflects exactly what was
+    originally flagged. Unlike notify_new_enquiry, this raises on failure
+    -- the caller is a deliberate staff action, not a background step of
+    enquiry submission, so a failure here should surface to whoever
+    clicked the button, not just to the log."""
+    flags = [e.new_value for e in booking.events if e.event_type == "enquiry_flagged" and e.new_value]
+    try:
+        notifications.send_enquiry_notification_email(
+            booking, flags=flags, dashboard_base_url=settings.dashboard_base_url
+        )
+    except Exception as exc:
+        logger.exception("Manual resend of the enquiry notification failed for booking %s", booking.id)
+        _record_notification_failure(db, booking, reason=str(exc), actor=actor)
+        raise
+    _record_notification_success(db, booking, actor=actor)
+
+
+def _record_notification_success(db: Session, booking: Booking, *, actor: str) -> None:
+    booking.enquiry_notification_sent_at = dt.datetime.now(dt.timezone.utc)
+    db.add(BookingEvent(booking_id=booking.id, event_type="enquiry_notification_sent", actor=actor))
+    db.commit()
+    db.refresh(booking)
+
+
+def _record_notification_failure(db: Session, booking: Booking, *, reason: str, actor: str) -> None:
+    db.add(
+        BookingEvent(
+            booking_id=booking.id,
+            event_type="enquiry_notification_failed",
+            new_value=truncate(reason, NOTIFICATION_FAILURE_REASON_MAX_LENGTH),
+            actor=actor,
+        )
+    )
+    db.commit()
+
+
+def get_enquiry_notification_failures(db: Session, venue: Venue) -> list[Booking]:
+    """Staff worklist: an enquiry notification that was attempted and has
+    not (yet) succeeded. Self-clearing the moment it sends -- either the
+    automatic retry inside notify_new_enquiry beats a transient failure,
+    or staff use resend_enquiry_notification; either way
+    enquiry_notification_sent_at gets set and this drops off. Gated on the
+    presence of a genuine "enquiry_notification_failed" event, not merely
+    on the timestamp being unset -- an iVvy import or a manually-placed
+    hold never goes through notify_new_enquiry at all, and must never
+    appear here just because they, too, have no sent_at."""
+    failed = select(BookingEvent.booking_id).where(BookingEvent.event_type == "enquiry_notification_failed")
+    return list(
+        db.scalars(
+            select(Booking)
+            .join(Space, Booking.space_id == Space.id)
+            .where(
+                Space.venue_id == venue.id,
+                Booking.enquiry_notification_sent_at.is_(None),
+                Booking.id.in_(failed),
+            )
+            .order_by(Booking.event_date)
+        ).all()
+    )
 
 
 def get_enquiries_needing_clarification(db: Session, venue: Venue) -> list[Booking]:

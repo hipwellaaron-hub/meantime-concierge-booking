@@ -8,7 +8,7 @@ from app.models.payment import PaymentMethod
 from app.services import documents as documents_service
 from app.services import invoicing
 from app.services.booking import change_status, create_booking
-from app.services.digest import build_digest, get_open_enquiries, get_overdue_invoices, render_digest_text
+from app.services.digest import build_digest, get_overdue_invoices, render_digest_text
 from app.services.document_generation import generate_agreement_content
 
 
@@ -24,26 +24,6 @@ def _make_booking(db, space, *, event_date=dt.date(2027, 3, 6), status=BookingSt
     if status != BookingStatus.enquiry:
         change_status(db, booking, status, actor="test")
     return booking
-
-
-def test_open_enquiries_lists_enquiry_status_only(db, hamilton, loft):
-    open_one = _make_booking(db, loft, event_name="Still An Enquiry")
-    _make_booking(db, loft, event_date=dt.date(2027, 3, 7), event_name="Already Offered", status=BookingStatus.offered)
-
-    result = get_open_enquiries(db, hamilton)
-
-    names = {b.event_name for b in result}
-    assert "Still An Enquiry" in names
-    assert "Already Offered" not in names
-    assert open_one.id in {b.id for b in result}
-
-
-def test_open_enquiries_clears_once_progressed(db, hamilton, loft):
-    booking = _make_booking(db, loft)
-    assert booking.id in {b.id for b in get_open_enquiries(db, hamilton)}
-
-    change_status(db, booking, BookingStatus.offered, actor="test")
-    assert booking.id not in {b.id for b in get_open_enquiries(db, hamilton)}
 
 
 def test_overdue_invoice_detected(db, hamilton, loft):
@@ -110,14 +90,16 @@ def test_digest_is_empty_when_nothing_needs_attention(db, hamilton):
 def test_render_digest_text_all_clear():
     from app.services.digest import DigestContent
 
-    content = DigestContent(new_enquiries=[], wizard_eligible=[], overdue_invoices=[])
+    content = DigestContent(wizard_eligible=[], overdue_invoices=[])
     subject, body = render_digest_text(content, dashboard_base_url="https://example.test")
     assert subject == "Meantime Concierge: all clear"
     assert "Nothing needs attention" in body
 
 
 def test_render_digest_text_lists_items_with_links(db, hamilton, loft):
-    booking = _make_booking(db, loft, event_name="Render Test Booking")
+    booking = _make_booking(db, loft, event_name="Render Test Booking", status=BookingStatus.confirmed)
+    invoice = invoicing.create_deposit_invoice(db, booking, due_date=dt.date(2020, 1, 1), actor="test")
+    invoicing.mark_sent(db, invoice, actor="test")
     content = build_digest(db, hamilton, as_of=dt.date(2026, 1, 1))
 
     subject, body = render_digest_text(content, dashboard_base_url="https://example.test")

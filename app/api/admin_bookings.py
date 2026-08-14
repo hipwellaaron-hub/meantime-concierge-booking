@@ -178,6 +178,9 @@ def booking_detail(
             payment_methods=list(PaymentMethod),
             legal_next_statuses=booking_service.LEGAL_TRANSITIONS.get(booking.status, ()),
             contact_email_valid=booking.contact is not None and is_valid_email(booking.contact.email),
+            enquiry_notification_failed=any(
+                e.event_type == "enquiry_notification_failed" for e in booking.events
+            ) and booking.enquiry_notification_sent_at is None,
         ),
     )
 
@@ -593,4 +596,16 @@ def set_outside_cake_permitted(
 ):
     booking = _get_booking_or_404(db, booking_id)
     booking_service.set_outside_cake_permitted(db, booking, permitted=permitted, actor=_actor(staff))
+    return _redirect_to_detail(booking_id)
+
+
+@router.post("/{booking_id}/enquiry-notification/resend", dependencies=[Depends(require_csrf)])
+def resend_enquiry_notification(
+    booking_id: uuid.UUID, request: Request, db: Session = Depends(get_db), staff: StaffUser = Depends(require_staff)
+):
+    booking = _get_booking_or_404(db, booking_id)
+    try:
+        enquiry_classification.resend_enquiry_notification(db, booking, actor=_actor(staff))
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Resend failed: {exc}") from exc
     return _redirect_to_detail(booking_id)

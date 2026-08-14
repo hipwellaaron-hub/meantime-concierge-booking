@@ -57,6 +57,33 @@
   {% endif %}
 </div>
 
+<div class="card section-gap" style="border-color: var(--ember);">
+  <h2 style="color: var(--ember);">Enquiry notification failed to send ({{ notification_failures | length }})</h2>
+  <p class="muted">This is the email that makes the enquiry visible in Gmail for drafting a reply -- until it sends, the enquiry effectively doesn't exist outside Concierge.</p>
+  {% if notification_failures %}
+  <table>
+    <thead><tr><th>Event</th><th>Reference</th><th>Date</th><th></th></tr></thead>
+    <tbody>
+    {% for booking in notification_failures %}
+      <tr>
+        <td><a href="/admin/bookings/{{ booking.id }}">{{ booking.event_name }}</a></td>
+        <td class="muted">{{ booking.reference_code }}</td>
+        <td>{{ booking.event_date if booking.event_date else "Date TBD" }}</td>
+        <td>
+          <form method="post" action="/admin/bookings/{{ booking.id }}/enquiry-notification/resend">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button class="btn" type="submit">Resend</button>
+          </form>
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty-state">Nothing failed to send.</div>
+  {% endif %}
+</div>
+
 <div class="card section-gap">
   <h2>Agreed minimum differs from standard, no reason recorded ({{ unrecorded_min_reductions | length }})</h2>
   <p class="muted">Master Policy §4.4: a reduced minimum must always carry a reason. These were set some other way (import, migration) and need a reason recorded or correcting.</p>

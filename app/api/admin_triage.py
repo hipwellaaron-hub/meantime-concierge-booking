@@ -27,6 +27,7 @@ def triage(request: Request, db: Session = Depends(get_db), staff: StaffUser = D
     needs_clarification = enquiry_classification.get_enquiries_needing_clarification(db, venue)
     flagged_in_progress = enquiry_classification.get_flagged_bookings_in_progress(db, venue)
     unrecorded_min_reductions = booking_service.get_bookings_with_unrecorded_minimum_reduction(db, venue.id)
+    notification_failures = enquiry_classification.get_enquiry_notification_failures(db, venue)
     bookable_spaces = db.scalars(
         select(Space).where(Space.venue_id == venue.id, Space.is_bookable.is_(True)).order_by(Space.name)
     ).all()
@@ -41,6 +42,7 @@ def triage(request: Request, db: Session = Depends(get_db), staff: StaffUser = D
             needs_clarification=needs_clarification,
             flagged_in_progress=flagged_in_progress,
             unrecorded_min_reductions=unrecorded_min_reductions,
+            notification_failures=notification_failures,
             bookable_spaces=bookable_spaces,
         ),
     )

@@ -1,6 +1,12 @@
-"""Staff notification digest: what needs attention right now, in one
-email, checked at a scheduled time rather than requiring Aaron to open
-the dashboard to find out anything happened.
+"""Staff notification digest: what's building up that isn't urgent enough
+for its own email, checked at a scheduled time rather than requiring
+Aaron to open the dashboard to find out anything happened. A new enquiry
+is deliberately NOT covered here -- it gets its own immediate email (see
+app.services.enquiry_classification.notify_new_enquiry) the moment it
+arrives, which is the whole point of that email; repeating it in the next
+digest run would just be noise. This digest covers the two things that
+are genuinely periodic rather than immediate: bookings that have become
+wizard-ready, and invoices that have gone overdue.
 
 Every section is self-clearing by construction (same worklist pattern as
 app.services.enquiry_classification.get_enquiries_needing_clarification,
@@ -21,7 +27,6 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import Booking, Invoice, Venue
-from app.models.booking import BookingStatus
 from app.models.invoice import InvoiceStatus
 from app.services import invoicing
 from app.services.wizard import get_wizard_eligible_bookings
@@ -36,27 +41,12 @@ class OverdueInvoice:
 
 @dataclasses.dataclass
 class DigestContent:
-    new_enquiries: list[Booking]
     wizard_eligible: list[Booking]
     overdue_invoices: list[OverdueInvoice]
 
     @property
     def is_empty(self) -> bool:
-        return not (self.new_enquiries or self.wizard_eligible or self.overdue_invoices)
-
-
-def get_open_enquiries(db: Session, venue: Venue) -> list[Booking]:
-    """Every booking still sitting at 'enquiry' -- clears the moment staff
-    move it to 'offered' or 'dead', same as every other worklist here."""
-    return list(
-        db.scalars(
-            select(Booking)
-            .join(Booking.space)
-            .where(Booking.status == BookingStatus.enquiry)
-            .where(Booking.space.has(venue_id=venue.id))
-            .order_by(Booking.created_at)
-        ).all()
-    )
+        return not (self.wizard_eligible or self.overdue_invoices)
 
 
 def get_overdue_invoices(db: Session, venue: Venue, *, as_of: dt.date | None = None) -> list[OverdueInvoice]:
@@ -85,7 +75,6 @@ def get_overdue_invoices(db: Session, venue: Venue, *, as_of: dt.date | None = N
 
 def build_digest(db: Session, venue: Venue, *, as_of: dt.date | None = None) -> DigestContent:
     return DigestContent(
-        new_enquiries=get_open_enquiries(db, venue),
         wizard_eligible=get_wizard_eligible_bookings(db, venue, as_of=as_of),
         overdue_invoices=get_overdue_invoices(db, venue, as_of=as_of),
     )
@@ -95,17 +84,10 @@ def render_digest_text(content: DigestContent, *, dashboard_base_url: str) -> tu
     """Returns (subject, plain-text body). Plain text, not HTML -- this is
     an internal operational email read in an inbox, not a client-facing
     document; it always renders correctly everywhere and needs no template."""
-    total = len(content.new_enquiries) + len(content.wizard_eligible) + len(content.overdue_invoices)
+    total = len(content.wizard_eligible) + len(content.overdue_invoices)
     subject = f"Meantime Concierge: {total} item{'s' if total != 1 else ''} need attention" if total else "Meantime Concierge: all clear"
 
     lines = []
-
-    if content.new_enquiries:
-        lines.append(f"OPEN ENQUIRIES ({len(content.new_enquiries)})")
-        for b in content.new_enquiries:
-            date_str = b.event_date.isoformat() if b.event_date else "date TBD"
-            lines.append(f"  - {b.event_name} ({date_str}) -- {dashboard_base_url}/admin/bookings/{b.id}")
-        lines.append("")
 
     if content.wizard_eligible:
         lines.append(f"READY FOR THE GUIDED WIZARD ({len(content.wizard_eligible)})")

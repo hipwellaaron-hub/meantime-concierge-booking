@@ -182,6 +182,16 @@ class Booking(Base):
     # app.services.calendar).
     hold_expires_at: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
 
+    # Set once, the first time the venue's own new-enquiry notification
+    # email (app.services.enquiry_classification.notify_new_enquiry)
+    # actually sends successfully. NULL means either "never attempted"
+    # (an iVvy import, a manually-placed hold -- notify_new_enquiry is
+    # never called for those) or "attempted and still failing" -- the two
+    # are told apart by whether an "enquiry_notification_failed"
+    # BookingEvent exists, not by this column alone. See
+    # get_enquiry_notification_failures.
+    enquiry_notification_sent_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False

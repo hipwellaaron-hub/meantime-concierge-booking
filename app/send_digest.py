@@ -12,12 +12,11 @@ wired up, and means a misconfigured schedule doesn't need special-casing.
     python -m app.send_digest
 """
 
+from app.config import settings
 from app.database import SessionLocal
 from app.models import Venue
 from app.services import notifications
 from app.services.digest import build_digest, render_digest_text
-
-DASHBOARD_BASE_URL = "https://meantime-concierge-booking-production.up.railway.app"
 
 
 def main() -> None:
@@ -25,7 +24,7 @@ def main() -> None:
     try:
         venue = db.query(Venue).filter_by(slug="hamilton").one()
         content = build_digest(db, venue)
-        subject, body = render_digest_text(content, dashboard_base_url=DASHBOARD_BASE_URL)
+        subject, body = render_digest_text(content, dashboard_base_url=settings.dashboard_base_url)
 
         if not notifications.is_digest_email_configured():
             print("DIGEST_GMAIL_ADDRESS/DIGEST_GMAIL_APP_PASSWORD/DIGEST_RECIPIENT_EMAIL not set -- printing instead of sending.")

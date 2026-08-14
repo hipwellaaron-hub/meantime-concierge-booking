@@ -134,6 +134,7 @@ def test_full_journey_enquiry_to_paid_invoice_with_intact_audit_trail(db, loft):
         event_types = [e.event_type for e in events]
         assert event_types == [
             "created",
+            "enquiry_notification_failed",  # Gmail SMTP isn't configured in tests -- see test_notifications.py
             "document_created",  # BEO
             "document_created",  # agreement
             "document_status_changed",  # agreement sent

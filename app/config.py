@@ -27,5 +27,11 @@ class Settings(BaseSettings):
     wizard_beo_auto_finalize: bool = False
     wizard_invoice_auto_send: bool = False
 
+    # The one public URL every internal notification email (enquiry
+    # notification, staff digest) links back into -- a single place to
+    # change it rather than the same literal duplicated in
+    # app.services.notifications and app.send_digest.
+    dashboard_base_url: str = "https://meantime-concierge-booking-production.up.railway.app"
+
 
 settings = Settings()

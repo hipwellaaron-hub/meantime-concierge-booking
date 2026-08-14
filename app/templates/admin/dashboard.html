@@ -3,7 +3,7 @@
 {% block content %}
 <h1>Dashboard</h1>
 
-<div class="grid cols-4">
+<div class="grid cols-5">
   <div class="card stat">
     <div class="num">{{ counts.open_enquiries }}</div>
     <div class="label">Open enquiries</div>
@@ -20,6 +20,10 @@
     <div class="num">{{ counts.unpaid_invoices }}</div>
     <div class="label">Unpaid invoices</div>
   </div>
+  <a class="card stat" href="/admin/triage" style="text-decoration:none; {% if counts.notification_failures %}border-color: var(--ember);{% endif %}">
+    <div class="num" style="{% if counts.notification_failures %}color: var(--ember);{% endif %}">{{ counts.notification_failures }}</div>
+    <div class="label">Enquiry emails failed</div>
+  </a>
 </div>
 
 <div class="section-gap">
