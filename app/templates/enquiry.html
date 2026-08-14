@@ -59,7 +59,13 @@
   textarea { min-height: 80px; resize: vertical; }
   .field-hint { font-size: 0.78rem; color: var(--muted); margin-top: 5px; }
   .field-row { display: flex; gap: 12px; }
-  .field-row > div { flex: 1; }
+  .field-row > div { flex: 1; min-width: 0; }
+  /* Below ~480px, a side-by-side pair like Event Name + Event Date
+     squeezes the text field to under 120px -- too narrow to comfortably
+     type an event name into on a phone. Stack instead of shrinking. */
+  @media (max-width: 480px) {
+    .field-row { flex-direction: column; gap: 0; }
+  }
 
   .actions { display: flex; gap: 10px; margin-top: 24px; }
   button {

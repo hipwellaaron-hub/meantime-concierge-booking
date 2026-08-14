@@ -30,12 +30,15 @@
   body { margin: 0; font-family: var(--font-body); background: var(--bg); color: var(--cream); -webkit-font-smoothing: antialiased; }
   a { color: var(--gold); }
   header.top {
-    display: flex; align-items: center; justify-content: space-between;
-    padding: 14px 24px; background: var(--surface-hi); border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap;
+    padding: 14px 24px; gap: 10px; background: var(--surface-hi); border-bottom: 1px solid var(--border);
     position: sticky; top: 0; z-index: 10;
   }
   header.top .brand { font-family: var(--font-head); font-size: 1.15rem; font-weight: 600; color: var(--cream); text-decoration: none; }
   .brand-row { display: flex; align-items: center; gap: 10px; }
+  @media (max-width: 640px) {
+    nav.primary { order: 3; width: 100%; flex-wrap: wrap; gap: 10px 16px; }
+  }
 
   .stripe-banner {
     display: flex; align-items: center; justify-content: center; gap: 10px;
@@ -55,7 +58,17 @@
   main { max-width: 1080px; margin: 0 auto; padding: 28px 24px 80px; }
   h1 { font-family: var(--font-head); font-size: 1.6rem; margin: 0 0 20px; color: var(--cream); }
   h2 { font-family: var(--font-head); font-size: 1.15rem; margin: 0 0 12px; color: var(--cream); }
-  .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; margin-bottom: 18px; }
+  .card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 20px; margin-bottom: 18px;
+    /* Every table in this app lives inside a .card -- on a phone a wide
+       table (Recent activity, Triage worklists, the audit trail) would
+       otherwise force the whole page's layout viewport wider than the
+       screen, silently breaking every other responsive rule on the page,
+       not just this one table. Scrolling it inside its own card keeps
+       the rest of the page honestly the width it claims to be. */
+    overflow-x: auto;
+  }
   .grid { display: grid; gap: 18px; }
   .grid.cols-4 { grid-template-columns: repeat(4, 1fr); }
   .grid.cols-5 { grid-template-columns: repeat(5, 1fr); }
