@@ -26,6 +26,17 @@
   </a>
 </div>
 
+<div class="card section-gap" style="{% if stripe_mode.value == 'test' %}border-color: var(--ember);{% elif stripe_mode.value == 'not_configured' %}border-color: var(--wine);{% else %}border-color: var(--safe-green);{% endif %}">
+  <h2>Payments</h2>
+  {% if stripe_mode.value == "live" %}
+  <p style="margin:0;"><span class="badge green">Stripe live</span> <span class="muted">Card payment links charge real cards.</span></p>
+  {% elif stripe_mode.value == "test" %}
+  <p style="margin:0;"><span class="badge ember">Stripe test mode</span> <span class="muted">Card payment links use Stripe test cards only -- no real money moves. See the go-live checklist before switching this.</span></p>
+  {% else %}
+  <p style="margin:0;"><span class="badge wine">Stripe not configured</span> <span class="muted">No card payment links can be created. Invoices default to bank transfer.</span></p>
+  {% endif %}
+</div>
+
 <div class="section-gap">
   <h2>Recent activity</h2>
   <div class="card" style="padding:0;">

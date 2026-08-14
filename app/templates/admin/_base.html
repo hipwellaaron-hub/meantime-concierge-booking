@@ -35,6 +35,16 @@
     position: sticky; top: 0; z-index: 10;
   }
   header.top .brand { font-family: var(--font-head); font-size: 1.15rem; font-weight: 600; color: var(--cream); text-decoration: none; }
+  .brand-row { display: flex; align-items: center; gap: 10px; }
+
+  .stripe-banner {
+    display: flex; align-items: center; justify-content: center; gap: 10px;
+    padding: 8px 24px; font-size: 0.82rem; font-weight: 700; letter-spacing: 0.02em;
+    position: sticky; top: 57px; z-index: 9; text-align: center;
+  }
+  .stripe-banner.mode-test { background: var(--ember); color: #201a10; }
+  .stripe-banner.mode-not_configured { background: var(--wine); color: #f5e2e5; }
+  .stripe-banner .detail { font-weight: 500; text-transform: none; letter-spacing: normal; }
   nav.primary { display: flex; gap: 18px; align-items: center; }
   nav.primary a { font-size: 0.85rem; font-weight: 600; text-decoration: none; color: var(--muted); }
   nav.primary a.active, nav.primary a:hover { color: var(--gold); }
@@ -93,7 +103,10 @@
 <body>
 
 <header class="top">
-  <a class="brand" href="/admin/">Meantime Concierge</a>
+  <div class="brand-row">
+    <a class="brand" href="/admin/">Meantime Concierge</a>
+    {% if stripe_mode and stripe_mode.value == "live" %}<span class="badge green">Stripe live</span>{% endif %}
+  </div>
   <nav class="primary">
     <a href="/admin/">Dashboard</a>
     <a href="/admin/calendar">Calendar</a>
@@ -108,6 +121,18 @@
     </form>
   </div>
 </header>
+
+{% if stripe_mode and stripe_mode.value == "test" %}
+<div class="stripe-banner mode-test">
+  STRIPE TEST MODE
+  <span class="detail">— no real card payments are being taken. Every payment link uses Stripe test cards only.</span>
+</div>
+{% elif stripe_mode and stripe_mode.value == "not_configured" %}
+<div class="stripe-banner mode-not_configured">
+  STRIPE NOT CONFIGURED
+  <span class="detail">— card payment links are unavailable. Invoices fall back to bank transfer only.</span>
+</div>
+{% endif %}
 
 <main>
 {% block content %}{% endblock %}

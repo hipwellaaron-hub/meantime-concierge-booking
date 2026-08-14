@@ -411,6 +411,18 @@ def test_create_send_and_pay_deposit_invoice(admin_client, db, booking):
     assert invoice.status == InvoiceStatus.paid
 
 
+def test_invoices_card_shows_stripe_test_mode_badge(admin_client, booking):
+    from unittest.mock import patch
+
+    from app.services import stripe_integration
+
+    with patch.object(stripe_integration, "STRIPE_SECRET_KEY", "sk_test_fake"):
+        resp = _detail_page(admin_client, booking.id)
+
+    invoices_section = resp.text.split("<h2>Invoices")[1].split("</h2>")[0]
+    assert "Stripe test mode -- no real charges" in invoices_section
+
+
 def test_create_final_invoice_without_wizard(admin_client, db, booking):
     page = _detail_page(admin_client, booking.id)
     csrf_token = _csrf(page.text)

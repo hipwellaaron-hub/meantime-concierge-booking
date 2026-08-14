@@ -14,6 +14,7 @@ our own Invoice row works (a metadata field, not guessing from the
 amount).
 """
 
+import enum
 import os
 from decimal import ROUND_HALF_UP, Decimal
 
@@ -34,8 +35,35 @@ class StripeNotConfigured(RuntimeError):
     pass
 
 
+class StripeMode(str, enum.Enum):
+    live = "live"
+    test = "test"
+    not_configured = "not_configured"
+
+
 def is_configured() -> bool:
     return bool(STRIPE_SECRET_KEY)
+
+
+def get_mode() -> StripeMode:
+    """Derived from the secret key's own prefix, never from a separate
+    setting -- a separate "is this live?" flag can silently disagree with
+    which key is actually loaded (wrong env var set, a stale value left
+    over from a previous config), and that's exactly the mistake this
+    exists to make impossible. Stripe's real key shapes: sk_test_... /
+    rk_test_... for test/restricted-test keys, sk_live_... / rk_live_...
+    for the real thing.
+
+    Only an explicitly-recognized test-key shape is ever reported as
+    "test" -- anything else non-empty (a real live key, or a shape this
+    hasn't seen before) is reported as "live". Money is the one place
+    where an unrecognized case must fail toward "assume this is real",
+    never toward "assume it's safe to ignore"."""
+    if not STRIPE_SECRET_KEY:
+        return StripeMode.not_configured
+    if STRIPE_SECRET_KEY.startswith(("sk_test_", "rk_test_")):
+        return StripeMode.test
+    return StripeMode.live
 
 
 def _to_cents(amount: Decimal) -> int:

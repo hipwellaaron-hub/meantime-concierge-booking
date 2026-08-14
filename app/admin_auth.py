@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models.staff_user import StaffUser
+from app.services import stripe_integration
 
 
 class NotAuthenticated(Exception):
@@ -58,6 +59,14 @@ def require_csrf(request: Request, csrf_token: str = Form(...)) -> None:
 
 
 def admin_ctx(request: Request, staff: StaffUser | None = None, **extra) -> dict:
-    ctx = {"request": request, "staff": staff, "csrf_token": ensure_csrf_token(request)}
+    ctx = {
+        "request": request,
+        "staff": staff,
+        "csrf_token": ensure_csrf_token(request),
+        # Every admin page gets this automatically, not just the ones that
+        # touch payments -- the risk this guards against ("staff assumes
+        # real money is moving") isn't confined to the invoice screen.
+        "stripe_mode": stripe_integration.get_mode(),
+    }
     ctx.update(extra)
     return ctx

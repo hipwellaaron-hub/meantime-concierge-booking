@@ -224,7 +224,11 @@
 </div>
 
 <div class="card">
-  <h2>Invoices</h2>
+  <h2>Invoices
+    {% if stripe_mode.value == "live" %}<span class="badge green">Stripe live</span>
+    {% elif stripe_mode.value == "test" %}<span class="badge ember">Stripe test mode -- no real charges</span>
+    {% else %}<span class="badge wine">Stripe not configured</span>{% endif %}
+  </h2>
   {% if not deposit_invoices %}
   <form method="post" action="/admin/bookings/{{ booking.id }}/invoices/deposit" style="margin-bottom:14px;">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
