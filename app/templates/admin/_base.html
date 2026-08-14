@@ -98,6 +98,22 @@
   .muted { color: var(--muted); }
   .empty-state { color: var(--muted); font-style: italic; padding: 20px 0; }
   .section-gap { margin-top: 28px; }
+
+  .health-dot {
+    width: 9px; height: 9px; border-radius: 50%; display: inline-block;
+    background: var(--muted); flex: none; cursor: default;
+  }
+  .health-dot.ok { background: var(--safe-green-text); animation: health-pulse-green 2.2s ease-in-out infinite; }
+  .health-dot.degraded { background: var(--gold); }
+  .health-dot.down { background: #e8586a; animation: health-pulse-red 1s ease-in-out infinite; }
+  @keyframes health-pulse-green {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(122,184,122,0.55); }
+    50% { box-shadow: 0 0 0 5px rgba(122,184,122,0); }
+  }
+  @keyframes health-pulse-red {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.35; }
+  }
 </style>
 </head>
 <body>
@@ -114,6 +130,7 @@
     <a href="/admin/triage">Triage</a>
   </nav>
   <div class="staff-info">
+    <span class="health-dot" id="health-dot" title="Checking system status…"></span>
     <span>{{ staff.name }}</span>
     <form method="post" action="/admin/logout">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -121,6 +138,42 @@
     </form>
   </div>
 </header>
+
+<script>
+(function () {
+  var dot = document.getElementById("health-dot");
+  if (!dot) return;
+
+  function summarize(data) {
+    if (data.status === "ok") return "All systems operational";
+    if (data.status === "down") return "Database unreachable -- Concierge is down";
+    var notes = [];
+    if (data.checks && data.checks.enquiry_notifications_failing) notes.push("enquiry notification emails are failing");
+    if (data.checks && data.checks.gmail_configured === false) notes.push("Gmail is not configured");
+    return "Degraded" + (notes.length ? ": " + notes.join(", ") : "");
+  }
+
+  function check() {
+    fetch("/healthz", { cache: "no-store" })
+      .then(function (resp) {
+        if (!resp.ok) throw new Error("bad response");
+        return resp.json();
+      })
+      .then(function (data) {
+        var cls = data.status === "ok" ? "ok" : data.status === "degraded" ? "degraded" : "down";
+        dot.className = "health-dot " + cls;
+        dot.title = summarize(data);
+      })
+      .catch(function () {
+        dot.className = "health-dot down";
+        dot.title = "Cannot reach Concierge -- the server may be down.";
+      });
+  }
+
+  check();
+  setInterval(check, 30000);
+})();
+</script>
 
 {% if stripe_mode and stripe_mode.value == "test" %}
 <div class="stripe-banner mode-test">
