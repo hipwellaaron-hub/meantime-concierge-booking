@@ -117,6 +117,22 @@ def test_get_unassigned_bookings_lists_imports_for_triage(db, hamilton, tmp_path
     assert worklist[0].migration_external_ref == "B1"
 
 
+def test_get_unassigned_bookings_excludes_terminal_statuses(db, hamilton, tmp_path):
+    """A cancelled, dead, or archived import has nothing left to triage --
+    it must not linger on this worklist forever just because it was never
+    assigned a real space before being closed out."""
+    from app.models.booking import BookingStatus
+    from app.services.booking import change_status
+
+    csv_path = _write_csv(tmp_path, [_row(code="B2", start="Saturday, 15 August 2026", end="Saturday, 15 August 2026")])
+    import_ivvy_csv(db, csv_path, venue=hamilton)
+    booking = get_unassigned_bookings(db, hamilton)[0]
+
+    change_status(db, booking, BookingStatus.archived, actor="test")
+
+    assert get_unassigned_bookings(db, hamilton) == []
+
+
 def test_multiday_row_is_skipped_not_guessed(db, hamilton, tmp_path):
     csv_path = _write_csv(
         tmp_path, [_row(code="MULTI", start="Friday, 14 August 2026", end="Saturday, 15 August 2026")]

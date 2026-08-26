@@ -37,7 +37,7 @@ from sqlalchemy.orm import Session
 from app.models import Booking, Space, Venue
 from app.models.booking import BookingStatus
 from app.seed import UNASSIGNED_SPACE_NAME
-from app.services.booking import create_booking
+from app.services.booking import TERMINAL_STATUSES, create_booking
 from app.services.contact_matching import find_or_create_contact
 from app.utils import truncate
 
@@ -219,12 +219,18 @@ def _import_row(db, row, row_number, code, unassigned_space_id, actor, result) -
 
 def get_unassigned_bookings(db: Session, venue: Venue) -> list[Booking]:
     """Staff worklist: bookings imported without a real space and/or real
-    time assigned yet, oldest event first."""
+    time assigned yet, oldest event first. Excludes anything already at a
+    terminal status (cancelled/dead/archived) -- there's nothing left to
+    triage for a booking that's never going to happen."""
     return list(
         db.scalars(
             select(Booking)
             .join(Space, Booking.space_id == Space.id)
-            .where(Space.venue_id == venue.id, Space.is_bookable.is_(False))
+            .where(
+                Space.venue_id == venue.id,
+                Space.is_bookable.is_(False),
+                Booking.status.notin_(TERMINAL_STATUSES),
+            )
             .order_by(Booking.event_date)
         ).all()
     )

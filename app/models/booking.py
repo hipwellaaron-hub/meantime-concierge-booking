@@ -31,6 +31,14 @@ class BookingStatus(str, enum.Enum):
     completed = "completed"
     cancelled = "cancelled"
     dead = "dead"
+    # Distinct from `cancelled` on purpose: cancelled means a real booking
+    # fell through. Archived means it never should have counted toward
+    # go-live at all -- pre-launch/iVvy-era clutter cleared in bulk ahead
+    # of a real cutover date, not an outcome anyone decided against. Never
+    # reachable via the normal staff status-change dropdown (see
+    # LEGAL_TRANSITIONS) -- only ever set by the one-off
+    # app.archive_bookings_before script.
+    archived = "archived"
 
 
 booking_status_enum = SAEnum(BookingStatus, name="booking_status", native_enum=True)

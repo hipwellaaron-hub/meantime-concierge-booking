@@ -44,6 +44,12 @@ LEGAL_TRANSITIONS: dict[BookingStatus, tuple[BookingStatus, ...]] = {
     BookingStatus.completed: (),
     BookingStatus.cancelled: (),
     BookingStatus.dead: (),
+    # No entry allows a transition *into* archived from here -- it's
+    # deliberately unreachable via the normal staff status dropdown (see
+    # the enum's own comment on Booking.status). Still needs an entry so
+    # an already-archived booking correctly reports no further legal
+    # transition, same as any other terminal status.
+    BookingStatus.archived: (),
 }
 
 
@@ -169,7 +175,7 @@ def change_status(
     return booking
 
 
-TERMINAL_STATUSES = (BookingStatus.completed, BookingStatus.cancelled, BookingStatus.dead)
+TERMINAL_STATUSES = (BookingStatus.completed, BookingStatus.cancelled, BookingStatus.dead, BookingStatus.archived)
 
 
 def transition_status(
