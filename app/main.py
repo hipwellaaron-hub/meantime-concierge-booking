@@ -14,6 +14,7 @@ from app.api.availability import router as availability_router
 from app.api.documents import router as documents_router
 from app.api.enquiries import router as enquiries_router
 from app.api.health import router as health_router
+from app.api.internal_maintenance import router as internal_maintenance_router
 from app.api.invoices import router as invoices_router
 from app.api.webhooks import router as webhooks_router
 from app.api.wizard import router as wizard_router
@@ -67,6 +68,7 @@ app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
 app.include_router(availability_router)
 app.include_router(health_router)
+app.include_router(internal_maintenance_router)
 app.include_router(documents_router)
 app.include_router(invoices_router)
 app.include_router(enquiries_router)
