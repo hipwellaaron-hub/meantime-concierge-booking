@@ -92,6 +92,48 @@ def balance_columns(sections: list[dict]) -> tuple[list[dict], list[dict]]:
     return sections[:best_index], sections[best_index:]
 
 
+REVIEW_MARKER = "[REVIEW]"
+CLIENT_PLACEHOLDER = "To be confirmed — contact the venue"
+
+
+def client_safe(value, staff: bool = False, placeholder: str = CLIENT_PLACEHOLDER):
+    """[REVIEW] markers are staff-facing prompts baked into generated
+    document content (see app.services.document_generation). They must
+    never reach a client: an instruction to staff printed on a contract or
+    Event Order reads as sloppiness at best. Staff surfaces pass
+    staff=True and see the raw flagged text; every other surface (the
+    public /d/{token} view and the PDF) gets a neutral placeholder."""
+    if value is None or staff:
+        return value
+    if isinstance(value, str) and REVIEW_MARKER in value:
+        return placeholder
+    return value
+
+
+def bullets(value) -> list[str]:
+    """Newline-separated builder output -> a list of bullet lines. The
+    Event Order renders everything as bullets, never paragraphs; old
+    prose content simply becomes a single bullet."""
+    if not value:
+        return []
+    return [line.strip() for line in str(value).split("\n") if line.strip()]
+
+
+def line_total(item: dict) -> str:
+    """"$300" for a 3 x $100.00 line -- the reference document shows line
+    totals, whose absence made a qty-2 line at unit $250 look like it
+    contradicted a $500 total."""
+    from decimal import Decimal, InvalidOperation
+
+    try:
+        total = Decimal(str(item.get("quantity", 0))) * Decimal(str(item.get("unit_price", "0")))
+    except (InvalidOperation, TypeError):
+        return ""
+    if total == total.to_integral_value():
+        return f"${total:,.0f}"
+    return f"${total:,.2f}"
+
+
 def has_venue_logo() -> bool:
     """Checked per render, not once at import: the logo is a deploy-time
     asset, and a stale cached False would silently keep it off every
@@ -103,8 +145,12 @@ templates = Jinja2Templates(directory="app/templates")
 templates.env.filters["sydney_time"] = sydney_time
 templates.env.filters["nl2br"] = nl2br
 templates.env.filters["balance_columns"] = balance_columns
+templates.env.filters["client_safe"] = client_safe
+templates.env.filters["bullets"] = bullets
+templates.env.filters["line_total"] = line_total
 templates.env.globals["has_venue_logo"] = has_venue_logo
 templates.env.globals["venue_logo_url"] = LOGO_STATIC_PATH
+templates.env.globals["venue_phone"] = policy.VENUE_PHONE
 
 # Live (not frozen) venue/banking details for the invoice view -- an unpaid
 # invoice must always point at the current account, not whatever was true

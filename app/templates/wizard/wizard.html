@@ -90,6 +90,10 @@
   }
   .warning-banner { background: rgba(212,98,43,0.12); border: 1px solid var(--ember); color: #eeb08f; }
   .info-banner { background: rgba(201,169,110,0.10); border: 1px solid var(--gold-dim); color: var(--gold); }
+  .check-row { display: flex; align-items: center; gap: 8px; margin: 6px 0; font-size: 0.92rem; cursor: pointer; }
+  .check-row input { width: auto; margin: 0; }
+  .btn-secondary { background: transparent; border: 1px solid var(--gold-dim); color: var(--gold);
+    border-radius: 8px; padding: 6px 12px; font-size: 0.85rem; cursor: pointer; margin-top: 6px; }
   .escalation-banner { background: rgba(122,46,58,0.20); border: 1px solid var(--wine); color: #e8b3bd; font-weight: 600; }
 
   .badge-gf {
@@ -226,8 +230,10 @@
   "use strict";
   var TOKEN = window.location.pathname.split("/").pop();
   var DATA = JSON.parse(document.getElementById("bootstrap-data").textContent);
-  var STEPS = ["basics", "food", "beverage", "music", "extras", "review"];
-  var STEP_LABELS = { basics: "The Basics", food: "Food", beverage: "Beverage", music: "Music", extras: "Extras", review: "Review & Approve" };
+  // Server-driven: the AV step only exists for Loft bookings, so the
+  // sequence comes from the bootstrap rather than being hardcoded here.
+  var STEPS = DATA.steps || ["basics", "food", "beverage", "music", "vendors", "extras", "review"];
+  var STEP_LABELS = { basics: "The Basics", food: "Food", beverage: "Beverage", music: "Music", vendors: "Suppliers & Vendors", extras: "Extras", av: "AV & Screen", review: "Review & Approve" };
 
   var state = {
     stepIndex: Math.max(0, STEPS.indexOf(DATA.current_step)),
@@ -236,11 +242,16 @@
       end_time: (DATA.booking.end_time || "").slice(0, 5),
       food_service_time: (DATA.booking.food_service_time || "").slice(0, 5),
       setup_access_time: (DATA.booking.setup_access_time || "14:00").slice(0, 5),
+      guest_arrival_time: (DATA.booking.guest_arrival_time || "").slice(0, 5),
+      key_moments: (DATA.booking.key_moments || []).map(function (m) { return { time: (m.time || "").slice(0, 5), label: m.label }; }),
       adult_count: DATA.booking.adult_count,
       child_count: DATA.booking.child_count
     },
-    food: DATA.responses.food || { platters: [], pizzas: [] },
-    beverage: DATA.responses.beverage || { bar_structure: null, bar_limit: null, bar_inclusions: null },
+    food: DATA.responses.food || { platters: [], pizzas: [], sides: [], desserts: [] },
+    beverage: DATA.responses.beverage || { bar_structure: null, bar_limit: null, bar_inclusions: null, bar_inclusions_note: null },
+    vendors: (DATA.responses.vendors && DATA.responses.vendors.vendors) || [],
+    vendorsSaved: !!DATA.responses.vendors,
+    av: DATA.responses.av || { video_slideshow: false, microphones_for_speeches: false, notes: null },
     music: DATA.responses.music || { music_type: null, notes: null, bump_in_notes: null },
     extras: DATA.responses.extras || {
       cake_choice: { type: "none", menu_item_id: null, notes: null },
@@ -252,6 +263,10 @@
     escalated: false,
     submitting: false
   };
+
+  // A food response saved before sides/desserts existed lacks those keys.
+  state.food.sides = state.food.sides || [];
+  state.food.desserts = state.food.desserts || [];
 
   var root = document.getElementById("wizard-root");
   var btnBack = document.getElementById("btn-back");
@@ -306,11 +321,17 @@
       '<label>Food service time</label><input type="time" id="f-food-time" required>' +
       '<label>Set-up access time</label><input type="time" id="f-setup-time" required>' +
       '<p class="field-hint" id="setup-hint">Standard access is from 2:00pm. Anything earlier is a request — we\'ll confirm it with you.</p>' +
+      '<label>Guest arrival time</label><input type="time" id="f-guest-arrival">' +
+      '<p class="field-hint">When your guests arrive — often different from your own access time. Leave blank if it\'s the same as your arrival.</p>' +
       '<div class="field-row">' +
       '<div><label>Adults</label><input type="number" min="0" id="f-adults" required></div>' +
       '<div><label>Children</label><input type="number" min="0" id="f-children" required></div>' +
       '</div>' +
       '<p class="field-hint">Kids are welcome and never count toward the minimum guest numbers.</p>' +
+      '<label>Key moments</label>' +
+      '<p class="field-hint">Speeches, cake cutting, raffle draws — anything the team should be ready for.</p>' +
+      '<div id="moments-list"></div>' +
+      '<button type="button" class="btn-secondary" id="btn-add-moment">+ Add a moment</button>' +
       '<div id="basics-warnings"></div>' +
       '</form>' +
       '</div>';
@@ -319,9 +340,37 @@
     document.getElementById("f-end").value = state.basics.end_time || "";
     document.getElementById("f-food-time").value = state.basics.food_service_time || "";
     document.getElementById("f-setup-time").value = state.basics.setup_access_time || "";
+    document.getElementById("f-guest-arrival").value = state.basics.guest_arrival_time || "";
     document.getElementById("f-adults").value = state.basics.adult_count;
     document.getElementById("f-children").value = state.basics.child_count;
+    renderMomentRows();
+    document.getElementById("btn-add-moment").addEventListener("click", function () {
+      state.basics.key_moments.push({ time: "", label: "" });
+      renderMomentRows();
+    });
     renderBasicsWarnings();
+  }
+
+  function renderMomentRows() {
+    var list = document.getElementById("moments-list");
+    if (!list) return;
+    list.innerHTML = "";
+    state.basics.key_moments.forEach(function (moment, index) {
+      var row = document.createElement("div");
+      row.className = "field-row";
+      row.innerHTML =
+        '<div><input type="time" value="' + (moment.time || "") + '"></div>' +
+        '<div style="flex:3;"><input type="text" maxlength="120" placeholder="e.g. Speeches" value="' + (moment.label || "").replace(/"/g, "&quot;") + '"></div>' +
+        '<button type="button" class="btn-secondary" aria-label="Remove">×</button>';
+      var inputs = row.querySelectorAll("input");
+      inputs[0].addEventListener("input", function () { moment.time = inputs[0].value; });
+      inputs[1].addEventListener("input", function () { moment.label = inputs[1].value; });
+      row.querySelector("button").addEventListener("click", function () {
+        state.basics.key_moments.splice(index, 1);
+        renderMomentRows();
+      });
+      list.appendChild(row);
+    });
   }
 
   function renderBasicsWarnings() {
@@ -346,12 +395,17 @@
     state.basics.end_time = document.getElementById("f-end").value;
     state.basics.food_service_time = document.getElementById("f-food-time").value;
     state.basics.setup_access_time = document.getElementById("f-setup-time").value;
+    state.basics.guest_arrival_time = document.getElementById("f-guest-arrival").value || null;
     state.basics.adult_count = parseInt(document.getElementById("f-adults").value || "0", 10);
     state.basics.child_count = parseInt(document.getElementById("f-children").value || "0", 10);
 
     return api("basics", {
       start_time: state.basics.start_time, end_time: state.basics.end_time,
       food_service_time: state.basics.food_service_time, setup_access_time: state.basics.setup_access_time,
+      guest_arrival_time: state.basics.guest_arrival_time || null,
+      key_moments: state.basics.key_moments
+        .filter(function (m) { return (m.label || "").trim(); })
+        .map(function (m) { return { time: m.time || null, label: m.label.trim() }; }),
       adult_count: state.basics.adult_count, child_count: state.basics.child_count
     }).then(function (data) {
       state.lastWarnings = data.warnings || [];
@@ -430,15 +484,25 @@
       '<div id="platter-list"></div>' +
       '<div class="catalogue-section-title">Pizzas</div>' +
       '<div id="pizza-list"></div>' +
+      '<div class="catalogue-section-title">Sides</div>' +
+      '<div id="side-list"></div>' +
+      '<div class="catalogue-section-title">Desserts</div>' +
+      '<div id="dessert-list"></div>' +
       '</div>' +
       '<div class="running-total"><div>Running total: <span class="amount" id="food-total">$0.00</span></div><div class="guidance-text" id="food-guidance"></div></div>';
 
     var platterList = document.getElementById("platter-list");
     var pizzaList = document.getElementById("pizza-list");
+    var sideList = document.getElementById("side-list");
+    var dessertList = document.getElementById("dessert-list");
     if (DATA.catalogue.platters.length === 0) { platterList.innerHTML = '<p class="review-empty">No platters available right now — please describe what you\'d like in a note and we\'ll confirm pricing.</p>'; }
     DATA.catalogue.platters.forEach(function (item) { platterList.appendChild(catalogueRow(item, state.food.platters)); });
     if (DATA.catalogue.pizzas.length === 0) { pizzaList.innerHTML = '<p class="review-empty">No pizzas available right now.</p>'; }
     DATA.catalogue.pizzas.forEach(function (item) { pizzaList.appendChild(catalogueRow(item, state.food.pizzas)); });
+    if ((DATA.catalogue.sides || []).length === 0) { sideList.innerHTML = '<p class="review-empty">No sides available right now.</p>'; }
+    (DATA.catalogue.sides || []).forEach(function (item) { sideList.appendChild(catalogueRow(item, state.food.sides)); });
+    if ((DATA.catalogue.desserts || []).length === 0) { dessertList.innerHTML = '<p class="review-empty">No dessert platters available right now.</p>'; }
+    (DATA.catalogue.desserts || []).forEach(function (item) { dessertList.appendChild(catalogueRow(item, state.food.desserts)); });
 
     updateFoodTotalDisplay();
     if (state.lastGuidance) { document.getElementById("food-guidance").textContent = state.lastGuidance.message; }
@@ -446,9 +510,11 @@
 
   function computeLocalFoodTotal() {
     var total = 0;
-    function priceOf(list, id) { var m = list.find(function (i) { return i.id === id; }); return m ? parseFloat(m.price) : 0; }
+    function priceOf(list, id) { var m = (list || []).find(function (i) { return i.id === id; }); return m ? parseFloat(m.price) : 0; }
     state.food.platters.forEach(function (e) { total += priceOf(DATA.catalogue.platters, e.menu_item_id) * e.quantity; });
     state.food.pizzas.forEach(function (e) { total += priceOf(DATA.catalogue.pizzas, e.menu_item_id) * e.quantity; });
+    state.food.sides.forEach(function (e) { total += priceOf(DATA.catalogue.sides, e.menu_item_id) * e.quantity; });
+    state.food.desserts.forEach(function (e) { total += priceOf(DATA.catalogue.desserts, e.menu_item_id) * e.quantity; });
     return total;
   }
 
@@ -466,7 +532,10 @@
   }
 
   function saveFood() {
-    return api("food", { platters: state.food.platters, pizzas: state.food.pizzas }).then(function (data) {
+    return api("food", {
+      platters: state.food.platters, pizzas: state.food.pizzas,
+      sides: state.food.sides, desserts: state.food.desserts
+    }).then(function (data) {
       state.lastGuidance = data.guidance;
       var g = document.getElementById("food-guidance");
       if (g) g.textContent = data.guidance.message;
@@ -487,9 +556,29 @@
     html += "</div>" +
       '<div id="bev-extra" style="display:none;">' +
       '<label>Tab limit ($)</label><input type="number" min="0" id="f-bar-limit">' +
-      '<label>What\'s included</label><textarea id="f-bar-inclusions" placeholder="e.g. beer, wine, spirits"></textarea>' +
+      '<label>What\'s included</label>' +
+      '<div id="bev-inclusions">' +
+      '<label class="check-row"><input type="checkbox" value="beer"> Beer</label>' +
+      '<label class="check-row"><input type="checkbox" value="wine"> Wine</label>' +
+      '<label class="check-row"><input type="checkbox" value="soft_drinks"> Soft drinks</label>' +
+      '<label class="check-row"><input type="checkbox" value="standard_spirits"> Standard spirits</label>' +
+      "</div>" +
+      '<p class="field-hint">Cocktails and premium spirits are always purchased by guests directly.</p>' +
+      '<label>Anything else about the bar?</label><textarea id="f-bar-note"></textarea>' +
       "</div></div>";
     root.innerHTML = html;
+
+    // Sessions saved before the checkboxes existed stored free text --
+    // carry it into the note field so nothing the client typed is lost.
+    var savedInclusions = state.beverage.bar_inclusions;
+    var checkedKeys = Array.isArray(savedInclusions) ? savedInclusions : [];
+    if (typeof savedInclusions === "string" && savedInclusions && !state.beverage.bar_inclusions_note) {
+      state.beverage.bar_inclusions_note = savedInclusions;
+    }
+    document.querySelectorAll("#bev-inclusions input").forEach(function (box) {
+      box.checked = checkedKeys.indexOf(box.value) >= 0;
+    });
+    document.getElementById("f-bar-note").value = state.beverage.bar_inclusions_note || "";
 
     function refreshSelection() {
       document.querySelectorAll(".option-card").forEach(function (el) {
@@ -506,13 +595,15 @@
       });
     });
     document.getElementById("f-bar-limit").value = state.beverage.bar_limit || "";
-    document.getElementById("f-bar-inclusions").value = state.beverage.bar_inclusions || "";
     refreshSelection();
   }
 
   function saveBeverage() {
     state.beverage.bar_limit = document.getElementById("f-bar-limit") ? (parseFloat(document.getElementById("f-bar-limit").value) || null) : null;
-    state.beverage.bar_inclusions = document.getElementById("f-bar-inclusions") ? (document.getElementById("f-bar-inclusions").value || null) : null;
+    var checked = [];
+    document.querySelectorAll("#bev-inclusions input:checked").forEach(function (box) { checked.push(box.value); });
+    state.beverage.bar_inclusions = checked.length ? checked : null;
+    state.beverage.bar_inclusions_note = document.getElementById("f-bar-note") ? (document.getElementById("f-bar-note").value || null) : null;
     return api("beverage", state.beverage);
   }
 
@@ -521,10 +612,10 @@
     root.innerHTML =
       '<div class="card"><h2>Music</h2><p class="step-intro">Own playlist or a DJ?</p>' +
       '<div class="option-grid" id="music-options">' +
-      '<div class="option-card" data-key="own_playlist"><div class="opt-title">Own playlist</div><div class="opt-desc">Spotify or similar — send us the link.</div></div>' +
-      '<div class="option-card" data-key="dj"><div class="opt-title">DJ</div><div class="opt-desc">Yours or ours.</div></div>' +
+      '<div class="option-card" data-key="own_playlist"><div class="opt-title">Own playlist</div><div class="opt-desc">Set your Spotify playlist to public and give us its name on the night — no links needed.</div></div>' +
+      '<div class="option-card" data-key="dj"><div class="opt-title">DJ</div><div class="opt-desc">Yours or ours. Add your DJ\'s details on the next step.</div></div>' +
       "</div>" +
-      '<label>Notes</label><textarea id="f-music-notes" placeholder="Playlist link, requests, do-not-plays..."></textarea>' +
+      '<label>Notes</label><textarea id="f-music-notes" placeholder="Playlist name, requests, do-not-plays..."></textarea>' +
       '<label>Bump-in notes</label><textarea id="f-bump-in" placeholder="Equipment, arrival time for the DJ, etc."></textarea>' +
       '<div class="info-banner">Music must be off by 11:30pm, any day.</div>' +
       "</div>";
@@ -685,6 +776,95 @@
     });
   }
 
+  // ---- VENDORS ----
+  var VENDOR_TYPES = [
+    { key: "dj", label: "DJ" }, { key: "band", label: "Band" }, { key: "decorator", label: "Decorator" },
+    { key: "photographer", label: "Photographer" }, { key: "other", label: "Other" }
+  ];
+
+  function renderVendors() {
+    root.innerHTML =
+      '<div class="card"><h2>Suppliers &amp; vendors</h2>' +
+      '<p class="step-intro">Bringing a DJ, band, decorator or photographer? Add their details so we can plan for them. If not, just continue.</p>' +
+      '<div class="info-banner">Bump-in times are a request — we\'ll check each one against the day and confirm it with you.</div>' +
+      '<div id="vendor-list"></div>' +
+      '<button type="button" class="btn-secondary" id="btn-add-vendor">+ Add a vendor</button>' +
+      "</div>";
+    renderVendorRows();
+    document.getElementById("btn-add-vendor").addEventListener("click", function () {
+      state.vendors.push({ vendor_type: "dj", name: "", contact_number: "", bump_in_time: "" });
+      renderVendorRows();
+    });
+  }
+
+  function renderVendorRows() {
+    var list = document.getElementById("vendor-list");
+    if (!list) return;
+    list.innerHTML = "";
+    state.vendors.forEach(function (vendor, index) {
+      var row = document.createElement("div");
+      row.className = "field-row";
+      var options = VENDOR_TYPES.map(function (t) {
+        return '<option value="' + t.key + '"' + (vendor.vendor_type === t.key ? " selected" : "") + '>' + t.label + "</option>";
+      }).join("");
+      row.innerHTML =
+        '<div><select>' + options + '</select></div>' +
+        '<div style="flex:2;"><input type="text" maxlength="255" placeholder="Name" value="' + (vendor.name || "").replace(/"/g, "&quot;") + '"></div>' +
+        '<div><input type="tel" maxlength="50" placeholder="Phone" value="' + (vendor.contact_number || "").replace(/"/g, "&quot;") + '"></div>' +
+        '<div><input type="time" title="Requested bump-in time" value="' + (vendor.bump_in_time || "") + '"></div>' +
+        '<button type="button" class="btn-secondary" aria-label="Remove">×</button>';
+      row.querySelector("select").addEventListener("change", function (e) { vendor.vendor_type = e.target.value; });
+      var inputs = row.querySelectorAll("input");
+      inputs[0].addEventListener("input", function () { vendor.name = inputs[0].value; });
+      inputs[1].addEventListener("input", function () { vendor.contact_number = inputs[1].value; });
+      inputs[2].addEventListener("input", function () { vendor.bump_in_time = inputs[2].value; });
+      row.querySelector("button").addEventListener("click", function () {
+        state.vendors.splice(index, 1);
+        renderVendorRows();
+      });
+      list.appendChild(row);
+    });
+  }
+
+  function saveVendors() {
+    var vendors = state.vendors
+      .filter(function (v) { return (v.name || "").trim(); })
+      .map(function (v) {
+        return {
+          vendor_type: v.vendor_type, name: v.name.trim(),
+          contact_number: (v.contact_number || "").trim() || null,
+          bump_in_time: v.bump_in_time || null
+        };
+      });
+    return api("vendors", { vendors: vendors }).then(function () {
+      state.vendorsSaved = true;
+    });
+  }
+
+  // ---- AV (The Loft only -- this step isn't in STEPS for other spaces) ----
+  function renderAv() {
+    var deadline = DATA.policy.av_usb_deadline_display;
+    root.innerHTML =
+      '<div class="card"><h2>AV &amp; screen</h2>' +
+      '<p class="step-intro">The Loft has a large screen available for your event.</p>' +
+      '<label class="check-row"><input type="checkbox" id="f-av-video"> We\'ll have a video or photo slideshow</label>' +
+      '<div class="info-banner">Video must be on a <b>USB flash drive</b> — phones and laptops can\'t connect to the venue screen.' +
+      (deadline ? ' Drop the USB in by <b>' + deadline + '</b> so we can test it.' : '') + '</div>' +
+      '<label class="check-row"><input type="checkbox" id="f-av-mics"> We\'ll need microphones for speeches</label>' +
+      '<label>Notes</label><textarea id="f-av-notes" placeholder="Anything else about AV"></textarea>' +
+      "</div>";
+    document.getElementById("f-av-video").checked = !!state.av.video_slideshow;
+    document.getElementById("f-av-mics").checked = !!state.av.microphones_for_speeches;
+    document.getElementById("f-av-notes").value = state.av.notes || "";
+  }
+
+  function saveAv() {
+    state.av.video_slideshow = document.getElementById("f-av-video").checked;
+    state.av.microphones_for_speeches = document.getElementById("f-av-mics").checked;
+    state.av.notes = document.getElementById("f-av-notes").value || null;
+    return api("av", state.av);
+  }
+
   // ---- REVIEW ----
   function reviewLine(label, value) {
     return '<p><strong>' + label + ':</strong> ' + (value ? value : '<span class="review-empty">Not provided</span>') + "</p>";
@@ -692,10 +872,33 @@
 
   function renderReview() {
     var foodLines = "";
-    function nameOf(list, id) { var m = list.find(function (i) { return i.id === id; }); return m ? m.name : id; }
+    function nameOf(list, id) { var m = (list || []).find(function (i) { return i.id === id; }); return m ? m.name : id; }
     state.food.platters.forEach(function (e) { foodLines += "<p>" + e.quantity + "× " + nameOf(DATA.catalogue.platters, e.menu_item_id) + "</p>"; });
     state.food.pizzas.forEach(function (e) { foodLines += "<p>" + e.quantity + "× " + nameOf(DATA.catalogue.pizzas, e.menu_item_id) + "</p>"; });
+    state.food.sides.forEach(function (e) { foodLines += "<p>" + e.quantity + "× " + nameOf(DATA.catalogue.sides, e.menu_item_id) + "</p>"; });
+    state.food.desserts.forEach(function (e) { foodLines += "<p>" + e.quantity + "× " + nameOf(DATA.catalogue.desserts, e.menu_item_id) + "</p>"; });
     if (!foodLines) foodLines = '<p class="review-empty">Nothing selected</p>';
+
+    var vendorLines = "";
+    state.vendors.forEach(function (v) {
+      if (!(v.name || "").trim()) return;
+      vendorLines += "<p>" + v.vendor_type + ": " + v.name +
+        (v.bump_in_time ? " — requested bump-in " + v.bump_in_time : "") + "</p>";
+    });
+    if (!vendorLines) vendorLines = '<p class="review-empty">No vendors</p>';
+
+    var avBlock = "";
+    if (STEPS.indexOf("av") >= 0) {
+      avBlock = '<div class="review-block"><h3>AV &amp; Screen</h3>' +
+        reviewLine("Video/slideshow", state.av.video_slideshow ? "Yes (USB)" : "No") +
+        reviewLine("Microphones", state.av.microphones_for_speeches ? "Yes" : "No") +
+        "</div>";
+    }
+
+    var momentsText = state.basics.key_moments
+      .filter(function (m) { return (m.label || "").trim(); })
+      .map(function (m) { return (m.time ? m.time + " " : "") + m.label; })
+      .join("; ") || null;
 
     var bevLabel = { cash_bar: "Cash bar", bar_tab: "Bar tab", hybrid: "Hybrid" }[state.beverage.bar_structure] || null;
 
@@ -707,11 +910,15 @@
       reviewLine("Arrival", state.basics.start_time) + reviewLine("Finish", state.basics.end_time) +
       reviewLine("Food service", state.basics.food_service_time) + reviewLine("Set-up access", state.basics.setup_access_time) +
       reviewLine("Guests", state.basics.adult_count + " adults, " + state.basics.child_count + " children") +
+      reviewLine("Guest arrival", state.basics.guest_arrival_time) +
+      reviewLine("Key moments", momentsText) +
       "</div>" +
       '<div class="review-block"><h3>Food</h3>' + foodLines + '<p><strong>Running total: </strong>' + money(computeLocalFoodTotal()) + "</p></div>" +
       '<div class="review-block"><h3>Beverage</h3>' + reviewLine("Structure", bevLabel) +
       (state.beverage.bar_limit ? reviewLine("Limit", money(state.beverage.bar_limit)) : "") + "</div>" +
       '<div class="review-block"><h3>Music</h3>' + reviewLine("Type", state.music.music_type === "dj" ? "DJ" : state.music.music_type === "own_playlist" ? "Own playlist" : null) + "</div>" +
+      '<div class="review-block"><h3>Suppliers &amp; Vendors</h3>' + vendorLines + "</div>" +
+      avBlock +
       '<div class="review-block"><h3>Extras</h3>' +
       reviewLine("Cake", state.extras.cake_choice.type === "none" ? "None" : state.extras.cake_choice.type === "outside" ? "Bringing own (GF)" : "In-house") +
       reviewLine("Dietary requirements", state.extras.dietary_requirements) +
@@ -734,8 +941,8 @@
     });
   }
 
-  var RENDERERS = { basics: renderBasics, food: renderFood, beverage: renderBeverage, music: renderMusic, extras: renderExtras, review: renderReview };
-  var SAVERS = { basics: saveBasics, food: saveFood, beverage: saveBeverage, music: saveMusic, extras: saveExtras, review: submitReview };
+  var RENDERERS = { basics: renderBasics, food: renderFood, beverage: renderBeverage, music: renderMusic, vendors: renderVendors, extras: renderExtras, av: renderAv, review: renderReview };
+  var SAVERS = { basics: saveBasics, food: saveFood, beverage: saveBeverage, music: saveMusic, vendors: saveVendors, extras: saveExtras, av: saveAv, review: submitReview };
 
   function renderStep() {
     renderProgress();

@@ -23,10 +23,22 @@ def get_active_items(db: Session, category: MenuItemCategory) -> list[MenuItem]:
 
 
 def get_by_id(db: Session, menu_item_id) -> MenuItem | None:
+    """For NEW selections (the wizard picker): a retired item is not on
+    offer, so inactive resolves to None."""
     item = db.get(MenuItem, menu_item_id)
     if item is None or not item.is_active:
         return None
     return item
+
+
+def get_by_id_any(db: Session, menu_item_id) -> MenuItem | None:
+    """For ALREADY-STORED selections (an order that exists): a retired
+    item must keep resolving to its name and quoted price -- retirement
+    only means "no longer offered", never "your existing order is now
+    unpriceable". The price honoured is the one on the row, mirroring how
+    pre-May-2026 pizza pricing resolves from the booking's own record
+    rather than forcing today's catalogue onto an old order."""
+    return db.get(MenuItem, menu_item_id)
 
 
 def resolve_pizza_price(menu_item: MenuItem, booking: Booking) -> Decimal | None:

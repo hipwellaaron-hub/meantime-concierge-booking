@@ -50,6 +50,30 @@
   .staff-preview-banner { background: #fdf2d0; color: #7a5b00; padding: 0.7rem 0.9rem; border-radius: 8px; font-size: 0.85rem; margin-bottom: 1.25rem; }
   .doc-logo { height: 34px; }
   .doc-wordmark { font-family: Georgia, "Times New Roman", serif; font-size: 1.5rem; letter-spacing: -0.01em; }
+
+  /* Event Order (screen) -- reference-format layout */
+  .beo-card { max-width: 860px; }
+  .beo-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; }
+  .beo-header h1 { font-size: 1.35rem; margin: 0; }
+  .beo-header .date-line { font-weight: 600; margin: 0.15rem 0 0.1rem; }
+  .beo-header .venue-line { color: #6b7268; font-size: 0.82rem; }
+  .beo-meta { display: flex; justify-content: space-between; gap: 1rem; border-top: 1px solid #ececea;
+    margin-top: 0.9rem; padding-top: 0.7rem; font-size: 0.85rem; }
+  .beo-meta .k { color: #6b7268; }
+  .beo-meta .right { text-align: right; }
+  .beo-band { display: flex; flex-wrap: wrap; gap: 0.4rem 1.4rem; background: #1f2420; color: #fff;
+    border-radius: 8px; padding: 0.6rem 0.9rem; margin: 1rem 0; font-size: 0.88rem; font-weight: 600; }
+  .beo-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 0 1.6rem; }
+  @media (max-width: 640px) { .beo-cols { grid-template-columns: 1fr; } }
+  .beo-sec { margin-bottom: 0.9rem; }
+  .beo-h { font-weight: 700; font-size: 0.88rem; border-bottom: 1px solid #1f2420; padding-bottom: 2px;
+    margin-bottom: 0.35rem; }
+  ul.beo-bullets { margin: 0; padding-left: 1.1rem; font-size: 0.86rem; }
+  ul.beo-bullets li { margin-bottom: 0.15rem; }
+  .beo-internal { border: 1px dashed #b45309; background: #fdf2d0; border-radius: 8px;
+    padding: 0.7rem 0.9rem; margin-top: 1rem; }
+  .beo-internal .tag { font-size: 0.7rem; font-weight: 700; letter-spacing: 0.06em; color: #b45309; }
+  .beo-billing { margin-top: 1rem; border-top: 2px solid #1f2420; padding-top: 0.6rem; }
 </style>
 {% if is_pdf %}
 <style>
@@ -91,10 +115,162 @@
   .pdf-sign .signed { font-weight: bold; }
   .pdf-sign .unsigned-line { color: #6b7268; }
   .pdf-foot { margin-top: 5pt; font-size: 6.6pt; color: #969a93; }
+
+  /* Event Order (PDF). Two columns MUST be a table -- xhtml2pdf has no
+     CSS columns/flex/grid; same approach as .pdf-terms above. */
+  .beo-header { width: 100%; margin-bottom: 4pt; }
+  .beo-header td { vertical-align: top; padding: 0; border: none; }
+  .beo-header h1 { font-size: 14pt; margin: 0; }
+  .beo-header .date-line { font-weight: bold; font-size: 9pt; margin: 1pt 0; }
+  .beo-header .venue-line { color: #6b7268; font-size: 7.2pt; }
+  .beo-meta { width: 100%; border-top: 0.5pt solid #c9ccc6; margin-bottom: 4pt; }
+  .beo-meta td { vertical-align: top; padding: 3pt 0 0; border: none; font-size: 7.6pt; }
+  .beo-meta .k { color: #6b7268; }
+  .beo-meta .right { text-align: right; }
+  .beo-band { width: 100%; background: #1f2420; color: #ffffff; margin-bottom: 6pt; }
+  .beo-band td { padding: 3.5pt 6pt; font-size: 8pt; font-weight: bold; border: none; color: #ffffff; }
+  .beo-cols { width: 100%; border-collapse: collapse; }
+  .beo-cols > tr > td { vertical-align: top; padding: 0; border: none; }
+  .beo-cols td.col-left { padding-right: 8pt; }
+  .beo-cols td.col-right { padding-left: 8pt; border-left: 0.5pt solid #ececea; }
+  .beo-sec { padding-bottom: 5pt; }
+  .beo-h { font-weight: bold; font-size: 8pt; border-bottom: 0.8pt solid #1f2420; padding-bottom: 1pt; margin-bottom: 2pt; }
+  ul.beo-bullets { margin: 0 0 0 9pt; padding: 0; font-size: 7.4pt; line-height: 1.35; }
+  ul.beo-bullets li { margin-bottom: 1pt; }
+  .beo-billing { margin-top: 6pt; border-top: 1.2pt solid #1f2420; padding-top: 4pt; }
+  .beo-billing table { width: 100%; border-collapse: collapse; }
+  .beo-billing td { font-size: 7.6pt; padding: 1.5pt 0; border: none; }
 </style>
 {% endif %}
 </head>
 <body>
+{# ---- Event Order building blocks, shared by the screen and PDF branches.
+   `staff` is true only on the staff preview (never the client view or the
+   PDF): with it, [REVIEW] prompts show raw; without it, client_safe swaps
+   them for a neutral placeholder. ---- #}
+{% macro beo_section(title, value, staff, always=false) %}
+{% set safe = value | client_safe(staff) %}
+{% if safe or always %}
+<div class="beo-sec">
+  <div class="beo-h">{{ title }}</div>
+  {% set lines = (safe or "—") | bullets %}
+  <ul class="beo-bullets">
+    {% for line in lines %}
+    <li class="{{ 'review' if staff and '[REVIEW]' in line else '' }}">{{ line }}</li>
+    {% endfor %}
+  </ul>
+</div>
+{% endif %}
+{% endmacro %}
+
+{% macro beo_timeline(content, staff) %}
+<div class="beo-sec">
+  <div class="beo-h">Event Timeline</div>
+  <ul class="beo-bullets">
+    {% if content.event_timeline.bullets %}
+    {% for line in content.event_timeline.bullets %}
+    <li>{{ line }}</li>
+    {% endfor %}
+    {% else %}
+    {# BEO stored before the bullets existed -- its prose notes field
+       becomes a single bullet rather than the section going blank. #}
+    {% set legacy = content.event_timeline.notes | client_safe(staff) %}
+    {% if legacy %}<li class="{{ 'review' if staff and '[REVIEW]' in legacy else '' }}">{{ legacy }}</li>{% endif %}
+    {% endif %}
+  </ul>
+</div>
+{% endmacro %}
+
+{% macro beo_food_groups(content, staff) %}
+{% set items = content.food_order.line_items %}
+{% if items %}
+{% for key, title in [("platter", "Platters"), ("pizza", "Pizzas"), ("side", "Sides"), ("dessert", "Desserts")] %}
+{% set group = [] %}
+{% for item in items %}{% if item.get("category") == key %}{% set _ = group.append(item) %}{% endif %}{% endfor %}
+{% if group %}
+<div class="beo-sec">
+  <div class="beo-h">{{ title }}</div>
+  <ul class="beo-bullets">
+    {% for item in group %}
+    <li>{{ item.quantity }}x {{ item.description or item.item }}: {{ item | line_total }}</li>
+    {% endfor %}
+  </ul>
+</div>
+{% endif %}
+{% endfor %}
+{# Items stored before categories existed render in one generic group so
+   an old BEO never loses its food order. #}
+{% set uncategorized = [] %}
+{% for item in items %}{% if not item.get("category") %}{% set _ = uncategorized.append(item) %}{% endif %}{% endfor %}
+{% if uncategorized %}
+<div class="beo-sec">
+  <div class="beo-h">Food Order</div>
+  <ul class="beo-bullets">
+    {% for item in uncategorized %}
+    <li>{{ item.quantity }}x {{ item.description or item.item }}: {{ item | line_total }}</li>
+    {% endfor %}
+  </ul>
+</div>
+{% endif %}
+{% elif staff %}
+<div class="beo-sec">
+  <div class="beo-h">Food Order</div>
+  <ul class="beo-bullets"><li class="review">{{ content.food_order.note }}</li></ul>
+</div>
+{% endif %}
+{% endmacro %}
+
+{% macro beo_totals(content, staff) %}
+<div class="beo-sec">
+  <div class="beo-h">Total Food Spend</div>
+  <ul class="beo-bullets">
+    <li>Food total: {{ ("$" + content.total_food_spend.total) if content.total_food_spend.total else "—" }}</li>
+    <li>Less deposit paid: {{ ("$" + content.total_food_spend.deposit_paid) if content.total_food_spend.deposit_paid else "—" }}</li>
+    <li>Balance owing: {{ ("$" + content.total_food_spend.balance_due) if content.total_food_spend.balance_due else "—" }}</li>
+    {% if staff and content.total_food_spend.note %}
+    <li class="review">{{ content.total_food_spend.note }}</li>
+    {% endif %}
+  </ul>
+</div>
+{% endmacro %}
+
+{% macro beo_av(content) %}
+{% if content.av %}
+<div class="beo-sec">
+  <div class="beo-h">AV / Screen</div>
+  <ul class="beo-bullets">
+    <li>Video/slideshow: {{ "yes" if content.av.video_slideshow else "no" }}</li>
+    <li>{{ content.av.format_note }}</li>
+    {% if content.av.video_slideshow and content.av.usb_deadline_display %}
+    <li>USB due by {{ content.av.usb_deadline_display }}</li>
+    {% endif %}
+    <li>Microphones for speeches: {{ "yes" if content.av.microphones_for_speeches else "no" }}</li>
+    {% if content.av.notes %}<li>{{ content.av.notes }}</li>{% endif %}
+  </ul>
+</div>
+{% endif %}
+{% endmacro %}
+
+{% macro beo_left_column(content, staff) %}
+{{ beo_timeline(content, staff) }}
+{{ beo_section("Catering Order + Service Style", content.catering_order_and_service_style, staff) }}
+{{ beo_food_groups(content, staff) }}
+{{ beo_totals(content, staff) }}
+{{ beo_section("Bar Structure", content.bar_structure, staff) }}
+{% endmacro %}
+
+{% macro beo_right_column(content, staff, document) %}
+{{ beo_section("Room Layout Notes", content.room_layout_notes, staff) }}
+{{ beo_section("Music", content.music or content.music_entertainment, staff) }}
+{{ beo_section("Entertainment", content.entertainment, staff) }}
+{{ beo_av(content) }}
+{{ beo_section("Dietaries", content.get("dietaries") or "No dietary requirements declared", staff, always=true) }}
+{{ beo_section("Accessibility", content.accessibility, staff) }}
+{{ beo_section("Decorations", content.decorations, staff) }}
+{{ beo_section("Special Notes", content.special_notes, staff) }}
+{{ beo_section("Status", content.status_text or document.status.value, staff, always=true) }}
+{% endmacro %}
+
 {% if is_pdf and document.type.value == "agreement" %}
 {# Single-page print layout for the agreement. The screen markup below
    stays as it is -- a client reading this on a phone wants generous
@@ -175,17 +351,101 @@
     {{ document.content.venue }} &middot; ABN {{ document.content.venue_abn }} &middot; {{ document.content.venue_address }}
   </div>
 </div>
-{% else %}
+{% elif is_pdf %}
+{# Event Order print layout, matching the reference iVvy document. The
+   PDF route is public-token only -- is_staff_preview is never set here,
+   so every field passes through client_safe in client mode and internal
+   notes are structurally unreachable. #}
+{% set content = document.content %}
+{% set ref = content._reference %}
+{% set client_name = ref.get("client_name") or (booking.contact.name if booking.contact else None) %}
 <div class="card">
+  <table class="beo-header">
+    <tr>
+      <td>
+        <h1>{{ client_name or booking.event_name }} Event Order</h1>
+        <div class="date-line">{{ content.event_timeline.event_date_display or content.event_timeline.event_date }}</div>
+        <div class="venue-line">{{ venue_trading_name }} - {{ venue_phone }}, {{ venue_contact_email }}</div>
+      </td>
+      <td style="text-align: right;">
+        {% if has_venue_logo() %}
+        <img class="doc-logo" src="{{ venue_logo_url }}" alt="{{ venue_trading_name }}">
+        {% else %}
+        <div class="doc-wordmark">{{ venue_trading_name }}</div>
+        {% endif %}
+      </td>
+    </tr>
+  </table>
+
+  <table class="beo-meta">
+    <tr>
+      <td>
+        <span class="k">Event Coordinator:</span> {{ venue_contact_name }}<br>
+        <span class="k">Client:</span> {{ client_name or "—" }}{% if ref.get("client_phone") %} ({{ ref.client_phone }}){% endif %}<br>
+        <span class="k">Onsite Contact:</span> {{ content.get("onsite_contact") or client_name or "—" }}
+      </td>
+      <td class="right">
+        <span class="k">Event Order:</span> EO-{{ booking.reference_code }}-v{{ document.version }}<br>
+        <span class="k">Booking Reference:</span> {{ booking.reference_code }}<br>
+        <span class="k">Total Paid:</span> {{ ("A$" + ref.total_paid) if ref.get("total_paid") else "—" }}
+      </td>
+    </tr>
+  </table>
+
+  <table class="beo-band">
+    <tr>
+      <td>{{ content.event_timeline.start_time_display or content.event_timeline.start_time }} – {{ content.event_timeline.end_time_display or content.event_timeline.end_time }}</td>
+      <td>{{ booking.event_name }}</td>
+      <td>Attendees: {{ ref.adult_count + ref.child_count }}</td>
+      <td>{{ ref.space_name or booking.space.name }}</td>
+    </tr>
+  </table>
+
+  <table class="beo-cols">
+    <tr>
+      <td class="col-left" width="50%">
+        {{ beo_left_column(content, false) }}
+      </td>
+      <td class="col-right" width="50%">
+        {{ beo_right_column(content, false, document) }}
+      </td>
+    </tr>
+  </table>
+
+  <div class="beo-billing">
+    <table>
+      <tr><td><b>Billing Summary</b></td><td style="text-align:right;"></td></tr>
+      <tr><td>Food total</td><td style="text-align:right;">{{ ("$" + content.total_food_spend.total) if content.total_food_spend.total else "—" }}</td></tr>
+      <tr><td>Total paid</td><td style="text-align:right;">{{ ("$" + ref.total_paid) if ref.get("total_paid") else "—" }}</td></tr>
+      <tr><td><b>Balance owing</b></td><td style="text-align:right;"><b>{{ ("$" + content.total_food_spend.balance_due) if content.total_food_spend.balance_due else "—" }}</b></td></tr>
+    </table>
+  </div>
+
+  <div class="pdf-sign">
+    {% if document.status.value == "signed" %}
+    <span class="signed">Signed by {{ document.signer_name }}</span> on {{ document.signed_at | sydney_time }}
+    {% else %}
+    <span class="unsigned-line">Signature ____________________________&nbsp;&nbsp;
+    Name ____________________________&nbsp;&nbsp; Date ______________</span>
+    {% endif %}
+  </div>
+  <div class="pdf-foot">
+    {{ venue_trading_name }} &middot; ABN {{ venue_abn }} &middot; {{ venue_address }}
+  </div>
+</div>
+{% else %}
+<div class="card {{ 'beo-card' if document.type.value == 'beo' else '' }}">
   {% if is_staff_preview %}
   <div class="staff-preview-banner">Staff preview — this has not been sent to the client.</div>
   {% endif %}
+  {% if document.type.value == "agreement" %}
   <h1>{{ booking.event_name }}</h1>
   <div class="subtitle">
-    {{ "Booking Agreement" if document.type.value == "agreement" else "Event Order (BEO)" }}
+    Booking Agreement
     · Ref {{ booking.reference_code }} · v{{ document.version }}
     · <span class="status status-{{ document.status.value }}">{{ document.status.value }}</span>
   </div>
+  {% endif %}
 
   {% if document.type.value == "agreement" %}
   <div class="venue-header">
@@ -210,57 +470,72 @@
   </section>
   {% endfor %}
   {% else %}
-  <section>
-    <h2>Event Timeline</h2>
-    <p>{{ document.content.event_timeline.event_date }}, {{ document.content.event_timeline.start_time }}–{{ document.content.event_timeline.end_time }}</p>
-    <p class="{{ 'review' if '[REVIEW]' in document.content.event_timeline.notes else '' }}">{{ document.content.event_timeline.notes }}</p>
-  </section>
-  <section>
-    <h2>Catering Order &amp; Service Style</h2>
-    <p class="{{ 'review' if '[REVIEW]' in document.content.catering_order_and_service_style else '' }}">{{ document.content.catering_order_and_service_style }}</p>
-  </section>
-  <section>
-    <h2>Food Order</h2>
-    {% if document.content.food_order.line_items %}
-    <table class="food-items">
-      <tr><th>Item</th><th>Qty</th><th>Unit price</th></tr>
-      {% for item in document.content.food_order.line_items %}
-      {# "description" is the key every real producer writes (the wizard's
-         build_food_line_items, and invoicing). The "item" fallback is only
-         for BEOs already stored with the older key -- new writes use
-         description, so this can go once none are left. #}
-      <tr><td>{{ item.description or item.item }}</td><td>{{ item.quantity }}</td><td>${{ item.unit_price }}</td></tr>
-      {% endfor %}
-    </table>
-    {% else %}
-    <p class="review">{{ document.content.food_order.note }}</p>
-    {% endif %}
-  </section>
-  <section>
-    <h2>Total Food Spend</h2>
+  {% set content = document.content %}
+  {% set ref = content._reference %}
+  {% set staff = is_staff_preview and not is_pdf %}
+  {% set client_name = ref.get("client_name") or (booking.contact.name if booking.contact else None) %}
+
+  <div class="beo-header">
+    <div>
+      <h1>{{ client_name or booking.event_name }} Event Order</h1>
+      <div class="date-line">{{ content.event_timeline.event_date_display or content.event_timeline.event_date }}</div>
+      <div class="venue-line">{{ venue_trading_name }} - {{ venue_phone }}, {{ venue_contact_email }}</div>
+    </div>
+    <div>
+      {% if has_venue_logo() %}
+      <img class="doc-logo" src="{{ venue_logo_url }}" alt="{{ venue_trading_name }}">
+      {% else %}
+      <div class="doc-wordmark">{{ venue_trading_name }}</div>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="beo-meta">
+    <div>
+      <span class="k">Event Coordinator:</span> {{ venue_contact_name }}<br>
+      <span class="k">Client:</span> {{ client_name or "—" }}{% if ref.get("client_phone") %} ({{ ref.client_phone }}){% endif %}<br>
+      <span class="k">Onsite Contact:</span> {{ content.get("onsite_contact") or client_name or "—" }}
+    </div>
+    <div class="right">
+      <span class="k">Event Order:</span> EO-{{ booking.reference_code }}-v{{ document.version }}<br>
+      <span class="k">Booking Reference:</span> {{ booking.reference_code }}<br>
+      <span class="k">Total Paid:</span> {{ ("A$" + ref.total_paid) if ref.get("total_paid") else "—" }}
+    </div>
+  </div>
+
+  <div class="beo-band">
+    <span>{{ content.event_timeline.start_time_display or content.event_timeline.start_time }} – {{ content.event_timeline.end_time_display or content.event_timeline.end_time }}</span>
+    <span>{{ booking.event_name }}</span>
+    <span>Attendees: {{ ref.adult_count + ref.child_count }}</span>
+    <span>{{ ref.space_name or booking.space.name }}</span>
+  </div>
+
+  <div class="beo-cols">
+    <div>
+      {{ beo_left_column(content, staff) }}
+    </div>
+    <div>
+      {{ beo_right_column(content, staff, document) }}
+    </div>
+  </div>
+
+  <div class="beo-billing">
     <table>
-      <tr><td class="label">Total</td><td>{{ ("$" + document.content.total_food_spend.total) if document.content.total_food_spend.total else "—" }}</td></tr>
-      <tr><td class="label">Less deposit paid</td><td>{{ ("$" + document.content.total_food_spend.deposit_paid) if document.content.total_food_spend.deposit_paid else "—" }}</td></tr>
-      <tr><td class="label">Balance due</td><td>{{ ("$" + document.content.total_food_spend.balance_due) if document.content.total_food_spend.balance_due else "—" }}</td></tr>
+      <tr><td><b>Billing Summary</b></td><td style="text-align:right;"></td></tr>
+      <tr><td>Food total</td><td style="text-align:right;">{{ ("$" + content.total_food_spend.total) if content.total_food_spend.total else "—" }}</td></tr>
+      <tr><td>Total paid</td><td style="text-align:right;">{{ ("$" + ref.total_paid) if ref.get("total_paid") else "—" }}</td></tr>
+      <tr><td><b>Balance owing</b></td><td style="text-align:right;"><b>{{ ("$" + content.total_food_spend.balance_due) if content.total_food_spend.balance_due else "—" }}</b></td></tr>
     </table>
-    <p class="review">{{ document.content.total_food_spend.note }}</p>
-  </section>
-  <section>
-    <h2>Bar Structure</h2>
-    <p class="{{ 'review' if '[REVIEW]' in document.content.bar_structure else '' }}">{{ document.content.bar_structure }}</p>
-  </section>
-  <section>
-    <h2>Room Layout Notes</h2>
-    <p class="{{ 'review' if '[REVIEW]' in document.content.room_layout_notes else '' }}">{{ document.content.room_layout_notes }}</p>
-  </section>
-  <section>
-    <h2>Music / Entertainment</h2>
-    <p class="{{ 'review' if '[REVIEW]' in document.content.music_entertainment else '' }}">{{ document.content.music_entertainment }}</p>
-  </section>
-  <section>
-    <h2>Special Notes</h2>
-    <p>{{ document.content.special_notes or "—" }}</p>
-  </section>
+  </div>
+
+  {% if staff and content.get("internal_notes") %}
+  <div class="beo-internal">
+    <div class="tag">INTERNAL — not shown to client</div>
+    <ul class="beo-bullets">
+      {% for line in content.internal_notes | bullets %}<li>{{ line }}</li>{% endfor %}
+    </ul>
+  </div>
+  {% endif %}
   {% endif %}
 
   {% if document.status.value == "signed" %}

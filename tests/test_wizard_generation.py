@@ -59,11 +59,21 @@ def _complete_all_steps(db, session, menu_items, *, accessibility_needs=None):
     wizard_service.save_music_step(
         db, session, music_type=MusicType.own_playlist, notes="Chill playlist", bump_in_notes=None, actor="test"
     )
+    # An empty vendors list is a real "no vendors" answer -- the step is
+    # complete without any vendor rows.
+    wizard_service.save_vendors_step(db, session, vendors=[], actor="test")
     wizard_service.save_extras_step(
         db, session, cake_choice_type=CakeChoiceType.none, cake_menu_item_id=None, cake_notes=None,
         decorations_notes=None, layout_notes="No special layout", dietary_requirements=None,
         accessibility_needs=accessibility_needs, additional_notes=None, actor="test",
     )
+    # The AV step only exists for Loft bookings; a completeness check that
+    # flagged a skipped AV step on any other space would be flagging a
+    # step the client never saw.
+    if session.booking.space.name == "The Loft":
+        wizard_service.save_av_step(
+            db, session, video_slideshow=False, microphones_for_speeches=False, notes=None, actor="test"
+        )
 
 
 def test_surcharge_applied_to_gross_subtotal_not_net_of_deposit(db, loft, menu_items, public_holidays):

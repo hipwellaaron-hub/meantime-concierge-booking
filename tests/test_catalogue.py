@@ -97,13 +97,14 @@ def test_platters_have_no_legacy_variant_always_current_price(db, loft, menu_ite
 # --- cake catalogue (Desserts menu, August 2026) -----------------------------
 
 
-def test_cake_catalogue_has_all_nine_items(db, loft, menu_items):
+def test_cake_catalogue_offers_only_the_flat_price_cakes(db, loft, menu_items):
+    """Hamilton's live cake list is three flat-$80 cakes (per Aaron,
+    27 Aug 2026). The layered Vanilla/Chocolate variants are retired --
+    kept in the DB inactive so existing orders resolve, never offered."""
     from app.models.menu_item import MenuItemCategory
 
     cakes = {i.name for i in get_active_items(db, MenuItemCategory.cake)}
     assert cakes == {
-        "Vanilla Cake (2 Layer)", "Vanilla Cake (3 Layer)", "Vanilla Cake (4 Layer)",
-        "Chocolate Cake (2 Layer)", "Chocolate Cake (3 Layer)", "Chocolate Cake (4 Layer)",
         "Chocolate Mud Cake", "White Chocolate, Vanilla & Raspberry Cake", "Tiramisu Cake",
     }
 
@@ -113,15 +114,46 @@ def test_cake_prices_match_the_desserts_menu(db, loft, menu_items):
         PIZZA_LEGACY_PRICING_CUTOVER_DATE - dt.timedelta(days=30), dt.time(9, 0), tzinfo=dt.timezone.utc
     )
     booking = _booking_created_at(db, loft, before_cutover)
-    assert resolve_price(menu_items["Vanilla Cake (2 Layer)"], booking) == Decimal("80.00")
-    assert resolve_price(menu_items["Vanilla Cake (3 Layer)"], booking) == Decimal("95.00")
-    assert resolve_price(menu_items["Vanilla Cake (4 Layer)"], booking) == Decimal("115.00")
     assert resolve_price(menu_items["Chocolate Mud Cake"], booking) == Decimal("80.00")
+    assert resolve_price(menu_items["White Chocolate, Vanilla & Raspberry Cake"], booking) == Decimal("80.00")
+    assert resolve_price(menu_items["Tiramisu Cake"], booking) == Decimal("80.00")
     # Cakes have no legacy variant, same as platters -- a pre-cutover
     # booking still prices at current_price.
 
 
-def test_dessert_platter_seeded_as_one_platter_item(db, loft, menu_items):
-    assert menu_items["Dessert Platter"].current_price == Decimal("140.00")
+def test_retired_items_resolve_for_existing_orders_but_are_not_offered(db, loft, menu_items):
+    """A retired item keeps its identity and quoted price for orders that
+    already reference it -- retirement only means "no longer offered"."""
     from app.models.menu_item import MenuItemCategory
-    assert menu_items["Dessert Platter"].category == MenuItemCategory.platter
+    from app.services.catalogue import get_by_id, get_by_id_any
+
+    retired_cake = menu_items["Vanilla Cake (3 Layer)"]
+    dessert_platter = menu_items["Dessert Platter"]
+
+    assert retired_cake.is_active is False
+    assert dessert_platter.is_active is False
+    assert dessert_platter.category == MenuItemCategory.dessert
+
+    # Not offered for new selection...
+    assert get_by_id(db, retired_cake.id) is None
+    assert get_by_id(db, dessert_platter.id) is None
+    # ...but an existing order still resolves at the quoted price.
+    booking = _booking_created_at(db, loft, dt.datetime(2026, 6, 1, tzinfo=dt.timezone.utc))
+    assert resolve_price(get_by_id_any(db, retired_cake.id), booking) == Decimal("95.00")
+    assert resolve_price(get_by_id_any(db, dessert_platter.id), booking) == Decimal("140.00")
+
+
+def test_hot_and_cold_dessert_platters_offered_at_100(db, loft, menu_items):
+    from app.models.menu_item import MenuItemCategory
+
+    desserts = {i.name: i for i in get_active_items(db, MenuItemCategory.dessert)}
+    assert set(desserts) == {"Hot Dessert Platter", "Cold Dessert Platter"}
+    assert desserts["Hot Dessert Platter"].current_price == Decimal("100.00")
+    assert desserts["Cold Dessert Platter"].current_price == Decimal("100.00")
+
+
+def test_shoestring_fries_is_a_side(db, loft, menu_items):
+    from app.models.menu_item import MenuItemCategory
+
+    assert menu_items["Shoestring Fries"].category == MenuItemCategory.side
+    assert menu_items["Shoestring Fries"].is_active is True

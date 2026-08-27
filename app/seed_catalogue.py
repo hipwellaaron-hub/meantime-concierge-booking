@@ -25,36 +25,45 @@ from app.database import SessionLocal
 from app.models import MenuItem
 from app.models.menu_item import MenuItemCategory
 
-# (category, name, current_price, legacy_price)
+# (category, name, current_price, legacy_price, is_active)
+#
+# Retired rows stay in this list, inactive, on purpose: existing bookings
+# reference them by id and must keep resolving to the name and price that
+# was quoted (see app.services.catalogue.get_by_id_any); they simply stop
+# being offered for new selection. Retired 27 Aug 2026 per Aaron: the
+# layered Vanilla/Chocolate cakes (Hamilton's cakes are now a flat $80
+# each) and the $140 mixed Dessert Platter (replaced by the Hot/Cold
+# Dessert Platters at $100).
 CATALOGUE_ITEMS = [
-    (MenuItemCategory.platter, "Pork Belly Bites", Decimal("100.00"), None),
-    (MenuItemCategory.platter, "Chicken Tender Skewers", Decimal("100.00"), None),
-    (MenuItemCategory.platter, "Salt & Pepper Squid", Decimal("100.00"), None),
-    (MenuItemCategory.platter, "Mushroom & Feta Arancini", Decimal("100.00"), None),
-    (MenuItemCategory.platter, "Crispy Popcorn Halloumi", Decimal("100.00"), None),
-    (MenuItemCategory.platter, "Pork & Fennel Meatballs", Decimal("100.00"), None),
-    (MenuItemCategory.platter, "Ricotta & Sun-dried Tomato Stuffed Mushrooms", Decimal("80.00"), None),
-    (MenuItemCategory.platter, "Grazing Platter", Decimal("250.00"), None),
-    (MenuItemCategory.platter, "Shoestring Fries", Decimal("15.00"), None),
-    # A mixed selection of Sticky Date Pudding, Chocolate Brownie, Pear &
-    # Walnut Cake, Apple & Rhubarb Cake, Lemon Passionfruit Cheesecake,
-    # Choc Vanilla Cheesecake Slice, and Caramel Slice -- one platter
-    # product, same as Grazing Platter doesn't expose its own components.
-    (MenuItemCategory.platter, "Dessert Platter", Decimal("140.00"), None),
-    (MenuItemCategory.pizza, "Margherita Pizza", Decimal("27.00"), Decimal("26.00")),
-    (MenuItemCategory.pizza, "Vegetarian Pizza", Decimal("30.00"), None),  # new item in v1.3, no legacy price
-    (MenuItemCategory.pizza, "Prosciutto & Pear", Decimal("34.00"), Decimal("30.00")),
-    (MenuItemCategory.pizza, "Spiced Lamb", Decimal("34.00"), Decimal("30.00")),
-    (MenuItemCategory.pizza, "Calabrese", Decimal("34.00"), Decimal("30.00")),
-    (MenuItemCategory.cake, "Vanilla Cake (2 Layer)", Decimal("80.00"), None),
-    (MenuItemCategory.cake, "Vanilla Cake (3 Layer)", Decimal("95.00"), None),
-    (MenuItemCategory.cake, "Vanilla Cake (4 Layer)", Decimal("115.00"), None),
-    (MenuItemCategory.cake, "Chocolate Cake (2 Layer)", Decimal("80.00"), None),
-    (MenuItemCategory.cake, "Chocolate Cake (3 Layer)", Decimal("95.00"), None),
-    (MenuItemCategory.cake, "Chocolate Cake (4 Layer)", Decimal("115.00"), None),
-    (MenuItemCategory.cake, "Chocolate Mud Cake", Decimal("80.00"), None),
-    (MenuItemCategory.cake, "White Chocolate, Vanilla & Raspberry Cake", Decimal("80.00"), None),
-    (MenuItemCategory.cake, "Tiramisu Cake", Decimal("80.00"), None),
+    (MenuItemCategory.platter, "Pork Belly Bites", Decimal("100.00"), None, True),
+    (MenuItemCategory.platter, "Chicken Tender Skewers", Decimal("100.00"), None, True),
+    (MenuItemCategory.platter, "Salt & Pepper Squid", Decimal("100.00"), None, True),
+    (MenuItemCategory.platter, "Mushroom & Feta Arancini", Decimal("100.00"), None, True),
+    (MenuItemCategory.platter, "Crispy Popcorn Halloumi", Decimal("100.00"), None, True),
+    (MenuItemCategory.platter, "Pork & Fennel Meatballs", Decimal("100.00"), None, True),
+    (MenuItemCategory.platter, "Ricotta & Sun-dried Tomato Stuffed Mushrooms", Decimal("80.00"), None, True),
+    (MenuItemCategory.platter, "Grazing Platter", Decimal("250.00"), None, True),
+    (MenuItemCategory.side, "Shoestring Fries", Decimal("15.00"), None, True),
+    # Retired: the old mixed selection, replaced by the two platters below.
+    (MenuItemCategory.dessert, "Dessert Platter", Decimal("140.00"), None, False),
+    # Brownie and sticky date pudding with cream -- five of each, ten pieces.
+    (MenuItemCategory.dessert, "Hot Dessert Platter", Decimal("100.00"), None, True),
+    # Five different cold desserts, two of each, ten pieces.
+    (MenuItemCategory.dessert, "Cold Dessert Platter", Decimal("100.00"), None, True),
+    (MenuItemCategory.pizza, "Margherita Pizza", Decimal("27.00"), Decimal("26.00"), True),
+    (MenuItemCategory.pizza, "Vegetarian Pizza", Decimal("30.00"), None, True),  # new item in v1.3, no legacy price
+    (MenuItemCategory.pizza, "Prosciutto & Pear", Decimal("34.00"), Decimal("30.00"), True),
+    (MenuItemCategory.pizza, "Spiced Lamb", Decimal("34.00"), Decimal("30.00"), True),
+    (MenuItemCategory.pizza, "Calabrese", Decimal("34.00"), Decimal("30.00"), True),
+    (MenuItemCategory.cake, "Vanilla Cake (2 Layer)", Decimal("80.00"), None, False),
+    (MenuItemCategory.cake, "Vanilla Cake (3 Layer)", Decimal("95.00"), None, False),
+    (MenuItemCategory.cake, "Vanilla Cake (4 Layer)", Decimal("115.00"), None, False),
+    (MenuItemCategory.cake, "Chocolate Cake (2 Layer)", Decimal("80.00"), None, False),
+    (MenuItemCategory.cake, "Chocolate Cake (3 Layer)", Decimal("95.00"), None, False),
+    (MenuItemCategory.cake, "Chocolate Cake (4 Layer)", Decimal("115.00"), None, False),
+    (MenuItemCategory.cake, "Chocolate Mud Cake", Decimal("80.00"), None, True),
+    (MenuItemCategory.cake, "White Chocolate, Vanilla & Raspberry Cake", Decimal("80.00"), None, True),
+    (MenuItemCategory.cake, "Tiramisu Cake", Decimal("80.00"), None, True),
 ]
 
 
@@ -62,10 +71,14 @@ def seed(db=None) -> int:
     owns_session = db is None
     db = db or SessionLocal()
     try:
-        existing = {(item.category, item.name) for item in db.query(MenuItem)}
+        # Keyed on name alone (not category+name): phase16 recategorized
+        # Shoestring Fries and Dessert Platter via migration, and a
+        # category-qualified check would re-insert a duplicate row beside
+        # each migrated one.
+        existing = {item.name for item in db.query(MenuItem)}
         added = 0
-        for category, name, current_price, legacy_price in CATALOGUE_ITEMS:
-            if (category, name) in existing:
+        for category, name, current_price, legacy_price, is_active in CATALOGUE_ITEMS:
+            if name in existing:
                 continue
             db.add(
                 MenuItem(
@@ -73,7 +86,7 @@ def seed(db=None) -> int:
                     name=name,
                     current_price=current_price,
                     legacy_price=legacy_price,
-                    is_active=True,
+                    is_active=is_active,
                 )
             )
             added += 1

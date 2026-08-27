@@ -11,7 +11,8 @@ from sqlalchemy.orm import Session
 
 from app.admin_auth import admin_ctx, require_csrf, require_staff
 from app.database import get_db
-from app.models import Booking, Document, Invoice, Space, Venue
+from app.models import Booking, BookingEvent, BookingVendor, Document, Invoice, Space, Venue
+from app.models.booking_vendor import VendorType
 from app.models.booking import BookingStatus, MinReductionReasonCode
 from app.models.document import DocumentStatus, DocumentType
 from app.models.invoice import InvoiceStatus
@@ -29,7 +30,9 @@ from app.services import wizard_generation
 from app.services.attribution import summarize_channel
 from app.services.document_generation import (
     REVIEW,
+    build_event_timeline,
     build_total_food_spend,
+    build_vendor_snapshot,
     compute_food_order_total,
     generate_agreement_content,
     generate_beo_content,
@@ -408,7 +411,15 @@ def edit_document_form(
         else "admin/document_edit_beo.html"
     )
     return templates.TemplateResponse(
-        request, template, admin_ctx(request, staff, document=document, booking=document.booking)
+        request,
+        template,
+        admin_ctx(
+            request,
+            staff,
+            document=document,
+            booking=document.booking,
+            vendor_types=[vt.value for vt in VendorType],
+        ),
     )
 
 
@@ -422,11 +433,31 @@ def save_document_edit(
     catering_order_and_service_style: str = Form(default=""),
     bar_structure: str = Form(default=""),
     room_layout_notes: str = Form(default=""),
+    music: str = Form(default=""),
+    entertainment: str = Form(default=""),
     music_entertainment: str = Form(default=""),
     special_notes: str = Form(default=""),
+    dietaries: str = Form(default=""),
+    accessibility: str = Form(default=""),
+    decorations: str = Form(default=""),
+    status_text: str = Form(default=""),
+    onsite_contact: str = Form(default=""),
+    internal_notes: str = Form(default=""),
+    av_video_slideshow: str | None = Form(default=None),
+    av_microphones: str | None = Form(default=None),
+    av_notes: str = Form(default=""),
+    guest_arrival_time: str = Form(default=""),
+    pack_down_notes: str = Form(default=""),
+    moment_times: list[str] = Form(default=[]),
+    moment_labels: list[str] = Form(default=[]),
+    vendor_types: list[str] = Form(default=[]),
+    vendor_names: list[str] = Form(default=[]),
+    vendor_contacts: list[str] = Form(default=[]),
+    vendor_bump_ins: list[str] = Form(default=[]),
     item_descriptions: list[str] = Form(default=[]),
     item_quantities: list[str] = Form(default=[]),
     item_unit_prices: list[str] = Form(default=[]),
+    item_categories: list[str] = Form(default=[]),
     db: Session = Depends(get_db),
     staff: StaffUser = Depends(require_staff),
 ):
@@ -451,28 +482,131 @@ def save_document_edit(
         content["terms_sections"] = sections
         content["terms_text"] = rebuild_terms_text(sections)
     else:
+        booking = document.booking
         line_items = []
-        for description, quantity, unit_price in zip(item_descriptions, item_quantities, item_unit_prices):
+        categories = list(item_categories) + [""] * (len(item_descriptions) - len(item_categories))
+        for description, quantity, unit_price, category in zip(
+            item_descriptions, item_quantities, item_unit_prices, categories
+        ):
             if not description.strip():
                 continue  # a blanked-out row is how the form deletes a line item
             try:
-                line_items.append({
+                entry = {
                     # "description", matching what the wizard and invoicing
                     # both write -- see the note in document.html.
                     "description": description.strip(),
                     "quantity": int(quantity),
                     "unit_price": str(Decimal(unit_price)),
-                })
+                }
             except (ValueError, InvalidOperation) as exc:
                 raise HTTPException(
                     status_code=422, detail=f"'{description.strip()}' needs a whole-number quantity and a valid price"
                 ) from exc
+            if category in ("platter", "pizza", "side", "dessert"):
+                entry["category"] = category
+            line_items.append(entry)
+
+        # Timeline facts write through to the Booking itself (per-field
+        # audit events), then the document's timeline is rebuilt from the
+        # booking via the same shared builder generation uses -- the edit
+        # screen and generation can't drift apart.
+        try:
+            parsed_arrival = dt.time.fromisoformat(guest_arrival_time) if guest_arrival_time.strip() else None
+        except ValueError:
+            raise HTTPException(status_code=422, detail="Invalid guest arrival time")
+        moments = []
+        for m_time, m_label in zip(moment_times, moment_labels):
+            if not m_label.strip():
+                continue  # a blanked-out label is how the form deletes a moment
+            moments.append({"time": m_time.strip() or None, "label": m_label.strip()[:120]})
+        timeline_changes = {
+            "guest_arrival_time": parsed_arrival,
+            "key_moments": moments or None,
+            "pack_down_notes": pack_down_notes.strip() or None,
+        }
+        for field, new_value in timeline_changes.items():
+            old_value = getattr(booking, field)
+            if old_value != new_value:
+                db.add(
+                    BookingEvent(
+                        booking_id=booking.id,
+                        event_type="field_changed",
+                        field_name=field,
+                        old_value=str(old_value) if old_value is not None else None,
+                        new_value=str(new_value) if new_value is not None else None,
+                        actor=_actor(staff),
+                    )
+                )
+                setattr(booking, field, new_value)
+
+        # Vendors write through to booking_vendors. Staff-entered rows are
+        # tagged source='staff' so a client re-saving their wizard step
+        # never touches them; edits to an existing row keep its source and
+        # its confirmation unless the bump-in time itself changed.
+        existing_vendors = {(v.vendor_type, v.name): v for v in booking.vendors}
+        seen_vendor_keys = set()
+        valid_vendor_types = {vt.value for vt in VendorType}
+        for v_type, v_name, v_contact, v_bump in zip(vendor_types, vendor_names, vendor_contacts, vendor_bump_ins):
+            if not v_name.strip():
+                continue  # a blanked-out name is how the form deletes a vendor
+            if v_type not in valid_vendor_types:
+                raise HTTPException(status_code=422, detail=f"Unknown vendor type '{v_type}'")
+            try:
+                parsed_bump = dt.time.fromisoformat(v_bump) if v_bump.strip() else None
+            except ValueError:
+                raise HTTPException(status_code=422, detail=f"Invalid bump-in time for '{v_name.strip()}'")
+            key = (v_type, v_name.strip())
+            seen_vendor_keys.add(key)
+            row = existing_vendors.get(key)
+            if row is None:
+                db.add(
+                    BookingVendor(
+                        booking_id=booking.id,
+                        vendor_type=v_type,
+                        name=v_name.strip(),
+                        contact_number=v_contact.strip() or None,
+                        bump_in_time=parsed_bump,
+                        bump_in_confirmed=False if parsed_bump is not None else None,
+                        source="staff",
+                    )
+                )
+            else:
+                row.contact_number = v_contact.strip() or None
+                if row.bump_in_time != parsed_bump:
+                    row.bump_in_time = parsed_bump
+                    row.bump_in_confirmed = False if parsed_bump is not None else None
+        for key, row in existing_vendors.items():
+            if key not in seen_vendor_keys:
+                db.delete(row)
+        db.flush()
+        db.expire(booking, ["vendors"])
+
+        vendors_snapshot = build_vendor_snapshot(booking.vendors)
+        content["vendors"] = vendors_snapshot
+        content["event_timeline"] = build_event_timeline(booking, vendors_snapshot)
 
         content["catering_order_and_service_style"] = catering_order_and_service_style.strip()
         content["bar_structure"] = bar_structure.strip()
         content["room_layout_notes"] = room_layout_notes.strip()
-        content["music_entertainment"] = music_entertainment.strip()
+        # Split fields; the legacy merged field is cleared once staff save
+        # through the new form (its value was offered as the music
+        # field's prefill).
+        content["music"] = music.strip() or None
+        content["entertainment"] = entertainment.strip() or None
+        content["music_entertainment"] = music_entertainment.strip() or None
         content["special_notes"] = special_notes.strip()
+        content["dietaries"] = dietaries.strip() or "No dietary requirements declared"
+        content["accessibility"] = accessibility.strip() or None
+        content["decorations"] = decorations.strip() or None
+        content["status_text"] = status_text.strip() or None
+        content["onsite_contact"] = onsite_contact.strip() or None
+        content["internal_notes"] = internal_notes.strip() or None
+        if content.get("av"):
+            av = dict(content["av"])
+            av["video_slideshow"] = av_video_slideshow is not None
+            av["microphones_for_speeches"] = av_microphones is not None
+            av["notes"] = av_notes.strip() or None
+            content["av"] = av
         content["food_order"] = {
             "line_items": line_items,
             "note": None if line_items else f"{REVIEW} no food order captured yet",
@@ -488,6 +622,49 @@ def save_document_edit(
         )
 
     documents_service.update_content(db, document, content, actor=_actor(staff))
+    return _redirect_to_detail(booking_id)
+
+
+@router.post("/{booking_id}/vendors/{vendor_id}/confirm-bump-in", dependencies=[Depends(require_csrf)])
+def confirm_vendor_bump_in(
+    booking_id: uuid.UUID,
+    vendor_id: uuid.UUID,
+    request: Request,
+    db: Session = Depends(get_db),
+    staff: StaffUser = Depends(require_staff),
+):
+    """The staff half of the request/confirm handshake: a client's
+    nominated bump-in time renders as "requested" everywhere until this
+    is clicked -- same semantics as confirming early setup access."""
+    _get_booking_or_404(db, booking_id)
+    vendor = db.get(BookingVendor, vendor_id)
+    if vendor is None or vendor.booking_id != booking_id:
+        raise HTTPException(status_code=404, detail="Vendor not found on this booking")
+    if vendor.bump_in_time is None:
+        raise HTTPException(status_code=422, detail="This vendor has no bump-in time to confirm")
+    vendor.bump_in_confirmed = True
+    db.add(
+        BookingEvent(
+            booking_id=booking_id,
+            event_type="vendor_bump_in_confirmed",
+            field_name=vendor.vendor_type,
+            new_value=f"{vendor.name} bump-in {vendor.bump_in_time.strftime('%H:%M')} confirmed",
+            actor=_actor(staff),
+        )
+    )
+    db.commit()
+
+    # A current DRAFT BEO gets its stored vendor snapshot refreshed so the
+    # document stops saying "requested". A sent/signed document is never
+    # mutated -- staff regenerate, per the existing document rules.
+    current_beo = documents_service.get_current(db, booking_id, DocumentType.beo)
+    if current_beo is not None and current_beo.status == DocumentStatus.draft:
+        booking = db.get(Booking, booking_id)
+        content = dict(current_beo.content)
+        snapshot = build_vendor_snapshot(booking.vendors)
+        content["vendors"] = snapshot
+        content["event_timeline"] = build_event_timeline(booking, snapshot)
+        documents_service.update_content(db, current_beo, content, actor=_actor(staff))
     return _redirect_to_detail(booking_id)
 
 

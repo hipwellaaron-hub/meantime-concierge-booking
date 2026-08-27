@@ -102,6 +102,14 @@ VENUE_TRADING_NAME = "Meantime Hamilton"
 VENUE_LEGAL_NAME = "Meantime Pty Ltd"
 VENUE_ABN = "36 654 270 532"
 VENUE_ADDRESS = "104 Beaumont St, Hamilton NSW 2303"
+# From the reference iVvy Event Order's own header line (Katrina Mentis
+# 301-1) -- appears on every client-facing Event Order.
+VENUE_PHONE = "(02) 40410697"
+
+# The Loft's screen: video/slideshows must arrive on a USB flash drive at
+# least this many days before the event for testing (phones and laptops
+# cannot connect). Displayed as an absolute weekday date, never relative.
+AV_USB_DEADLINE_DAYS_BEFORE_EVENT = 2
 
 BANK_ACCOUNT_NAME = "Meantime Pty Ltd"
 BANK_BSB = "063-519"

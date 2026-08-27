@@ -187,17 +187,48 @@ def get_wizard_eligible_bookings(db: Session, venue: Venue, *, as_of: dt.date | 
 # --- per-step saves ------------------------------------------------------
 
 
-_STEP_ORDER = list(WizardStep)
+# Canonical order = WizardStep definition order. Individual bookings get
+# a subset via step_order_for -- indices for forward-only comparisons are
+# always taken against THIS list, so a step that doesn't exist for some
+# booking still has a stable position.
+_CANONICAL_STEP_ORDER = list(WizardStep)
+
+
+def step_order_for(booking) -> list[WizardStep]:
+    """The steps this booking's wizard actually presents. The AV step
+    exists only for The Loft -- the screen is physically in that room, so
+    asking a Mezzanine client about USB slideshows would be asking about
+    equipment their event doesn't have."""
+    order = [
+        WizardStep.basics,
+        WizardStep.food,
+        WizardStep.beverage,
+        WizardStep.music,
+        WizardStep.vendors,
+        WizardStep.extras,
+    ]
+    if booking.space.name == "The Loft":
+        order.append(WizardStep.av)
+    order.append(WizardStep.review)
+    return order
 
 
 def _advance_step(session: WizardSession, completed_step: WizardStep) -> None:
     """Forward-only: re-POSTing an earlier step (editing an answer already
     given) must never regress current_step back past where the client had
-    already reached."""
-    completed_index = _STEP_ORDER.index(completed_step)
-    current_index = _STEP_ORDER.index(session.current_step)
+    already reached.
+
+    Comparisons run on canonical indices, but the step actually advanced
+    TO comes from the booking's own order -- so a session stranded on a
+    step its booking no longer has (e.g. current_step=av after the space
+    changed away from The Loft) neither crashes nor advances into another
+    step that doesn't exist."""
+    order = step_order_for(session.booking)
+    completed_index = _CANONICAL_STEP_ORDER.index(completed_step)
+    current_index = _CANONICAL_STEP_ORDER.index(session.current_step)
     if current_index <= completed_index:
-        session.current_step = _STEP_ORDER[min(completed_index + 1, len(_STEP_ORDER) - 1)]
+        next_steps = [s for s in order if _CANONICAL_STEP_ORDER.index(s) > completed_index]
+        session.current_step = next_steps[0] if next_steps else order[-1]
     if session.status == WizardSessionStatus.pending:
         session.status = WizardSessionStatus.in_progress
 
@@ -226,6 +257,8 @@ def save_basics_step(
     adult_count: int,
     child_count: int,
     actor: str,
+    guest_arrival_time: dt.time | None = None,
+    key_moments: list[dict] | None = None,
 ) -> list[ValidationWarning]:
     _lock_and_guard_editable(db, session)
     booking = session.booking
@@ -237,6 +270,13 @@ def save_basics_step(
         "setup_access_time": setup_access_time,
         "adult_count": adult_count,
         "child_count": child_count,
+        # Client-known timeline facts (see the Event Order's timeline):
+        # when guests actually arrive, and the run-sheet moments --
+        # speeches, cake cutting, raffle draws. An empty moments list
+        # normalizes to None so an untouched field doesn't log a
+        # spurious None -> [] change on every save.
+        "guest_arrival_time": guest_arrival_time,
+        "key_moments": key_moments or None,
     }
     for field, new_value in changes.items():
         old_value = getattr(booking, field)
@@ -269,7 +309,14 @@ def save_basics_step(
 
 
 def save_food_step(
-    db: Session, session: WizardSession, *, platters: list[dict], pizzas: list[dict], actor: str
+    db: Session,
+    session: WizardSession,
+    *,
+    platters: list[dict],
+    pizzas: list[dict],
+    sides: list[dict] | None = None,
+    desserts: list[dict] | None = None,
+    actor: str,
 ) -> FoodGuidance:
     """Each item is {"menu_item_id": UUID, "quantity": int}. Validates every
     referenced item exists and is active -- JSONB can't be DB-FK-enforced,
@@ -301,10 +348,12 @@ def save_food_step(
 
     validated_platters = _validate(platters, MenuItemCategory.platter)
     validated_pizzas = _validate(pizzas, MenuItemCategory.pizza)
+    validated_sides = _validate(sides or [], MenuItemCategory.side)
+    validated_desserts = _validate(desserts or [], MenuItemCategory.dessert)
 
     subtotal = Decimal("0.00")
     needs_price_review: list[str] = []
-    for entry in validated_platters + validated_pizzas:
+    for entry in validated_platters + validated_pizzas + validated_sides + validated_desserts:
         price = catalogue.resolve_price(entry["menu_item"], booking)
         if price is None:
             # A legacy-eligible booking selected an item with no defined
@@ -318,6 +367,8 @@ def save_food_step(
     session.food_response = {
         "platters": [{"menu_item_id": e["menu_item_id"], "quantity": e["quantity"]} for e in validated_platters],
         "pizzas": [{"menu_item_id": e["menu_item_id"], "quantity": e["quantity"]} for e in validated_pizzas],
+        "sides": [{"menu_item_id": e["menu_item_id"], "quantity": e["quantity"]} for e in validated_sides],
+        "desserts": [{"menu_item_id": e["menu_item_id"], "quantity": e["quantity"]} for e in validated_desserts],
         "guidance_subtotal": str(subtotal),
         "needs_price_review": needs_price_review,
     }
@@ -354,7 +405,8 @@ def save_beverage_step(
     *,
     bar_structure: BarStructure,
     bar_limit: Decimal | None,
-    bar_inclusions: str | None,
+    bar_inclusions: list[str] | str | None,
+    bar_inclusions_note: str | None = None,
     actor: str,
 ) -> None:
     _lock_and_guard_editable(db, session)
@@ -364,7 +416,10 @@ def save_beverage_step(
     session.beverage_response = {
         "bar_structure": bar_structure.value,
         "bar_limit": str(bar_limit) if bar_limit is not None else None,
+        # A list (the inclusion checkboxes) for new saves; a plain string
+        # on sessions saved before the checkboxes existed.
         "bar_inclusions": bar_inclusions,
+        "bar_inclusions_note": bar_inclusions_note,
     }
     db.add(BookingEvent(booking_id=session.booking_id, event_type="wizard_step_saved", field_name="beverage", actor=actor))
     _advance_step(session, WizardStep.beverage)
@@ -379,6 +434,99 @@ def save_music_step(
     session.music_response = {"music_type": music_type.value, "notes": notes, "bump_in_notes": bump_in_notes}
     db.add(BookingEvent(booking_id=session.booking_id, event_type="wizard_step_saved", field_name="music", actor=actor))
     _advance_step(session, WizardStep.music)
+    db.commit()
+    db.refresh(session)
+
+
+def save_vendors_step(db: Session, session: WizardSession, *, vendors: list[dict], actor: str) -> None:
+    """Each vendor: {"vendor_type", "name", "contact_number", "bump_in_time"
+    ("HH:MM" or None)}. An empty list is a real answer ("no vendors"),
+    distinct from a never-saved None -- the completeness check tests for
+    None.
+
+    Writes two places: vendors_response keeps the client's verbatim answer
+    (audit + wizard resumability), and booking_vendors rows are synced as
+    the authoritative record staff act on. Sync rules protect staff work
+    from client re-saves:
+    - wizard-sourced rows match on (vendor_type, name); a matched row with
+      an UNCHANGED bump_in_time keeps its bump_in_confirmed -- but a
+      changed time resets confirmation to pending (False), exactly the
+      setup-access semantics: the previously confirmed time is no longer
+      the time being requested.
+    - wizard-sourced rows the client no longer lists are deleted.
+    - staff-sourced rows are never touched by this function at all.
+    """
+    from app.models import BookingVendor
+
+    _lock_and_guard_editable(db, session)
+    booking = session.booking
+
+    session.vendors_response = {"vendors": vendors}
+
+    existing = {
+        (v.vendor_type, v.name): v
+        for v in db.scalars(
+            select(BookingVendor).where(BookingVendor.booking_id == booking.id, BookingVendor.source == "wizard")
+        )
+    }
+    seen: set[tuple[str, str]] = set()
+    for entry in vendors:
+        key = (entry["vendor_type"], entry["name"])
+        seen.add(key)
+        bump_in = dt.time.fromisoformat(entry["bump_in_time"]) if entry.get("bump_in_time") else None
+        row = existing.get(key)
+        if row is None:
+            db.add(
+                BookingVendor(
+                    booking_id=booking.id,
+                    vendor_type=entry["vendor_type"],
+                    name=entry["name"],
+                    contact_number=entry.get("contact_number"),
+                    bump_in_time=bump_in,
+                    # A nominated time starts as a REQUEST (False), never a
+                    # confirmation -- clients routinely nominate a time
+                    # their DJ hasn't agreed to. No time at all -> NULL.
+                    bump_in_confirmed=False if bump_in is not None else None,
+                    source="wizard",
+                )
+            )
+        else:
+            row.contact_number = entry.get("contact_number")
+            if row.bump_in_time != bump_in:
+                row.bump_in_time = bump_in
+                row.bump_in_confirmed = False if bump_in is not None else None
+    for key, row in existing.items():
+        if key not in seen:
+            db.delete(row)
+
+    db.add(BookingEvent(booking_id=booking.id, event_type="wizard_step_saved", field_name="vendors", actor=actor))
+    _advance_step(session, WizardStep.vendors)
+    db.commit()
+    db.refresh(session)
+
+
+def save_av_step(
+    db: Session,
+    session: WizardSession,
+    *,
+    video_slideshow: bool,
+    microphones_for_speeches: bool,
+    notes: str | None,
+    actor: str,
+) -> None:
+    """The Loft only -- the screen is physically in that room. The client
+    UI already hides this step for other spaces, but the client is never
+    trusted: a POST for a non-Loft booking is refused here regardless."""
+    _lock_and_guard_editable(db, session)
+    if session.booking.space.name != "The Loft":
+        raise ValueError("the AV step does not apply to this booking's space")
+    session.av_response = {
+        "video_slideshow": video_slideshow,
+        "microphones_for_speeches": microphones_for_speeches,
+        "notes": notes,
+    }
+    db.add(BookingEvent(booking_id=session.booking_id, event_type="wizard_step_saved", field_name="av", actor=actor))
+    _advance_step(session, WizardStep.av)
     db.commit()
     db.refresh(session)
 

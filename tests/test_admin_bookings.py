@@ -1032,9 +1032,12 @@ def test_dashboard_beo_regenerate_uses_real_wizard_data_when_submitted(admin_cli
     beo = documents_service.get_current(db, wizard_booking.id, DocumentType.beo)
     assert "Grazing Platter" in [li["description"] for li in beo.content["food_order"]["line_items"]]
     assert "Cash bar" in beo.content["bar_structure"]
-    assert "Chill playlist" in beo.content["music_entertainment"]
-    assert "Setup access from 14:00" in beo.content["event_timeline"]["notes"]
-    assert "Food service from 18:30" in beo.content["event_timeline"]["notes"]
+    # Music and entertainment are separate sections now -- the playlist
+    # note lands in the dedicated music field.
+    assert "Chill playlist" in beo.content["music"]
+    timeline_bullets = " ".join(beo.content["event_timeline"]["bullets"])
+    assert "Setup access from 2:00pm" in timeline_bullets
+    assert "Food service from 6:30pm" in timeline_bullets
     assert "[REVIEW]" not in beo.content["catering_order_and_service_style"]
 
 

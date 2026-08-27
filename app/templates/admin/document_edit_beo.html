@@ -5,12 +5,67 @@
 <h1>Edit event order</h1>
 <p class="muted">
   Draft v{{ document.version }} &middot; {{ booking.reference_code }}.
-  Event date, times and guest numbers come straight from the booking record and aren't editable here.
-  The food total and balance due recalculate from the line items when you save.
+  Event date and hire times come from the booking record. The food total and balance recalculate live below
+  and are saved with the document. Everything the client entered in the wizard is editable here &mdash;
+  phone corrections never require sending them back through the wizard.
 </p>
 
 <form method="post" action="/admin/bookings/{{ booking.id }}/documents/{{ document.id }}/edit">
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+  <div class="card">
+    <h2>Timeline</h2>
+    <p class="muted">Written to the booking itself, then the document's timeline is rebuilt from it.</p>
+    <div class="field-row">
+      <div>
+        <label>Guest arrival time</label>
+        <input type="time" name="guest_arrival_time" value="{{ booking.guest_arrival_time.strftime('%H:%M') if booking.guest_arrival_time else '' }}">
+      </div>
+      <div style="flex:2;">
+        <label>Pack-down / collection (staff-only field)</label>
+        <input type="text" name="pack_down_notes" value="{{ booking.pack_down_notes or '' }}" maxlength="500" placeholder="e.g. decorator collects arch Sunday 10am">
+      </div>
+    </div>
+    <label style="margin-top:8px;">Key moments <span class="muted">(clear a label to remove that row)</span></label>
+    <div id="moments">
+      {% for moment in booking.key_moments or [] %}
+      <div class="field-row">
+        <div><input type="time" name="moment_times" value="{{ (moment.time or '')[:5] }}"></div>
+        <div style="flex:3;"><input type="text" name="moment_labels" value="{{ moment.label }}" maxlength="120"></div>
+      </div>
+      {% endfor %}
+    </div>
+    <button type="button" class="secondary" id="add-moment">Add a moment</button>
+  </div>
+
+  <div class="card">
+    <h2>Vendors</h2>
+    <p class="muted">
+      Bump-in times are recorded as <b>requested</b> until confirmed. Confirm from the buttons under this form
+      once you've checked the time against setup access and the day's other bookings. Clear a vendor's name to
+      remove that row.
+    </p>
+    <div id="vendors">
+      {% for vendor in booking.vendors %}
+      <div class="field-row">
+        <div>
+          <select name="vendor_types">
+            {% for vt in vendor_types %}
+            <option value="{{ vt }}" {% if vendor.vendor_type == vt %}selected{% endif %}>{{ vt }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div style="flex:2;"><input type="text" name="vendor_names" value="{{ vendor.name }}" maxlength="255" placeholder="Name"></div>
+        <div><input type="text" name="vendor_contacts" value="{{ vendor.contact_number or '' }}" maxlength="50" placeholder="Phone"></div>
+        <div><input type="time" name="vendor_bump_ins" value="{{ vendor.bump_in_time.strftime('%H:%M') if vendor.bump_in_time else '' }}"></div>
+        <div class="muted" style="align-self:center; font-size:0.75rem;">
+          {% if vendor.bump_in_time is none %}&mdash;{% elif vendor.bump_in_confirmed %}confirmed{% else %}requested{% endif %}
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    <button type="button" class="secondary" id="add-vendor">Add a vendor</button>
+  </div>
 
   <div class="card">
     <h2>Food order</h2>
@@ -18,13 +73,23 @@
     <div id="line-items">
       {% for item in document.content.food_order.line_items %}
       <div class="field-row line-item">
-        <div><label>Item</label><input type="text" name="item_descriptions" value="{{ item.description or item.item }}" maxlength="255"></div>
+        <div style="flex:2;"><label>Item</label><input type="text" name="item_descriptions" value="{{ item.description or item.item }}" maxlength="255"></div>
+        <div>
+          <label>Category</label>
+          <select name="item_categories">
+            {% for c in ["platter", "pizza", "side", "dessert", ""] %}
+            <option value="{{ c }}" {% if item.get("category", "") == c %}selected{% endif %}>{{ c or "other" }}</option>
+            {% endfor %}
+          </select>
+        </div>
         <div><label>Qty</label><input type="number" name="item_quantities" value="{{ item.quantity }}" min="0" step="1"></div>
         <div><label>Unit price</label><input type="text" name="item_unit_prices" value="{{ item.unit_price }}"></div>
+        <div><label>Line total</label><div class="line-total muted" style="padding-top:9px;">&mdash;</div></div>
       </div>
       {% endfor %}
     </div>
     <button type="button" class="secondary" id="add-item">Add an item</button>
+    <p style="margin-top:10px;"><b>Running subtotal: <span id="running-subtotal">&mdash;</span></b></p>
   </div>
 
   <div class="card">
@@ -36,31 +101,134 @@
     <textarea name="bar_structure" rows="3">{{ document.content.bar_structure }}</textarea>
 
     <label>Room layout notes</label>
-    <textarea name="room_layout_notes" rows="3">{{ document.content.room_layout_notes }}</textarea>
+    <textarea name="room_layout_notes" rows="2">{{ document.content.room_layout_notes }}</textarea>
 
-    <label>Music / entertainment</label>
-    <textarea name="music_entertainment" rows="3">{{ document.content.music_entertainment }}</textarea>
+    <label>Music</label>
+    <textarea name="music" rows="2">{{ document.content.music or document.content.music_entertainment or "" }}</textarea>
+
+    <label>Entertainment</label>
+    <textarea name="entertainment" rows="2">{{ document.content.entertainment or "" }}</textarea>
+
+    <label>Dietaries <span class="muted">(never blank on the document &mdash; empty here prints "No dietary requirements declared")</span></label>
+    <textarea name="dietaries" rows="2">{{ document.content.get("dietaries") if document.content.get("dietaries") != "No dietary requirements declared" else "" }}</textarea>
+
+    <label>Accessibility</label>
+    <textarea name="accessibility" rows="2">{{ document.content.accessibility or "" }}</textarea>
+
+    <label>Decorations</label>
+    <textarea name="decorations" rows="2">{{ document.content.decorations or "" }}</textarea>
 
     <label>Special notes</label>
-    <textarea name="special_notes" rows="4">{{ document.content.special_notes }}</textarea>
+    <textarea name="special_notes" rows="3">{{ document.content.special_notes }}</textarea>
+
+    <label>Status</label>
+    <input type="text" name="status_text" value="{{ document.content.status_text or '' }}" maxlength="500">
+
+    <label>Onsite contact</label>
+    <input type="text" name="onsite_contact" value="{{ document.content.get('onsite_contact') or '' }}" maxlength="255">
+  </div>
+
+  {% if document.content.av %}
+  <div class="card">
+    <h2>AV / Screen <span class="muted">(The Loft)</span></h2>
+    <label><input type="checkbox" name="av_video_slideshow" value="1" {% if document.content.av.video_slideshow %}checked{% endif %}> Video / slideshow supplied</label>
+    <label><input type="checkbox" name="av_microphones" value="1" {% if document.content.av.microphones_for_speeches %}checked{% endif %}> Microphones for speeches</label>
+    <label>AV notes</label>
+    <textarea name="av_notes" rows="2">{{ document.content.av.notes or "" }}</textarea>
+    <p class="muted">USB deadline recomputes from the event date: {{ document.content.av.usb_deadline_display or "—" }}</p>
+  </div>
+  {% endif %}
+
+  <div class="card" style="border-color: var(--ember);">
+    <h2>Internal notes <span class="muted">(kitchen / bar / staffing &mdash; never shown to the client, never in the PDF)</span></h2>
+    <textarea name="internal_notes" rows="3">{{ document.content.get("internal_notes") or "" }}</textarea>
   </div>
 
   <button type="submit">Save changes</button>
   <a class="secondary-link" href="/admin/bookings/{{ booking.id }}">Cancel</a>
 </form>
 
+{% for vendor in booking.vendors %}
+{% if vendor.bump_in_time is not none and not vendor.bump_in_confirmed %}
+<form class="inline" method="post" action="/admin/bookings/{{ booking.id }}/vendors/{{ vendor.id }}/confirm-bump-in" style="margin-top:8px;">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <button class="btn" type="submit">Confirm {{ vendor.vendor_type }} bump-in {{ vendor.bump_in_time.strftime('%H:%M') }} ({{ vendor.name }})</button>
+</form>
+{% endif %}
+{% endfor %}
+
 <template id="line-item-template">
   <div class="field-row line-item">
-    <div><label>Item</label><input type="text" name="item_descriptions" value="" maxlength="255"></div>
+    <div style="flex:2;"><label>Item</label><input type="text" name="item_descriptions" value="" maxlength="255"></div>
+    <div>
+      <label>Category</label>
+      <select name="item_categories">
+        <option value="platter">platter</option>
+        <option value="pizza">pizza</option>
+        <option value="side">side</option>
+        <option value="dessert">dessert</option>
+        <option value="">other</option>
+      </select>
+    </div>
     <div><label>Qty</label><input type="number" name="item_quantities" value="1" min="0" step="1"></div>
     <div><label>Unit price</label><input type="text" name="item_unit_prices" value="0.00"></div>
+    <div><label>Line total</label><div class="line-total muted" style="padding-top:9px;">&mdash;</div></div>
+  </div>
+</template>
+
+<template id="moment-template">
+  <div class="field-row">
+    <div><input type="time" name="moment_times" value=""></div>
+    <div style="flex:3;"><input type="text" name="moment_labels" value="" maxlength="120" placeholder="e.g. Speeches"></div>
+  </div>
+</template>
+
+<template id="vendor-template">
+  <div class="field-row">
+    <div>
+      <select name="vendor_types">
+        {% for vt in vendor_types %}<option value="{{ vt }}">{{ vt }}</option>{% endfor %}
+      </select>
+    </div>
+    <div style="flex:2;"><input type="text" name="vendor_names" value="" maxlength="255" placeholder="Name"></div>
+    <div><input type="text" name="vendor_contacts" value="" maxlength="50" placeholder="Phone"></div>
+    <div><input type="time" name="vendor_bump_ins" value=""></div>
+    <div class="muted" style="align-self:center; font-size:0.75rem;">new</div>
   </div>
 </template>
 
 <script>
+  function addFromTemplate(templateId, containerId) {
+    var tpl = document.getElementById(templateId);
+    document.getElementById(containerId).appendChild(tpl.content.cloneNode(true));
+  }
   document.getElementById("add-item").addEventListener("click", function () {
-    var tpl = document.getElementById("line-item-template");
-    document.getElementById("line-items").appendChild(tpl.content.cloneNode(true));
+    addFromTemplate("line-item-template", "line-items");
+    recalc();
   });
+  document.getElementById("add-moment").addEventListener("click", function () {
+    addFromTemplate("moment-template", "moments");
+  });
+  document.getElementById("add-vendor").addEventListener("click", function () {
+    addFromTemplate("vendor-template", "vendors");
+  });
+
+  function money(n) {
+    return "$" + n.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  }
+  function recalc() {
+    var subtotal = 0;
+    document.querySelectorAll("#line-items .line-item").forEach(function (row) {
+      var desc = row.querySelector('input[name="item_descriptions"]').value.trim();
+      var qty = parseFloat(row.querySelector('input[name="item_quantities"]').value) || 0;
+      var price = parseFloat(row.querySelector('input[name="item_unit_prices"]').value) || 0;
+      var total = qty * price;
+      row.querySelector(".line-total").textContent = desc ? money(total) : "—";
+      if (desc) subtotal += total;
+    });
+    document.getElementById("running-subtotal").textContent = money(subtotal);
+  }
+  document.getElementById("line-items").addEventListener("input", recalc);
+  recalc();
 </script>
 {% endblock %}

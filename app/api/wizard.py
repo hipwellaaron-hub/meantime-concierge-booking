@@ -11,10 +11,19 @@ from app.models.invoice import InvoiceStatus
 from app.models.menu_item import MenuItemCategory
 from app.models.wizard_session import WizardSessionStatus, WizardStep
 from app.rate_limit import InMemoryRateLimiter, client_ip, rate_limit_dependency
-from app.schemas.wizard import WizardBasicsStep, WizardBeverageStep, WizardExtrasStep, WizardFoodStep, WizardMusicStep
+from app.schemas.wizard import (
+    WizardAvStep,
+    WizardBasicsStep,
+    WizardBeverageStep,
+    WizardExtrasStep,
+    WizardFoodStep,
+    WizardMusicStep,
+    WizardVendorsStep,
+)
 from app.services import catalogue
 from app.services import wizard as wizard_service
-from app.services.policy import PLATTER_GUESTS_PER_PLATTER
+from app.services.document_generation import format_day_date
+from app.services.policy import AV_USB_DEADLINE_DAYS_BEFORE_EVENT, PLATTER_GUESTS_PER_PLATTER
 from app.services.validation import MUSIC_OFF_TIME, SETUP_ACCESS_STANDARD_TIME
 from app.templating import templates
 from app.utils import looks_like_a_token, truncate
@@ -74,6 +83,22 @@ def view_wizard(token: str, request: Request, db: Session = Depends(get_db)):
     if session.status == WizardSessionStatus.submitted:
         return templates.TemplateResponse(request, "wizard/submitted.html", {"session": session, "booking": booking})
 
+    # The AV USB deadline is composed server-side as an absolute date
+    # ("Thursday 27 August") -- never a relative phrase, which would go
+    # stale the moment the page outlives the day it rendered.
+    av_usb_deadline = None
+    if booking.event_date is not None:
+        import datetime as _dt
+
+        av_usb_deadline = format_day_date(
+            booking.event_date - _dt.timedelta(days=AV_USB_DEADLINE_DAYS_BEFORE_EVENT)
+        )
+
+    # Vendors are serialized from the authoritative BookingVendor rows,
+    # not vendors_response -- so staff corrections show through when the
+    # client reopens their wizard.
+    wizard_vendor_rows = [v for v in booking.vendors if v.source == "wizard"]
+
     bootstrap = {
         "booking": {
             "event_name": booking.event_name,
@@ -84,20 +109,42 @@ def view_wizard(token: str, request: Request, db: Session = Depends(get_db)):
             "end_time": str(booking.end_time) if booking.end_time else None,
             "food_service_time": str(booking.food_service_time) if booking.food_service_time else None,
             "setup_access_time": str(booking.setup_access_time) if booking.setup_access_time else None,
+            "guest_arrival_time": str(booking.guest_arrival_time) if booking.guest_arrival_time else None,
+            "key_moments": booking.key_moments or [],
             "adult_count": booking.adult_count,
             "child_count": booking.child_count,
             "outside_cake_permitted": booking.outside_cake_permitted,
         },
+        # Server-driven step list: the AV step only exists for The Loft.
+        "steps": [s.value for s in wizard_service.step_order_for(booking)],
         "current_step": session.current_step.value,
         "responses": {
             "food": session.food_response,
             "beverage": session.beverage_response,
             "music": session.music_response,
             "extras": session.extras_response,
+            "vendors": (
+                {
+                    "vendors": [
+                        {
+                            "vendor_type": v.vendor_type,
+                            "name": v.name,
+                            "contact_number": v.contact_number,
+                            "bump_in_time": str(v.bump_in_time)[:5] if v.bump_in_time else None,
+                        }
+                        for v in wizard_vendor_rows
+                    ]
+                }
+                if session.vendors_response is not None
+                else None
+            ),
+            "av": session.av_response,
         },
         "catalogue": {
             "platters": _catalogue_payload(db, booking, MenuItemCategory.platter),
             "pizzas": _catalogue_payload(db, booking, MenuItemCategory.pizza),
+            "sides": _catalogue_payload(db, booking, MenuItemCategory.side),
+            "desserts": _catalogue_payload(db, booking, MenuItemCategory.dessert),
             "cakes": _catalogue_payload(db, booking, MenuItemCategory.cake),
         },
         "policy": {
@@ -105,6 +152,7 @@ def view_wizard(token: str, request: Request, db: Session = Depends(get_db)):
             "platter_guests_per_platter": PLATTER_GUESTS_PER_PLATTER,
             "setup_access_standard_time": str(SETUP_ACCESS_STANDARD_TIME),
             "music_off_time": str(MUSIC_OFF_TIME),
+            "av_usb_deadline_display": av_usb_deadline,
         },
     }
 
@@ -128,6 +176,10 @@ def submit_basics_step(token: str, request: Request, payload: WizardBasicsStep, 
             setup_access_time=payload.setup_access_time,
             adult_count=payload.adult_count,
             child_count=payload.child_count,
+            guest_arrival_time=payload.guest_arrival_time,
+            key_moments=[
+                {"time": str(m.time)[:5] if m.time else None, "label": m.label} for m in payload.key_moments
+            ],
             actor=_actor(request),
         )
     except ValueError as exc:
@@ -148,6 +200,8 @@ def submit_food_step(token: str, request: Request, payload: WizardFoodStep, db: 
             session,
             platters=[item.model_dump() for item in payload.platters],
             pizzas=[item.model_dump() for item in payload.pizzas],
+            sides=[item.model_dump() for item in payload.sides],
+            desserts=[item.model_dump() for item in payload.desserts],
             actor=_actor(request),
         )
     except ValueError as exc:
@@ -176,6 +230,7 @@ def submit_beverage_step(token: str, request: Request, payload: WizardBeverageSt
             bar_structure=payload.bar_structure,
             bar_limit=payload.bar_limit,
             bar_inclusions=payload.bar_inclusions,
+            bar_inclusions_note=payload.bar_inclusions_note,
             actor=_actor(request),
         )
     except ValueError as exc:
@@ -194,6 +249,48 @@ def submit_music_step(token: str, request: Request, payload: WizardMusicStep, db
             music_type=payload.music_type,
             notes=payload.notes,
             bump_in_notes=payload.bump_in_notes,
+            actor=_actor(request),
+        )
+    except ValueError as exc:
+        raise _handle_value_error(exc) from exc
+
+    return {"current_step": session.current_step.value}
+
+
+@router.post("/w/{token}/vendors", dependencies=[Depends(rate_limit_dependency(_wizard_step_rate_limiter))])
+def submit_vendors_step(token: str, request: Request, payload: WizardVendorsStep, db: Session = Depends(get_db)):
+    session = _get_usable_session(db, token)
+    try:
+        wizard_service.save_vendors_step(
+            db,
+            session,
+            vendors=[
+                {
+                    "vendor_type": v.vendor_type.value,
+                    "name": v.name,
+                    "contact_number": v.contact_number,
+                    "bump_in_time": str(v.bump_in_time)[:5] if v.bump_in_time else None,
+                }
+                for v in payload.vendors
+            ],
+            actor=_actor(request),
+        )
+    except ValueError as exc:
+        raise _handle_value_error(exc) from exc
+
+    return {"current_step": session.current_step.value}
+
+
+@router.post("/w/{token}/av", dependencies=[Depends(rate_limit_dependency(_wizard_step_rate_limiter))])
+def submit_av_step(token: str, request: Request, payload: WizardAvStep, db: Session = Depends(get_db)):
+    session = _get_usable_session(db, token)
+    try:
+        wizard_service.save_av_step(
+            db,
+            session,
+            video_slideshow=payload.video_slideshow,
+            microphones_for_speeches=payload.microphones_for_speeches,
+            notes=payload.notes,
             actor=_actor(request),
         )
     except ValueError as exc:

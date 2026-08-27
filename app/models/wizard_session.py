@@ -19,11 +19,17 @@ class WizardSessionStatus(str, enum.Enum):
 
 
 class WizardStep(str, enum.Enum):
+    # Definition order IS canonical step order (Python enum order is
+    # definition order, independent of the Postgres enum's own value
+    # order) -- see app.services.wizard.step_order_for, which derives each
+    # booking's actual sequence from this: `av` only exists for The Loft.
     basics = "basics"
     food = "food"
     beverage = "beverage"
     music = "music"
+    vendors = "vendors"
     extras = "extras"
+    av = "av"
     review = "review"
 
 
@@ -64,6 +70,12 @@ class WizardSession(Base):
     beverage_response: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     music_response: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     extras_response: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # Verbatim record of the client's vendor answers -- BookingVendor rows
+    # are the authoritative, staff-actionable copy (bump-in confirmations
+    # live there and must survive the client re-saving this step).
+    vendors_response: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # Loft bookings only -- save_av_step refuses for any other space.
+    av_response: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
     # Materialized flag for a future staff dashboard view -- the actual
     # audit record of *why* is a distinct BookingEvent (event_type

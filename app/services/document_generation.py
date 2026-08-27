@@ -5,6 +5,7 @@ an explicit [REVIEW] marker rather than guessing. Both silent guessing and
 hard blocking are wrong; this is the middle path.
 """
 
+import datetime as dt
 from decimal import Decimal, InvalidOperation
 
 from app.models import Booking
@@ -180,6 +181,161 @@ def _format_date(value) -> str:
     return value.isoformat() if value is not None else f"{REVIEW} event date not yet confirmed"
 
 
+def format_time_12h(value: dt.time | None) -> str:
+    """"6:30pm" -- the reference Event Order's own time style. Composed by
+    hand rather than strftime %-I / %#I, which differ between platforms."""
+    if value is None:
+        return f"{REVIEW} time not yet finalized"
+    hour = value.hour % 12 or 12
+    suffix = "pm" if value.hour >= 12 else "am"
+    return f"{hour}:{value.minute:02d}{suffix}"
+
+
+def format_date_long(value: dt.date | None) -> str:
+    """"Saturday, 29 August 2026" -- day number composed by hand for the
+    same platform-portability reason as format_time_12h."""
+    if value is None:
+        return f"{REVIEW} event date not yet confirmed"
+    return f"{value.strftime('%A')}, {value.day} {value.strftime('%B %Y')}"
+
+
+def format_day_date(value: dt.date) -> str:
+    """"Wednesday 26 August" -- the AV USB deadline style. Always an
+    absolute date; a relative phrase ("in 2 days") goes stale the moment
+    the document outlives the day it was generated."""
+    return f"{value.strftime('%A')} {value.day} {value.strftime('%B')}"
+
+
+def build_event_timeline(booking: Booking, vendors: list[dict] | None = None) -> dict:
+    """The Event Timeline block: run-order bullets the floor team acts on.
+    Shared by generation AND the BEO edit screen's save path (same
+    reasoning as build_total_food_spend) so the two can never drift.
+
+    vendors, when given, is build_vendor_snapshot output -- a vendor with
+    a bump-in time belongs here beside setup access and guest arrival,
+    because it's a time someone must act on; vendors without one render in
+    Special Notes instead (see build_special_notes).
+
+    Two bullets are appended automatically from operational policy, never
+    hand-entered: "Music off by 11:30pm" on every evening booking, and the
+    Saturday-daytime 5:00pm hard stop on any Saturday booking starting
+    before the cutoff -- both sourced from app.services.validation's
+    constants, so the document can't drift from what booking-time
+    validation enforces.
+    """
+    from app.services.validation import DAYTIME_CUTOFF, MUSIC_OFF_TIME, SATURDAY
+
+    bullets: list[str] = []
+    if booking.setup_access_time is not None:
+        confirmed = "confirmed" if booking.setup_access_confirmed else "requested, pending confirmation"
+        bullets.append(f"Setup access from {format_time_12h(booking.setup_access_time)} ({confirmed})")
+    for vendor in vendors or []:
+        if vendor.get("bump_in_display"):
+            bullets.append(vendor["bump_in_display"])
+    if booking.guest_arrival_time is not None:
+        bullets.append(f"Guests arrive {format_time_12h(booking.guest_arrival_time)}")
+    if booking.food_service_time is not None:
+        bullets.append(f"Food service from {format_time_12h(booking.food_service_time)}")
+    for moment in booking.key_moments or []:
+        label = (moment.get("label") or "").strip()
+        if not label:
+            continue
+        time_str = moment.get("time")
+        if time_str:
+            parsed = dt.time.fromisoformat(time_str)
+            bullets.append(f"{format_time_12h(parsed)} — {label}")
+        else:
+            bullets.append(label)
+
+    if booking.event_date is not None and booking.start_time is not None:
+        is_saturday_daytime = booking.event_date.weekday() == SATURDAY and booking.start_time < DAYTIME_CUTOFF
+        if is_saturday_daytime:
+            bullets.append(f"Event concludes by {format_time_12h(DAYTIME_CUTOFF)} (Saturday daytime)")
+    # "Evening" = runs past the daytime cutoff -- same boundary the
+    # Saturday rule uses, so the two bullets can't disagree about what
+    # counts as evening.
+    if booking.end_time is not None and booking.end_time > DAYTIME_CUTOFF:
+        bullets.append(f"Music off by {format_time_12h(MUSIC_OFF_TIME)}")
+
+    if booking.pack_down_notes:
+        bullets.append(f"Pack-down/collection: {booking.pack_down_notes}")
+
+    return {
+        "event_date": _format_date(booking.event_date),
+        "event_date_display": format_date_long(booking.event_date),
+        "start_time": _format_time(booking.start_time),
+        "end_time": _format_time(booking.end_time),
+        "start_time_display": format_time_12h(booking.start_time),
+        "end_time_display": format_time_12h(booking.end_time),
+        "bullets": bullets,
+        # Legacy field kept so old template fallbacks and non-overhauled
+        # callers keep rendering something sensible.
+        "notes": _event_timeline_notes(booking),
+    }
+
+
+def build_av_block(booking: Booking, av_response: dict | None) -> dict | None:
+    """The Loft-only AV/Screen section. None for every other space -- the
+    screen is physically in The Loft, so the section must not exist at all
+    elsewhere, not render empty."""
+    if booking.space.name != "The Loft" or not av_response:
+        return None
+    deadline_display = None
+    if booking.event_date is not None:
+        deadline = booking.event_date - dt.timedelta(days=policy.AV_USB_DEADLINE_DAYS_BEFORE_EVENT)
+        deadline_display = format_day_date(deadline)
+    return {
+        "video_slideshow": bool(av_response.get("video_slideshow")),
+        "format_note": "USB flash drive only — phones and laptops cannot connect to the venue screen",
+        "usb_deadline_display": deadline_display,
+        "microphones_for_speeches": bool(av_response.get("microphones_for_speeches")),
+        "notes": av_response.get("notes"),
+    }
+
+
+# Display labels for vendor types -- .title() alone would render "Dj".
+VENDOR_TYPE_LABELS = {
+    "dj": "DJ",
+    "band": "Band",
+    "decorator": "Decorator",
+    "photographer": "Photographer",
+    "other": "Vendor",
+}
+
+
+def vendor_type_label(vendor_type: str) -> str:
+    return VENDOR_TYPE_LABELS.get(vendor_type, vendor_type.title())
+
+
+def build_vendor_snapshot(vendors) -> list[dict]:
+    """Display-ready vendor lines frozen into the BEO's content. The
+    requested-vs-confirmed wording is composed HERE, once, so the template
+    can never drift into presenting a client's requested bump-in as an
+    agreed time -- a client routinely nominates a time their DJ never
+    agreed to (see BookingVendor.bump_in_confirmed)."""
+    snapshot = []
+    for vendor in vendors:
+        display = None
+        if vendor.bump_in_time is not None:
+            state = "confirmed" if vendor.bump_in_confirmed else "requested — not yet confirmed"
+            contact = f", {vendor.contact_number}" if vendor.contact_number else ""
+            display = (
+                f"{vendor_type_label(vendor.vendor_type)} bump-in {format_time_12h(vendor.bump_in_time)} "
+                f"({state}) — {vendor.name}{contact}"
+            )
+        snapshot.append(
+            {
+                "vendor_type": vendor.vendor_type,
+                "name": vendor.name,
+                "contact_number": vendor.contact_number,
+                "bump_in_time": vendor.bump_in_time.strftime("%H:%M") if vendor.bump_in_time else None,
+                "bump_in_confirmed": vendor.bump_in_confirmed,
+                "bump_in_display": display,
+            }
+        )
+    return snapshot
+
+
 def _event_timeline_notes(booking: Booking) -> str:
     """setup_access_time/food_service_time are durable Booking columns
     (the wizard's Basics step writes straight to them, not to wizard-only
@@ -243,26 +399,43 @@ def generate_beo_content(
     catering_order_and_service_style: str | None = None,
     bar_structure: str | None = None,
     room_layout_notes: str | None = None,
-    music_entertainment: str | None = None,
+    music: str | None = None,
+    entertainment: str | None = None,
+    music_entertainment: str | None = None,  # legacy merged field, kept for non-wizard callers
+    dietaries: str | None = None,
+    accessibility: str | None = None,
+    decorations: str | None = None,
+    status_text: str | None = None,
     special_notes_extra: str | None = None,
+    av: dict | None = None,
+    vendors: list[dict] | None = None,
+    internal_notes: str | None = None,
+    onsite_contact: str | None = None,
     deposit_paid: Decimal | None = None,
+    total_paid: Decimal | None = None,
 ) -> dict:
-    """Every new keyword-only param defaults to None, which preserves the
-    exact original [REVIEW]-placeholder output byte for byte -- this
+    """Every keyword-only param defaults to None, which preserves the
+    original [REVIEW]-placeholder behavior for existing callers -- this
     function still has no opinion on what's genuinely missing vs. real
     captured data with nothing outstanding; that distinction is the
-    caller's job (see app.services.wizard_generation, which is the only
-    caller that ever passes these)."""
+    caller's job (see app.services.wizard_generation).
+
+    The [REVIEW] markers baked into fields here are STAFF-facing prompts.
+    They must never reach a client: the template renders every free-text
+    field through the client_safe filter (app.templating), which swaps
+    them for a neutral placeholder on the public view and the PDF.
+
+    Dietaries is the one field that can never be silently absent: whether
+    or not a value was captured, the key always carries an explicit answer
+    -- a declared allergy going quietly missing between capture and
+    document is the exact failure this guards against.
+    """
     food_order_line_items = food_order_line_items or []
     food_total = compute_food_order_total(food_order_line_items)
+    contact = booking.contact
 
     return {
-        "event_timeline": {
-            "event_date": _format_date(booking.event_date),
-            "start_time": _format_time(booking.start_time),
-            "end_time": _format_time(booking.end_time),
-            "notes": _event_timeline_notes(booking),
-        },
+        "event_timeline": build_event_timeline(booking, vendors),
         "catering_order_and_service_style": catering_order_and_service_style or f"{REVIEW} add catering order and service style",
         "food_order": {
             "line_items": food_order_line_items,
@@ -271,8 +444,25 @@ def generate_beo_content(
         "total_food_spend": build_total_food_spend(food_total, deposit_paid),
         "bar_structure": bar_structure or f"{REVIEW} add bar structure",
         "room_layout_notes": room_layout_notes if room_layout_notes is not None else f"{REVIEW} add room layout notes",
-        "music_entertainment": music_entertainment or f"{REVIEW} add music/entertainment detail",
+        "music": music,
+        "entertainment": entertainment,
+        # Legacy merged field: populated only when the split music field
+        # isn't, preserving the pre-overhaul behavior (including its
+        # staff-facing [REVIEW] prompt) byte for byte for old callers.
+        "music_entertainment": (
+            (music_entertainment or f"{REVIEW} add music/entertainment detail") if music is None else None
+        ),
+        "dietaries": dietaries or "No dietary requirements declared",
+        "accessibility": accessibility,
+        "decorations": decorations,
+        "status_text": status_text,
         "special_notes": special_notes_extra if special_notes_extra is not None else (booking.notes or ""),
+        "av": av,
+        "vendors": vendors or [],
+        # Staff/kitchen only -- the template structurally excludes this
+        # from the client view and the PDF (see document.html).
+        "internal_notes": internal_notes,
+        "onsite_contact": onsite_contact,
         "status": booking.status.value,
         "_reference": {
             "reference_code": booking.reference_code,
@@ -280,6 +470,9 @@ def generate_beo_content(
             "space_name": booking.space.name,
             "adult_count": booking.adult_count,
             "child_count": booking.child_count,
+            "client_name": contact.name if contact else None,
+            "client_phone": contact.phone if contact else None,
+            "total_paid": str(total_paid) if total_paid is not None else None,
         },
     }
 

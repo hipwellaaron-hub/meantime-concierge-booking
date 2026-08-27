@@ -15,6 +15,12 @@ class MenuItemCategory(str, enum.Enum):
     platter = "platter"
     pizza = "pizza"
     cake = "cake"
+    # Added in phase16 so the Event Order's food grouping (Platters /
+    # Pizzas / Sides / Desserts) is purely category-driven, never a
+    # name-matching hack. Cakes render under Desserts too; they stay their
+    # own category because the wizard's cake picker reads it.
+    side = "side"
+    dessert = "dessert"
 
 
 menu_item_category_enum = SAEnum(MenuItemCategory, name="menu_item_category", native_enum=True)

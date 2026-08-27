@@ -203,6 +203,18 @@ class Booking(Base):
     # When food service actually starts -- distinct from start_time (the
     # hire period's arrival time), which this may lag.
     food_service_time: Mapped[dt.time | None] = mapped_column(Time, nullable=True)
+    # When guests actually arrive -- frequently later than start_time (the
+    # host's own access). Client-known, captured by the wizard's basics
+    # step, staff-editable on the BEO edit screen.
+    guest_arrival_time: Mapped[dt.time | None] = mapped_column(Time, nullable=True)
+    # Run-sheet moments (speeches, cake cutting, raffle draws):
+    # [{"time": "HH:MM"|null, "label": str}]. JSONB, not a table -- purely
+    # display lines on the Event Order timeline, nothing acts on a moment
+    # individually the way staff act on a vendor's bump-in.
+    key_moments: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    # Staff-only (never asked in the wizard): pack-down / collection
+    # arrangements, e.g. "decorator collects arch Sunday 10am".
+    pack_down_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Standard is 2:00pm (see app.services.validation.SETUP_ACCESS_STANDARD_TIME).
     # setup_access_confirmed is deliberately tri-state: NULL = never
     # requested, False = requested earlier than standard and pending
@@ -245,6 +257,9 @@ class Booking(Base):
         remote_side=[id], back_populates="linked_bookings"
     )
     linked_bookings: Mapped[list["Booking"]] = relationship(back_populates="parent_booking")
+    vendors: Mapped[list["BookingVendor"]] = relationship(
+        back_populates="booking", order_by="BookingVendor.created_at"
+    )
 
     __table_args__ = (
         CheckConstraint("end_time > start_time", name="ck_booking_end_after_start"),

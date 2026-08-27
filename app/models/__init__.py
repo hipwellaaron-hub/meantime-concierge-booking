@@ -1,5 +1,6 @@
 from app.models.booking import Booking, BookingStatus, MinReductionReasonCode  # noqa: F401
 from app.models.booking_event import BookingEvent, BookingEventType  # noqa: F401
+from app.models.booking_vendor import BookingVendor, VendorType  # noqa: F401
 from app.models.contact import Contact  # noqa: F401
 from app.models.document import Document, DocumentStatus, DocumentType  # noqa: F401
 from app.models.invoice import Invoice, InvoiceStatus, InvoiceType  # noqa: F401
@@ -17,6 +18,8 @@ __all__ = [
     "MinReductionReasonCode",
     "BookingEvent",
     "BookingEventType",
+    "BookingVendor",
+    "VendorType",
     "Contact",
     "Document",
     "DocumentStatus",
