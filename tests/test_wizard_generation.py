@@ -25,6 +25,7 @@ def _make_booking(db, space, *, event_date=dt.date(2027, 3, 6), adult_count=50, 
     )
     if created_at is not None:
         booking.created_at = created_at
+        booking.pricing_locked_at = created_at.date()
         db.commit()
         db.refresh(booking)
     return booking

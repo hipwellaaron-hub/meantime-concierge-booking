@@ -20,6 +20,7 @@ def _booking_created_at(db, loft, created_at: dt.datetime):
         actor="test",
     )
     booking.created_at = created_at
+    booking.pricing_locked_at = created_at.date()
     db.commit()
     db.refresh(booking)
     return booking

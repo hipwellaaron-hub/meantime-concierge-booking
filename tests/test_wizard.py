@@ -180,6 +180,7 @@ def test_food_step_flags_undefined_legacy_price_for_review(db, loft, menu_items)
     before_cutover = dt.datetime(2026, 1, 1, tzinfo=dt.timezone.utc)
     booking = _make_booking(db, loft)
     booking.created_at = before_cutover
+    booking.pricing_locked_at = before_cutover.date()
     db.commit()
     session = wizard_service.get_or_create_session(db, booking, actor="test")
     vegetarian = menu_items["Vegetarian Pizza"]  # no legacy price defined

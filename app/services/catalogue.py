@@ -35,7 +35,7 @@ def resolve_pizza_price(menu_item: MenuItem, booking: Booking) -> Decimal | None
     Policy v1.3 -- it has no pre-cutover price because it didn't exist
     yet). A real, expected edge case, not a bug -- the caller surfaces this
     as [REVIEW], never guesses a figure."""
-    is_legacy_booking = booking.created_at.date() < PIZZA_LEGACY_PRICING_CUTOVER_DATE
+    is_legacy_booking = booking.pricing_locked_at < PIZZA_LEGACY_PRICING_CUTOVER_DATE
     if not is_legacy_booking:
         return menu_item.current_price
     return menu_item.legacy_price

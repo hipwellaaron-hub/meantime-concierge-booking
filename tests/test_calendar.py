@@ -258,6 +258,7 @@ def test_concurrent_confirmations_same_space_time_only_one_succeeds():
                 start_time=dt.time(18, 0), end_time=dt.time(23, 0),
                 status=BookingStatus.confirmed, event_name=f"Concurrent {key}",
                 adult_count=10, child_count=0, agreed_min_adults=0,
+                pricing_locked_at=dt.date.today(),
                 reference_code=f"CALC-{key}-{uuid.uuid4().hex[:8].upper()}",
             )
             session.add(booking)

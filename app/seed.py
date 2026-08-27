@@ -23,7 +23,7 @@ UNASSIGNED_SPACE_NAME = "Unassigned (pending triage)"
 HAMILTON_SPACES = [
     dict(
         name="The Loft",
-        capacity=100,
+        capacity=130,
         min_food_spend=Decimal("1000.00"),
         standard_min_adults=60,
         wheelchair_accessible=False,
@@ -31,7 +31,7 @@ HAMILTON_SPACES = [
     ),
     dict(
         name="The Mezzanine",
-        capacity=60,
+        capacity=70,
         min_food_spend=Decimal("500.00"),
         standard_min_adults=40,
         wheelchair_accessible=False,

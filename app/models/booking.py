@@ -170,6 +170,16 @@ class Booking(Base):
     migration_external_ref: Mapped[str | None] = mapped_column(String(100), nullable=True)
     migration_snapshot: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
+    # The date pizza pricing is quoted against (see
+    # app.services.catalogue.resolve_pizza_price) -- NOT NULL, defaults to
+    # created_at's date at booking creation. Deliberately a separate field
+    # rather than reading created_at directly: for a booking imported from a
+    # prior system, created_at is the import timestamp, not when the client
+    # was actually quoted, and pizza pricing must never silently move to a
+    # later, higher rate just because a real booking was typed into this
+    # system after the fact.
+    pricing_locked_at: Mapped[dt.date] = mapped_column(Date, nullable=False)
+
     # The Master Policy doc is explicit: "never read the minimum from the
     # space when producing a contract, invoice, Event Order or shortfall
     # calculation. Only ever from the booking." NOT NULL (not a nullable

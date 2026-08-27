@@ -92,6 +92,7 @@ def create_booking(
     migration_external_ref: str | None = None,
     migration_snapshot: dict | None = None,
     agreed_min_adults: int | None = None,
+    pricing_locked_at: dt.date | None = None,
 ) -> Booking:
     space = db.get(Space, space_id)
     if space is None:
@@ -122,6 +123,12 @@ def create_booking(
         # defaults to the standard" (Master Policy v1.3 §4.1). Only ever
         # changes from here via an explicit staff reduction afterward.
         agreed_min_adults=agreed_min_adults if agreed_min_adults is not None else space.standard_min_adults,
+        # Defaults to today -- correct for the normal enquiry/booking flow,
+        # where created_at and the real quote date are the same day. A
+        # caller importing a booking from a prior system with no reliable
+        # "quoted on" date in its export gets this same default, which
+        # matches today's existing (created_at-based) behavior exactly.
+        pricing_locked_at=pricing_locked_at if pricing_locked_at is not None else dt.date.today(),
     )
     db.add(booking)
     db.flush()  # assigns booking.id, and is where the exclusion constraint fires
