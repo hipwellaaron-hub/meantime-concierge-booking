@@ -44,8 +44,12 @@
     color: var(--cream);
     padding: 14px 18px 12px;
   }
-  header.top .event-name { font-family: var(--font-head); font-size: 1.05rem; font-weight: 600; margin: 0 0 2px; }
-  header.top .event-meta { font-size: 0.78rem; color: var(--muted); margin: 0 0 12px; }
+  /* Centred, event-first: the event name is the headline, then space and
+     date, then the reference last -- not a corner label that reads less
+     prominent than its own booking code. */
+  header.top .event-name { font-family: var(--font-head); font-size: 1.5rem; font-weight: 600; margin: 0 0 2px; text-align: center; }
+  header.top .event-meta { font-size: 0.85rem; color: var(--muted); margin: 0 0 12px; text-align: center; }
+  header.top .event-ref { font-size: 0.72rem; color: var(--muted); opacity: 0.8; }
   .progress-track { display: flex; gap: 4px; }
   .progress-seg { flex: 1; height: 4px; border-radius: 2px; background: var(--border); }
   .progress-seg.done { background: var(--gold-dim); }
@@ -90,6 +94,14 @@
   }
   .warning-banner { background: rgba(212,98,43,0.12); border: 1px solid var(--ember); color: #eeb08f; }
   .info-banner { background: rgba(201,169,110,0.10); border: 1px solid var(--gold-dim); color: var(--gold); }
+  .vendor-card { border: 1px solid var(--border-bright); border-radius: 10px; padding: 14px; margin: 12px 0; }
+  .vendor-card-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;
+    font-weight: 700; color: var(--cream); }
+  .vendor-card-head .btn-secondary { margin-top: 0; }
+  .marker-chip { display: inline-block; font-size: 0.62rem; font-weight: 700; letter-spacing: 0.03em;
+    padding: 1px 5px; border-radius: 4px; border: 1px solid var(--gold-dim); color: var(--gold);
+    vertical-align: 2px; margin-left: 2px; }
+  .marker-chip.peanut { border-color: var(--ember); color: var(--ember); }
   .check-row { display: flex; align-items: center; gap: 8px; margin: 6px 0; font-size: 0.92rem; cursor: pointer; }
   .check-row input { width: auto; margin: 0; }
   .btn-secondary { background: transparent; border: 1px solid var(--gold-dim); color: var(--gold);
@@ -197,6 +209,7 @@
     font-family: var(--font-body);
   }
   .btn-back { background: transparent; border: 1px solid var(--border-bright) !important; color: var(--cream); flex: 0 0 96px !important; }
+  .btn-save-later { background: transparent; border: 1px solid var(--gold-dim) !important; color: var(--gold); flex: 0 0 auto !important; padding: 14px 16px; }
   .btn-next { background: var(--gold); color: #201a10; }
   .btn-next:disabled { background: var(--gold-dim); color: rgba(32,26,16,0.6); cursor: default; }
   .btn-next.saving { opacity: 0.7; }
@@ -221,6 +234,7 @@
 
 <nav class="bottom-nav" id="bottom-nav">
   <button class="btn-back" id="btn-back" type="button">Back</button>
+  <button class="btn-save-later" id="btn-save-later" type="button">Save &amp; come back later</button>
   <button class="btn-next" id="btn-next" type="button">Next</button>
 </nav>
 
@@ -267,13 +281,18 @@
   // A food response saved before sides/desserts existed lacks those keys.
   state.food.sides = state.food.sides || [];
   state.food.desserts = state.food.desserts || [];
+  // A music response saved before multi-select stored a single type.
+  if (!state.music.music_types) {
+    state.music.music_types = state.music.music_type ? [state.music.music_type] : [];
+  }
 
   var root = document.getElementById("wizard-root");
   var btnBack = document.getElementById("btn-back");
   var btnNext = document.getElementById("btn-next");
 
-  document.getElementById("event-meta").textContent =
-    DATA.booking.space_name + " · " + (DATA.booking.event_date_display || DATA.booking.event_date) + " · Ref " + DATA.booking.reference_code;
+  document.getElementById("event-meta").innerHTML =
+    DATA.booking.space_name + " · " + (DATA.booking.event_date_display || DATA.booking.event_date) +
+    '<br><span class="event-ref">Ref ' + DATA.booking.reference_code + "</span>";
 
   function money(v) { return "$" + Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
   function qtyFor(list, id) { var e = list.find(function (i) { return i.menu_item_id === id; }); return e ? e.quantity : 0; }
@@ -315,12 +334,12 @@
       '<p class="step-intro">These are the details we have on file. Confirm they\'re still right, or update anything that\'s changed.</p>' +
       '<form id="basics-form">' +
       '<div class="field-row">' +
-      '<div><label class="first">Arrival time</label><input type="time" id="f-start" required></div>' +
-      '<div><label class="first">Finish time</label><input type="time" id="f-end" required></div>' +
+      '<div><label class="first">Event start time</label><input type="time" id="f-start" required></div>' +
+      '<div><label class="first">Event finish time</label><input type="time" id="f-end" required></div>' +
       '</div>' +
       '<label>Food service time</label><input type="time" id="f-food-time" required>' +
       '<label>Set-up access time</label><input type="time" id="f-setup-time" required>' +
-      '<p class="field-hint" id="setup-hint">Standard access is from 2:00pm. Anything earlier is a request — we\'ll confirm it with you.</p>' +
+      '<p class="field-hint" id="setup-hint">We aim for 2:00pm access. This is a request only — the team will confirm your access time closer to the event.</p>' +
       '<label>Guest arrival time</label><input type="time" id="f-guest-arrival">' +
       '<p class="field-hint">When your guests arrive — often different from your own access time. Leave blank if it\'s the same as your arrival.</p>' +
       '<div class="field-row">' +
@@ -447,6 +466,18 @@
     "Tiramisu Cake": "/static/menu_images/tiramisu-cake.jpg"
   };
 
+  // Marker chips as published on the website menu. Items with no
+  // confirmed marker simply show none -- never guessed. P renders only
+  // where an item actually contains peanuts (none on the function menu).
+  var MARKER_TITLES = { V: "Vegetarian", VG: "Vegan", DF: "Dairy Free", DFA: "Dairy Free Available", P: "Contains peanuts" };
+
+  function markerChips(item) {
+    if (!item.markers || !item.markers.length) return "";
+    return item.markers.map(function (m) {
+      return '<span class="marker-chip' + (m === "P" ? " peanut" : "") + '" title="' + (MARKER_TITLES[m] || m) + '">' + m + "</span>";
+    }).join("");
+  }
+
   function catalogueRow(item, list) {
     var qty = qtyFor(list, item.id);
     var row = document.createElement("div");
@@ -457,7 +488,7 @@
       : '<div class="catalogue-photo placeholder">' + item.name.split(" ").slice(0, 2).join(" ") + '</div>';
     row.innerHTML =
       photoHtml +
-      '<div class="catalogue-info"><div class="name">' + item.name + '</div><div class="price">' + money(item.price) + " each</div></div>" +
+      '<div class="catalogue-info"><div class="name">' + item.name + " " + markerChips(item) + '</div><div class="price">' + money(item.price) + " each</div></div>" +
       '<div class="stepper"><button type="button" data-act="minus">−</button><span class="qty">' + qty + '</span><button type="button" data-act="plus">+</button></div>';
     var qtySpan = row.querySelector(".qty");
     row.querySelector('[data-act="minus"]').addEventListener("click", function () {
@@ -543,17 +574,16 @@
   }
 
   // ---- BEVERAGE ----
+  // The client sees two options: Cash bar or Bar tab. What was previously
+  // a confusing third "Hybrid" card is now a follow-up question on Bar
+  // tab ("when the tab runs out…") -- the stored bar_structure values
+  // (bar_tab / hybrid) and the Event Order wording are unchanged; only
+  // the client stops having to understand our enum.
   function renderBeverage() {
-    var options = [
-      { key: "cash_bar", title: "Cash bar", desc: "Guests purchase their own drinks." },
-      { key: "bar_tab", title: "Bar tab", desc: "You set a limit and what's included. We track it live." },
-      { key: "hybrid", title: "Hybrid", desc: "A tab up to a set dollar limit, then guests pay their own after that." }
-    ];
-    var html = '<div class="card"><h2>Beverage</h2><p class="step-intro">Choose how you\'d like the bar to run.</p><div class="option-grid" id="bev-options">';
-    options.forEach(function (o) {
-      html += '<div class="option-card" data-key="' + o.key + '"><div class="opt-title">' + o.title + '</div><div class="opt-desc">' + o.desc + "</div></div>";
-    });
-    html += "</div>" +
+    var html = '<div class="card"><h2>Beverage</h2><p class="step-intro">Choose how you\'d like the bar to run.</p><div class="option-grid" id="bev-options">' +
+      '<div class="option-card" data-key="cash_bar"><div class="opt-title">Cash bar</div><div class="opt-desc">Guests purchase their own drinks.</div></div>' +
+      '<div class="option-card" data-key="tab"><div class="opt-title">Bar tab</div><div class="opt-desc">You set a limit and what\'s included. We track it live and let you know as it approaches the cap.</div></div>' +
+      "</div>" +
       '<div id="bev-extra" style="display:none;">' +
       '<label>Tab limit ($)</label><input type="number" min="0" id="f-bar-limit">' +
       '<label>What\'s included</label>' +
@@ -564,6 +594,9 @@
       '<label class="check-row"><input type="checkbox" value="standard_spirits"> Standard spirits</label>' +
       "</div>" +
       '<p class="field-hint">Cocktails and premium spirits are always purchased by guests directly.</p>' +
+      '<label>When the tab runs out…</label>' +
+      '<label class="check-row"><input type="radio" name="bev-runout" value="hybrid"> Switch to guests buying their own</label>' +
+      '<label class="check-row"><input type="radio" name="bev-runout" value="bar_tab"> Come find me — I may extend it</label>' +
       '<label>Anything else about the bar?</label><textarea id="f-bar-note"></textarea>' +
       "</div></div>";
     root.innerHTML = html;
@@ -580,19 +613,39 @@
     });
     document.getElementById("f-bar-note").value = state.beverage.bar_inclusions_note || "";
 
+    function uiChoice() {
+      if (state.beverage.bar_structure === "cash_bar") return "cash_bar";
+      if (state.beverage.bar_structure === "bar_tab" || state.beverage.bar_structure === "hybrid") return "tab";
+      return null;
+    }
+
     function refreshSelection() {
+      var choice = uiChoice();
       document.querySelectorAll(".option-card").forEach(function (el) {
-        el.classList.toggle("selected", el.getAttribute("data-key") === state.beverage.bar_structure);
+        el.classList.toggle("selected", el.getAttribute("data-key") === choice);
       });
-      var showExtra = state.beverage.bar_structure === "bar_tab" || state.beverage.bar_structure === "hybrid";
-      document.getElementById("bev-extra").style.display = showExtra ? "block" : "none";
+      document.getElementById("bev-extra").style.display = choice === "tab" ? "block" : "none";
     }
 
     document.querySelectorAll(".option-card").forEach(function (el) {
       el.addEventListener("click", function () {
-        state.beverage.bar_structure = el.getAttribute("data-key");
+        if (el.getAttribute("data-key") === "cash_bar") {
+          state.beverage.bar_structure = "cash_bar";
+        } else if (uiChoice() !== "tab") {
+          // Default the run-out behaviour to guests-pay until the client
+          // picks; the radio below refines it.
+          state.beverage.bar_structure = "hybrid";
+        }
         refreshSelection();
+        var radio = document.querySelector('input[name="bev-runout"][value="' + state.beverage.bar_structure + '"]');
+        if (radio && uiChoice() === "tab") radio.checked = true;
       });
+    });
+    document.querySelectorAll('input[name="bev-runout"]').forEach(function (radio) {
+      radio.addEventListener("change", function () {
+        state.beverage.bar_structure = radio.value;
+      });
+      radio.checked = state.beverage.bar_structure === radio.value;
     });
     document.getElementById("f-bar-limit").value = state.beverage.bar_limit || "";
     refreshSelection();
@@ -601,34 +654,42 @@
   function saveBeverage() {
     state.beverage.bar_limit = document.getElementById("f-bar-limit") ? (parseFloat(document.getElementById("f-bar-limit").value) || null) : null;
     var checked = [];
-    document.querySelectorAll("#bev-inclusions input:checked").forEach(function (box) { checked.push(box.value); });
+    document.querySelectorAll("#bev-inclusions input[type=checkbox]:checked").forEach(function (box) { checked.push(box.value); });
     state.beverage.bar_inclusions = checked.length ? checked : null;
     state.beverage.bar_inclusions_note = document.getElementById("f-bar-note") ? (document.getElementById("f-bar-note").value || null) : null;
     return api("beverage", state.beverage);
   }
 
   // ---- MUSIC ----
+  // Multi-select: a playlist before and after a DJ set is a normal event,
+  // so these toggle independently rather than replacing each other.
   function renderMusic() {
     root.innerHTML =
-      '<div class="card"><h2>Music</h2><p class="step-intro">Own playlist or a DJ?</p>' +
+      '<div class="card"><h2>Music</h2><p class="step-intro">Pick everything that applies — a playlist and a DJ together is common.</p>' +
       '<div class="option-grid" id="music-options">' +
-      '<div class="option-card" data-key="own_playlist"><div class="opt-title">Own playlist</div><div class="opt-desc">Set your Spotify playlist to public and give us its name on the night — no links needed.</div></div>' +
-      '<div class="option-card" data-key="dj"><div class="opt-title">DJ</div><div class="opt-desc">Yours or ours. Add your DJ\'s details on the next step.</div></div>' +
+      '<div class="option-card" data-key="own_playlist"><div class="opt-title">Own playlist</div><div class="opt-desc">Spotify only — phones, iPads and laptops can\'t connect to the venue system. Set the playlist to public and give the team its name on the night — never a link.</div></div>' +
+      '<div class="option-card" data-key="dj"><div class="opt-title">DJ</div><div class="opt-desc">Yours or ours. Add your DJ\'s details on the Suppliers &amp; Vendors step.</div></div>' +
+      '<div class="option-card" data-key="musician"><div class="opt-title">Musician</div><div class="opt-desc">Live music, arranged by the venue at the same rate as a DJ.</div></div>' +
       "</div>" +
       '<label>Notes</label><textarea id="f-music-notes" placeholder="Playlist name, requests, do-not-plays..."></textarea>' +
       '<label>Bump-in notes</label><textarea id="f-bump-in" placeholder="Equipment, arrival time for the DJ, etc."></textarea>' +
       '<div class="info-banner">Music must be off by 11:30pm, any day.</div>' +
       "</div>";
 
+    function refresh() {
+      document.querySelectorAll("#music-options .option-card").forEach(function (o) {
+        o.classList.toggle("selected", state.music.music_types.indexOf(o.getAttribute("data-key")) >= 0);
+      });
+    }
     document.querySelectorAll("#music-options .option-card").forEach(function (el) {
       el.addEventListener("click", function () {
-        state.music.music_type = el.getAttribute("data-key");
-        document.querySelectorAll("#music-options .option-card").forEach(function (o) {
-          o.classList.toggle("selected", o.getAttribute("data-key") === state.music.music_type);
-        });
+        var key = el.getAttribute("data-key");
+        var index = state.music.music_types.indexOf(key);
+        if (index >= 0) { state.music.music_types.splice(index, 1); } else { state.music.music_types.push(key); }
+        refresh();
       });
-      el.classList.toggle("selected", el.getAttribute("data-key") === state.music.music_type);
     });
+    refresh();
     document.getElementById("f-music-notes").value = state.music.notes || "";
     document.getElementById("f-bump-in").value = state.music.bump_in_notes || "";
   }
@@ -636,7 +697,11 @@
   function saveMusic() {
     state.music.notes = document.getElementById("f-music-notes").value || null;
     state.music.bump_in_notes = document.getElementById("f-bump-in").value || null;
-    return api("music", state.music);
+    return api("music", {
+      music_types: state.music.music_types,
+      notes: state.music.notes,
+      bump_in_notes: state.music.bump_in_notes
+    });
   }
 
   // ---- EXTRAS ----
@@ -802,27 +867,31 @@
     if (!list) return;
     list.innerHTML = "";
     state.vendors.forEach(function (vendor, index) {
-      var row = document.createElement("div");
-      row.className = "field-row";
+      // A stacked card per vendor with full-width labelled fields -- the
+      // previous compressed flex row rendered genuinely unusable
+      // (unlabelled collapsed select, truncated inputs).
+      var card = document.createElement("div");
+      card.className = "vendor-card";
       var options = VENDOR_TYPES.map(function (t) {
         return '<option value="' + t.key + '"' + (vendor.vendor_type === t.key ? " selected" : "") + '>' + t.label + "</option>";
       }).join("");
-      row.innerHTML =
-        '<div><select>' + options + '</select></div>' +
-        '<div style="flex:2;"><input type="text" maxlength="255" placeholder="Name" value="' + (vendor.name || "").replace(/"/g, "&quot;") + '"></div>' +
-        '<div><input type="tel" maxlength="50" placeholder="Phone" value="' + (vendor.contact_number || "").replace(/"/g, "&quot;") + '"></div>' +
-        '<div><input type="time" title="Requested bump-in time" value="' + (vendor.bump_in_time || "") + '"></div>' +
-        '<button type="button" class="btn-secondary" aria-label="Remove">×</button>';
-      row.querySelector("select").addEventListener("change", function (e) { vendor.vendor_type = e.target.value; });
-      var inputs = row.querySelectorAll("input");
+      card.innerHTML =
+        '<div class="vendor-card-head"><span>Vendor ' + (index + 1) + '</span>' +
+        '<button type="button" class="btn-secondary" aria-label="Remove vendor">Remove</button></div>' +
+        '<label>Vendor type</label><select>' + options + "</select>" +
+        '<label>Name</label><input type="text" maxlength="255" placeholder="e.g. DJ Smooth" value="' + (vendor.name || "").replace(/"/g, "&quot;") + '">' +
+        '<label>Contact number</label><input type="tel" maxlength="50" placeholder="e.g. 0400 000 000" value="' + (vendor.contact_number || "").replace(/"/g, "&quot;") + '">' +
+        '<label>Requested bump-in time</label><input type="time" value="' + (vendor.bump_in_time || "") + '">';
+      card.querySelector("select").addEventListener("change", function (e) { vendor.vendor_type = e.target.value; });
+      var inputs = card.querySelectorAll("input");
       inputs[0].addEventListener("input", function () { vendor.name = inputs[0].value; });
       inputs[1].addEventListener("input", function () { vendor.contact_number = inputs[1].value; });
       inputs[2].addEventListener("input", function () { vendor.bump_in_time = inputs[2].value; });
-      row.querySelector("button").addEventListener("click", function () {
+      card.querySelector("button").addEventListener("click", function () {
         state.vendors.splice(index, 1);
         renderVendorRows();
       });
-      list.appendChild(row);
+      list.appendChild(card);
     });
   }
 
@@ -872,11 +941,18 @@
 
   function renderReview() {
     var foodLines = "";
-    function nameOf(list, id) { var m = (list || []).find(function (i) { return i.id === id; }); return m ? m.name : id; }
-    state.food.platters.forEach(function (e) { foodLines += "<p>" + e.quantity + "× " + nameOf(DATA.catalogue.platters, e.menu_item_id) + "</p>"; });
-    state.food.pizzas.forEach(function (e) { foodLines += "<p>" + e.quantity + "× " + nameOf(DATA.catalogue.pizzas, e.menu_item_id) + "</p>"; });
-    state.food.sides.forEach(function (e) { foodLines += "<p>" + e.quantity + "× " + nameOf(DATA.catalogue.sides, e.menu_item_id) + "</p>"; });
-    state.food.desserts.forEach(function (e) { foodLines += "<p>" + e.quantity + "× " + nameOf(DATA.catalogue.desserts, e.menu_item_id) + "</p>"; });
+    // Line totals per item, matching the Event Order's own format --
+    // a client checking their order can see what each line costs.
+    function itemOf(list, id) { return (list || []).find(function (i) { return i.id === id; }); }
+    function foodLine(list, entry) {
+      var item = itemOf(list, entry.menu_item_id);
+      if (!item) return "<p>" + entry.quantity + "× " + entry.menu_item_id + "</p>";
+      return "<p>" + entry.quantity + "× " + item.name + ": " + money(entry.quantity * parseFloat(item.price)) + "</p>";
+    }
+    state.food.platters.forEach(function (e) { foodLines += foodLine(DATA.catalogue.platters, e); });
+    state.food.pizzas.forEach(function (e) { foodLines += foodLine(DATA.catalogue.pizzas, e); });
+    state.food.sides.forEach(function (e) { foodLines += foodLine(DATA.catalogue.sides, e); });
+    state.food.desserts.forEach(function (e) { foodLines += foodLine(DATA.catalogue.desserts, e); });
     if (!foodLines) foodLines = '<p class="review-empty">Nothing selected</p>';
 
     var vendorLines = "";
@@ -916,7 +992,9 @@
       '<div class="review-block"><h3>Food</h3>' + foodLines + '<p><strong>Running total: </strong>' + money(computeLocalFoodTotal()) + "</p></div>" +
       '<div class="review-block"><h3>Beverage</h3>' + reviewLine("Structure", bevLabel) +
       (state.beverage.bar_limit ? reviewLine("Limit", money(state.beverage.bar_limit)) : "") + "</div>" +
-      '<div class="review-block"><h3>Music</h3>' + reviewLine("Type", state.music.music_type === "dj" ? "DJ" : state.music.music_type === "own_playlist" ? "Own playlist" : null) + "</div>" +
+      '<div class="review-block"><h3>Music</h3>' + reviewLine("Type", state.music.music_types.map(function (t) {
+        return { own_playlist: "Own playlist", dj: "DJ", musician: "Musician" }[t] || t;
+      }).join(", ") || null) + "</div>" +
       '<div class="review-block"><h3>Suppliers &amp; Vendors</h3>' + vendorLines + "</div>" +
       avBlock +
       '<div class="review-block"><h3>Extras</h3>' +
@@ -924,8 +1002,12 @@
       reviewLine("Dietary requirements", state.extras.dietary_requirements) +
       reviewLine("Accessibility", state.extras.accessibility_needs) +
       "</div>" +
+      '<div class="review-block"><h3>Anything else we should know?</h3>' +
+      '<textarea id="f-final-notes" placeholder="Anything the form didn\'t ask about"></textarea></div>' +
       '<div id="review-result"></div>' +
       "</div>";
+    document.getElementById("f-final-notes").value = state.finalNotes || "";
+    document.getElementById("f-final-notes").addEventListener("input", function (e) { state.finalNotes = e.target.value; });
   }
 
   function submitReview() {
@@ -936,7 +1018,7 @@
     // version of that same state in place here. A client landing on a
     // half-empty card with the button simply gone read as broken, not
     // finished -- see the incident this fixed.
-    return api("review", {}).then(function () {
+    return api("review", { final_notes: state.finalNotes || null }).then(function () {
       window.location.reload();
     });
   }
@@ -979,6 +1061,43 @@
       btnNext.classList.remove("saving");
       if (err && err.handledByBrowser) return;
       alert(err.message || "Couldn't save that — please try again.");
+    });
+  });
+
+  // ---- SAVE & COME BACK LATER ----
+  // Saves the current step first (nothing typed is lost), then shows a
+  // panel carrying the SAME information as the resume email -- due date
+  // as an absolute date, the link itself, and the help address -- because
+  // clients frequently don't check email straight away, and a panel that
+  // just said "saved" would strand them.
+  var btnSaveLater = document.getElementById("btn-save-later");
+  btnSaveLater.addEventListener("click", function () {
+    var step = STEPS[state.stepIndex];
+    btnSaveLater.disabled = true;
+    var saveCurrent = step === "review" ? Promise.resolve() : SAVERS[step]().catch(function (err) {
+      // An incomplete step (browser validation, nothing selected yet)
+      // must not block stepping away -- their earlier steps are saved.
+      if (err && err.handledByBrowser) return;
+    });
+    saveCurrent.then(function () {
+      return fetch("/w/" + TOKEN + "/save-for-later", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" })
+        .then(function (resp) { return resp.json(); });
+    }).then(function (data) {
+      document.getElementById("bottom-nav").style.display = "none";
+      root.innerHTML =
+        '<div class="card center-card">' +
+        '<h2>Saved — come back any time</h2>' +
+        '<p>Everything you\'ve entered so far is safe.</p>' +
+        (data.email_sent
+          ? '<p>We\'ve emailed your link to <b>' + (data.contact_email || "you") + '</b>.</p>'
+          : '<p>Keep this link to pick up where you left off:</p>') +
+        '<p style="word-break:break-all;"><a href="' + data.resume_url + '" style="color:var(--gold);">' + data.resume_url + "</a></p>" +
+        (data.due_date_display ? '<p><b>Please complete this by ' + data.due_date_display + '.</b></p>' : "") +
+        '<p>Any questions, email <a href="mailto:' + data.help_email + '" style="color:var(--gold);">' + data.help_email + "</a>.</p>" +
+        "</div>";
+    }).catch(function () {
+      btnSaveLater.disabled = false;
+      alert("Couldn't save right now — please try again.");
     });
   });
 

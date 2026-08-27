@@ -203,23 +203,33 @@ def build_bar_structure_text(beverage_response: dict | None) -> str | None:
     return None
 
 
+MUSIC_TYPE_LINES = {
+    "own_playlist": "Client's own Spotify playlist — set to public, playlist name given to the team on the night (no links).",
+    "dj": "DJ.",
+    "musician": "Musician (venue-arranged).",
+}
+
+
 def build_music_text(music_response: dict | None) -> str | None:
     """The Music section only -- entertainment (slideshows, performers,
     games) is a separate section, see build_entertainment_text. House rule
-    composed in for playlists: the client sets it to public and gives the
-    team the playlist NAME on the night -- never a link."""
+    composed in for playlists: Spotify only, set to public, playlist NAME
+    given to the team on the night -- never a link.
+
+    Multi-select: a playlist before/after a DJ set is normal, so every
+    selected type gets its line. Older sessions stored a single
+    music_type; that still reads correctly."""
     if not music_response:
         return None
-    lines = []
-    if music_response.get("music_type") == "own_playlist":
-        lines.append("Client's own Spotify playlist — set to public, playlist name given to the team on the night (no links).")
-    else:
-        lines.append("DJ.")
+    selected = music_response.get("music_types") or (
+        [music_response["music_type"]] if music_response.get("music_type") else []
+    )
+    lines = [MUSIC_TYPE_LINES.get(t, t) for t in selected]
     if music_response.get("notes"):
         lines.append(music_response["notes"])
     if music_response.get("bump_in_notes"):
         lines.append(f"Bump-in: {music_response['bump_in_notes']}")
-    return "\n".join(lines)
+    return "\n".join(lines) if lines else None
 
 
 def build_entertainment_text(extras_response: dict | None, av_response: dict | None) -> str | None:
@@ -263,6 +273,10 @@ def build_special_notes(extras_response: dict | None, booking: Booking | None = 
         if not vendor.get("bump_in_display"):
             contact = f" ({vendor['contact_number']})" if vendor.get("contact_number") else ""
             lines.append(f"Vendor: {vendor_type_label(vendor['vendor_type'])} — {vendor['name']}{contact}")
+
+    # The review step's "anything else we should know?" escape hatch.
+    if (extras_response or {}).get("final_notes"):
+        lines.append(f"Client note: {extras_response['final_notes']}")
 
     # layout_notes and additional_notes are deliberately absent: layout is
     # its own BEO section, and additional notes feed Entertainment.

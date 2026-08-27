@@ -43,6 +43,8 @@ CATALOGUE_ITEMS = [
     (MenuItemCategory.platter, "Pork & Fennel Meatballs", Decimal("100.00"), None, True),
     (MenuItemCategory.platter, "Ricotta & Sun-dried Tomato Stuffed Mushrooms", Decimal("80.00"), None, True),
     (MenuItemCategory.platter, "Grazing Platter", Decimal("250.00"), None, True),
+    # Garlic Bread, Sticky Chilli Tofu, Corn Ribs, Wedges.
+    (MenuItemCategory.platter, "Custom Vegan Platter", Decimal("140.00"), None, True),
     (MenuItemCategory.side, "Shoestring Fries", Decimal("15.00"), None, True),
     # Retired: the old mixed selection, replaced by the two platters below.
     (MenuItemCategory.dessert, "Dessert Platter", Decimal("140.00"), None, False),
@@ -67,6 +69,24 @@ CATALOGUE_ITEMS = [
 ]
 
 
+# Marker codes as published on the live website menu (screenshots,
+# 28 Aug 2026), mapped to this catalogue's item names. ONLY confirmed
+# items appear here -- an item absent from this dict seeds with
+# dietary_markers=NULL, meaning "not yet confirmed", never guessed.
+# [] means confirmed to carry no marker.
+DIETARY_MARKERS = {
+    "Shoestring Fries": ["V", "DF"],       # website: "Fries"
+    "Crispy Popcorn Halloumi": ["V"],      # website: "Popcorn Halloumi"
+    "Salt & Pepper Squid": ["DFA"],
+    "Pork Belly Bites": ["DF"],            # website: "BBQ Pork Belly Bites"
+    "Margherita Pizza": ["V"],             # website: "Classic Margherita"
+    "Prosciutto & Pear": [],
+    "Spiced Lamb": [],
+    "Calabrese": [],
+    "Custom Vegan Platter": ["VG"],
+}
+
+
 def seed(db=None) -> int:
     owns_session = db is None
     db = db or SessionLocal()
@@ -87,6 +107,7 @@ def seed(db=None) -> int:
                     current_price=current_price,
                     legacy_price=legacy_price,
                     is_active=is_active,
+                    dietary_markers=DIETARY_MARKERS.get(name),
                 )
             )
             added += 1

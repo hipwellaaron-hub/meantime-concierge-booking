@@ -5,7 +5,7 @@ from decimal import Decimal
 
 from sqlalchemy import Boolean, DateTime, Numeric, String, UniqueConstraint, func
 from sqlalchemy import Enum as SAEnum
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -40,6 +40,15 @@ class MenuItem(Base):
     # -- see app/services/catalogue.py, which never guesses a price here.
     legacy_price: Mapped[Decimal | None] = mapped_column(Numeric(10, 2), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # Marker codes as published on the live website menu (V, VG, DF, DFA).
+    # NULL = not yet confirmed against the website (never guessed);
+    # [] = confirmed to carry no marker. Rendered as chips in the wizard's
+    # food picker.
+    dietary_markers: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    # Per the venue's allergen audit: settable per item so a peanut marker
+    # CAN exist, displayed only where true. The current function menu is
+    # peanut-clear, so nothing sets this yet.
+    contains_peanuts: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[dt.datetime] = mapped_column(

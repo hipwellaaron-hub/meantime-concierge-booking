@@ -46,6 +46,8 @@ class BarStructure(str, enum.Enum):
 class MusicType(str, enum.Enum):
     own_playlist = "own_playlist"
     dj = "dj"
+    # Arranged by the venue at the same rate as a DJ.
+    musician = "musician"
 
 
 class CakeChoiceType(str, enum.Enum):
@@ -293,9 +295,13 @@ def save_basics_step(
             )
             setattr(booking, field, new_value)
 
-    # Standard-or-later requests are auto-confirmed; earlier ones are a
-    # request pending Aaron -- never auto-promised. See app.models.booking.
-    booking.setup_access_confirmed = setup_access_time >= SETUP_ACCESS_STANDARD_TIME
+    # ALWAYS a request pending staff confirmation, never auto-promised --
+    # same semantics as a vendor's bump-in time (per Aaron, 28 Aug 2026:
+    # "setup access is a request, not a confirmation"; previously
+    # standard-or-later times auto-confirmed). Staff confirm via
+    # app.services.booking.confirm_setup_access, and the Event Order
+    # renders the requested/confirmed qualifier either way.
+    booking.setup_access_confirmed = False
 
     warnings = validate_booking_time(booking.event_date, start_time, end_time)
     warnings += validate_setup_access_time(setup_access_time)
@@ -428,10 +434,30 @@ def save_beverage_step(
 
 
 def save_music_step(
-    db: Session, session: WizardSession, *, music_type: MusicType, notes: str | None, bump_in_notes: str | None, actor: str
+    db: Session,
+    session: WizardSession,
+    *,
+    music_types: list[MusicType] | None = None,
+    music_type: MusicType | None = None,
+    notes: str | None,
+    bump_in_notes: str | None,
+    actor: str,
 ) -> None:
+    """Multi-select: a playlist before/after a DJ set is a normal event,
+    so playlist/DJ/musician are not mutually exclusive. The legacy single
+    music_type param is still accepted (older callers/tests) and coerced
+    to a one-item list; the stored response keeps a music_type key mirroring
+    the first selection so older readers keep working."""
     _lock_and_guard_editable(db, session)
-    session.music_response = {"music_type": music_type.value, "notes": notes, "bump_in_notes": bump_in_notes}
+    selected = list(music_types) if music_types else ([music_type] if music_type else [])
+    if not selected:
+        raise ValueError("pick at least one music option")
+    session.music_response = {
+        "music_types": [m.value for m in selected],
+        "music_type": selected[0].value,  # legacy mirror
+        "notes": notes,
+        "bump_in_notes": bump_in_notes,
+    }
     db.add(BookingEvent(booking_id=session.booking_id, event_type="wizard_step_saved", field_name="music", actor=actor))
     _advance_step(session, WizardStep.music)
     db.commit()
@@ -601,14 +627,21 @@ def flag_accessibility_escalation(db: Session, session: WizardSession, *, actor:
     return True
 
 
-def submit_review(db: Session, session: WizardSession, *, actor: str):
+def submit_review(db: Session, session: WizardSession, *, actor: str, final_notes: str | None = None):
     """Returns (session, WizardGenerationResult) -- the generation result
     carries is_clean/outstanding_items/document/invoice for the caller
     (the /w/{token}/review router) to surface. See
     app.services.wizard_generation.generate_beo_and_invoice for the BEO/
     invoice generation and auto-route logic itself.
+
+    final_notes is the review step's "anything else we should know?" box:
+    the escape hatch for whatever the form didn't ask, so a client adds it
+    here instead of abandoning or emailing separately. Stored on
+    extras_response and surfaced in the BEO's Special Notes.
     """
     _lock_and_guard_editable(db, session)
+    if final_notes and final_notes.strip():
+        session.extras_response = {**(session.extras_response or {}), "final_notes": final_notes.strip()[:2000]}
     session.status = WizardSessionStatus.submitted
     session.submitted_at = dt.datetime.now(dt.timezone.utc)
     session.current_step = WizardStep.review

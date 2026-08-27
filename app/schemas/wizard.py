@@ -87,13 +87,36 @@ class WizardBeverageStep(BaseModel):
 
 
 class WizardMusicStep(BaseModel):
-    music_type: MusicType
+    # Multi-select: playlist and DJ/musician are not mutually exclusive --
+    # events regularly run a playlist before and after a set. The legacy
+    # single music_type is still accepted from older clients.
+    music_types: list[MusicType] = Field(default_factory=list, max_length=3)
+    music_type: MusicType | None = None
     notes: str | None = Field(default=None, max_length=MAX_NOTES_LENGTH)
     bump_in_notes: str | None = Field(default=None, max_length=MAX_NOTES_LENGTH)
+
+    @field_validator("music_types")
+    @classmethod
+    def _dedupe_music_types(cls, value: list[MusicType]) -> list[MusicType]:
+        seen = []
+        for item in value:
+            if item not in seen:
+                seen.append(item)
+        return seen
 
     @field_validator("notes", "bump_in_notes")
     @classmethod
     def _strip_notes(cls, value: str | None) -> str | None:
+        return _strip_optional(value)
+
+
+class WizardReviewStep(BaseModel):
+    # "Anything else we should know?" -- the review step's escape hatch.
+    final_notes: str | None = Field(default=None, max_length=MAX_NOTES_LENGTH)
+
+    @field_validator("final_notes")
+    @classmethod
+    def _strip_final_notes(cls, value: str | None) -> str | None:
         return _strip_optional(value)
 
 

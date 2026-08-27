@@ -66,10 +66,11 @@ def generate_food_guidance(
             "No rush -- keep adding until you get there, or let us know if you'd like a hand."
         )
     elif platter_range is not None and platter_count < platter_range[0]:
+        # No "without much extra cost" here -- platters are $100 each, and
+        # that phrase undersold it (removed per Aaron, 28 Aug 2026).
         message = (
             f"That comes to {_format_money(subtotal)}, so you've cleared your minimum spend. "
-            f"Worth knowing that most functions your size take {platter_range[0]} to {platter_range[1]} platters, "
-            "so if you'd like a bit more on the table, there's room to add without much extra cost."
+            f"Worth knowing that most functions your size take {platter_range[0]} to {platter_range[1]} platters."
         )
     else:
         message = f"That comes to {_format_money(subtotal)}, so you've cleared your minimum spend."

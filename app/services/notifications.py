@@ -27,7 +27,7 @@ from email.message import EmailMessage
 
 from app.models import Booking
 from app.services import policy
-from app.utils import format_date_dmy, is_valid_email
+from app.utils import format_date_dmy, format_person_name, is_valid_email
 
 GMAIL_SMTP_HOST = "smtp.gmail.com"
 GMAIL_SMTP_PORT = 465
@@ -252,4 +252,53 @@ def send_wizard_submission_email(
             booking, outstanding_items=outstanding_items, dashboard_base_url=dashboard_base_url
         )
     )
+    _send_via_gmail_smtp(message)
+
+
+def build_wizard_resume_subject(booking: Booking) -> str:
+    return f"Finish your event details for {booking.event_name}"
+
+
+def build_wizard_resume_body(booking: Booking, *, resume_url: str, due_date_display: str | None) -> str:
+    """Plain text, to the client. Everything they were promised on screen:
+    the resume link, an ABSOLUTE due date (never "in two weeks"), and the
+    venue address for help."""
+    contact = booking.contact
+    greeting = f"Hi {format_person_name(contact.name)}," if contact and contact.name else "Hi,"
+    lines = [
+        greeting,
+        "",
+        f"Your event details for {booking.event_name} are saved -- pick up right where you left off:",
+        resume_url,
+        "",
+    ]
+    if due_date_display:
+        lines.append(f"Please complete this by {due_date_display}.")
+        lines.append("")
+    lines += [
+        f"Any questions, just reply or email {ENQUIRY_NOTIFICATION_RECIPIENT}.",
+        "",
+        f"{policy.VENUE_CONTACT_NAME}",
+        policy.VENUE_TRADING_NAME,
+    ]
+    return "\n".join(lines)
+
+
+def send_wizard_resume_email(booking: Booking, *, resume_url: str, due_date_display: str | None) -> None:
+    """The save-and-come-back-later email -- the one place this system
+    deliberately emails a CLIENT (explicitly requested: eight steps is a
+    long form, and the resume link has to reach the person who needs it).
+    Refuses without a valid contact email. Single attempt, raises on
+    failure; the caller records the outcome and the on-screen panel
+    carries the same information either way."""
+    contact = booking.contact
+    if contact is None or not is_valid_email(contact.email):
+        raise GmailSendNotConfigured("this booking has no contact with a valid email address on file")
+
+    message = EmailMessage()
+    message["From"] = f"{policy.VENUE_TRADING_NAME} <{DIGEST_GMAIL_ADDRESS}>"
+    message["To"] = contact.email
+    message["Reply-To"] = ENQUIRY_NOTIFICATION_RECIPIENT
+    message["Subject"] = build_wizard_resume_subject(booking)
+    message.set_content(build_wizard_resume_body(booking, resume_url=resume_url, due_date_display=due_date_display))
     _send_via_gmail_smtp(message)

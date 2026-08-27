@@ -18,6 +18,7 @@ from app.schemas.wizard import (
     WizardExtrasStep,
     WizardFoodStep,
     WizardMusicStep,
+    WizardReviewStep,
     WizardVendorsStep,
 )
 from app.services import catalogue
@@ -70,7 +71,14 @@ def _catalogue_payload(db: Session, booking, category: MenuItemCategory) -> list
         price = catalogue.resolve_price(item, booking)
         if price is None:
             continue
-        payload.append({"id": str(item.id), "name": item.name, "price": str(price)})
+        # Marker chips shown in the picker: the published dietary codes,
+        # plus P only where an item actually contains peanuts (none on
+        # the current function menu). NULL markers = not yet confirmed
+        # against the website -- shown as nothing, never guessed.
+        markers = list(item.dietary_markers or [])
+        if item.contains_peanuts:
+            markers.append("P")
+        payload.append({"id": str(item.id), "name": item.name, "price": str(price), "markers": markers})
     return payload
 
 
@@ -249,6 +257,7 @@ def submit_music_step(token: str, request: Request, payload: WizardMusicStep, db
         wizard_service.save_music_step(
             db,
             session,
+            music_types=payload.music_types or None,
             music_type=payload.music_type,
             notes=payload.notes,
             bump_in_notes=payload.bump_in_notes,
@@ -325,11 +334,72 @@ def submit_extras_step(token: str, request: Request, payload: WizardExtrasStep, 
     return {"current_step": session.current_step.value, "accessibility_escalated": escalated}
 
 
+@router.post("/w/{token}/save-for-later", dependencies=[Depends(rate_limit_dependency(_wizard_step_rate_limiter))])
+def save_for_later(token: str, request: Request, db: Session = Depends(get_db)):
+    """The client is stepping away mid-wizard. Their answers are already
+    saved per step; this records the intent, attempts the resume email,
+    and returns everything the confirmation panel must show -- the due
+    date as an ABSOLUTE date, the resume link, and the help address --
+    because clients frequently don't check email straight away, and a
+    panel that just says "saved" would strand them."""
+    import datetime as _dt
+    import logging
+
+    from app.config import settings
+    from app.models import BookingEvent
+    from app.services import notifications
+    from app.services.document_generation import format_day_date
+    from app.services.policy import WIZARD_TRIGGER_DAYS_BEFORE_EVENT
+    from app.utils import truncate as _truncate
+
+    logger = logging.getLogger(__name__)
+    session = _get_usable_session(db, token)
+    booking = session.booking
+
+    due_date_display = None
+    if booking.event_date is not None:
+        due_date_display = format_day_date(
+            booking.event_date - _dt.timedelta(days=WIZARD_TRIGGER_DAYS_BEFORE_EVENT)
+        )
+    resume_url = f"{settings.dashboard_base_url}/w/{session.access_token}"
+
+    db.add(BookingEvent(booking_id=booking.id, event_type="wizard_saved_for_later", actor=_actor(request)))
+
+    email_sent = False
+    try:
+        notifications.send_wizard_resume_email(booking, resume_url=resume_url, due_date_display=due_date_display)
+        email_sent = True
+        db.add(BookingEvent(booking_id=booking.id, event_type="wizard_resume_email_sent", actor=_actor(request)))
+    except Exception as exc:  # noqa: BLE001 -- a mail problem must never lose the client's progress
+        logger.warning("Wizard resume email failed for %s: %s", booking.reference_code, exc)
+        db.add(
+            BookingEvent(
+                booking_id=booking.id,
+                event_type="wizard_resume_email_failed",
+                new_value=_truncate(str(exc), 500),
+                actor=_actor(request),
+            )
+        )
+    db.commit()
+
+    return {
+        "email_sent": email_sent,
+        "resume_url": resume_url,
+        "due_date_display": due_date_display,
+        "help_email": notifications.ENQUIRY_NOTIFICATION_RECIPIENT,
+        "contact_email": booking.contact.email if booking.contact else None,
+    }
+
+
 @router.post("/w/{token}/review", dependencies=[Depends(rate_limit_dependency(_wizard_step_rate_limiter))])
-def submit_review_step(token: str, request: Request, db: Session = Depends(get_db)):
+def submit_review_step(
+    token: str, request: Request, payload: WizardReviewStep | None = None, db: Session = Depends(get_db)
+):
     session = _get_usable_session(db, token)
     try:
-        session, generation = wizard_service.submit_review(db, session, actor=_actor(request))
+        session, generation = wizard_service.submit_review(
+            db, session, actor=_actor(request), final_notes=payload.final_notes if payload else None
+        )
     except ValueError as exc:
         raise _handle_value_error(exc) from exc
 
