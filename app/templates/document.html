@@ -48,9 +48,134 @@
   .signed-note { background: #dcf3e3; color: #1c6b3c; padding: 0.9rem; border-radius: 8px; font-size: 0.9rem; }
   .consent-text { font-size: 0.78rem; color: #6b7268; margin-top: 0.5rem; }
   .staff-preview-banner { background: #fdf2d0; color: #7a5b00; padding: 0.7rem 0.9rem; border-radius: 8px; font-size: 0.85rem; margin-bottom: 1.25rem; }
+  .doc-logo { height: 34px; }
+  .doc-wordmark { font-family: Georgia, "Times New Roman", serif; font-size: 1.5rem; letter-spacing: -0.01em; }
 </style>
+{% if is_pdf %}
+<style>
+  /* Print layout. Deliberately its own stylesheet rather than tweaks on
+     top of the screen one: xhtml2pdf collapses margins differently to a
+     browser, and the screen rules (rem spacing, flex, border-radius)
+     leave an agreement running to a second page with a clause heading
+     stranded at the foot of the first. This targets a single A4 page. */
+  @page { size: A4 portrait; margin: 13mm 13mm 11mm 13mm; }
+  body { background: #fff; padding: 0; margin: 0; font-size: 8.6pt; line-height: 1.4; color: #1f2420; }
+  .card { max-width: none; margin: 0; padding: 0; border-radius: 0; box-shadow: none; }
+
+  .pdf-head { width: 100%; margin-bottom: 6pt; }
+  .pdf-head td { vertical-align: top; padding: 0; border: none; }
+  .pdf-head .identity { text-align: right; font-size: 7.2pt; color: #6b7268; line-height: 1.45; }
+  .doc-logo { height: 32pt; }
+  .doc-wordmark { font-family: Georgia, "Times New Roman", serif; font-size: 19pt; color: #1f2420; }
+
+  .pdf-title { border-top: 1.2pt solid #1f2420; border-bottom: 0.5pt solid #c9ccc6; padding: 5pt 0 6pt; margin-bottom: 7pt; }
+  .pdf-title .doctype { font-size: 10.5pt; font-weight: bold; letter-spacing: 1pt; text-transform: uppercase; }
+  .pdf-title .meta { font-size: 7.6pt; color: #6b7268; padding-top: 2pt; }
+
+  .pdf-facts { width: 100%; border-collapse: collapse; margin-bottom: 8pt; }
+  .pdf-facts td { padding: 3pt 6pt 3pt 0; font-size: 8.2pt; border-bottom: 0.5pt solid #ececea; vertical-align: top; }
+  .pdf-facts td.k { color: #6b7268; width: 15%; text-transform: uppercase; font-size: 6.8pt; letter-spacing: 0.4pt; }
+  .pdf-facts td.v { width: 35%; }
+
+  .pdf-terms-heading { font-size: 7.2pt; font-weight: bold; letter-spacing: 0.8pt; text-transform: uppercase; color: #6b7268; padding-bottom: 4pt; }
+  .pdf-terms { width: 100%; border-collapse: collapse; }
+  .pdf-terms > tr > td { vertical-align: top; padding: 0; border: none; }
+  .pdf-terms td.col-left { padding-right: 8pt; }
+  .pdf-terms td.col-right { padding-left: 8pt; border-left: 0.5pt solid #ececea; }
+  .clause { padding-bottom: 5.5pt; }
+  .clause h3 { font-size: 8pt; margin: 0 0 1pt; font-weight: bold; color: #1f2420; }
+  .clause p { font-size: 7.5pt; margin: 0; line-height: 1.38; text-align: justify; }
+  .review { color: #b45309; font-style: italic; }
+
+  .pdf-sign { margin-top: 8pt; padding-top: 6pt; border-top: 1.2pt solid #1f2420; font-size: 8pt; }
+  .pdf-sign .signed { font-weight: bold; }
+  .pdf-sign .unsigned-line { color: #6b7268; }
+  .pdf-foot { margin-top: 5pt; font-size: 6.6pt; color: #969a93; }
+</style>
+{% endif %}
 </head>
 <body>
+{% if is_pdf and document.type.value == "agreement" %}
+{# Single-page print layout for the agreement. The screen markup below
+   stays as it is -- a client reading this on a phone wants generous
+   spacing, a signed contract in a filing cabinet wants one tight page. #}
+<div class="card">
+  <table class="pdf-head">
+    <tr>
+      <td>
+        {% if has_venue_logo() %}
+        <img class="doc-logo" src="{{ venue_logo_url }}" alt="{{ document.content.venue }}">
+        {% else %}
+        <div class="doc-wordmark">{{ document.content.venue }}</div>
+        {% endif %}
+      </td>
+      <td class="identity">
+        ABN {{ document.content.venue_abn }}<br>
+        {{ document.content.venue_address }}<br>
+        {{ document.content.venue_contact_name }} &middot; {{ document.content.venue_contact_email }}
+      </td>
+    </tr>
+  </table>
+
+  <div class="pdf-title">
+    <div class="doctype">Booking Agreement</div>
+    <div class="meta">
+      {{ booking.event_name }} &middot; Ref {{ booking.reference_code }} &middot; v{{ document.version }}
+      &middot; {{ document.status.value }}
+    </div>
+  </div>
+
+  <table class="pdf-facts">
+    <tr>
+      <td class="k">Venue</td><td class="v">{{ document.content.venue }} &mdash; {{ document.content.space_name }}</td>
+      <td class="k">Date</td><td class="v">{{ document.content.event_date }}</td>
+    </tr>
+    <tr>
+      <td class="k">Time</td><td class="v">{{ document.content.start_time }}&ndash;{{ document.content.end_time }}</td>
+      <td class="k">Guests</td><td class="v">{{ document.content.adult_count }} adults{% if document.content.child_count %}, {{ document.content.child_count }} children{% endif %}</td>
+    </tr>
+    <tr>
+      <td class="k">Min. spend</td><td class="v">${{ document.content.min_food_spend }}</td>
+      <td class="k">Deposit</td><td class="v">${{ document.content.deposit_required }}</td>
+    </tr>
+  </table>
+
+  <div class="pdf-terms-heading">Terms &amp; Conditions</div>
+  {% set columns = document.content.terms_sections | balance_columns %}
+  <table class="pdf-terms">
+    <tr>
+      <td class="col-left" width="50%">
+        {% for section in columns[0] %}
+        <div class="clause">
+          <h3>{{ section.heading }}</h3>
+          <p class="{{ 'review' if '[REVIEW]' in section.body else '' }}">{{ section.body | nl2br }}</p>
+        </div>
+        {% endfor %}
+      </td>
+      <td class="col-right" width="50%">
+        {% for section in columns[1] %}
+        <div class="clause">
+          <h3>{{ section.heading }}</h3>
+          <p class="{{ 'review' if '[REVIEW]' in section.body else '' }}">{{ section.body | nl2br }}</p>
+        </div>
+        {% endfor %}
+      </td>
+    </tr>
+  </table>
+
+  <div class="pdf-sign">
+    {% if document.status.value == "signed" %}
+    <span class="signed">Signed by {{ document.signer_name }}</span> on {{ document.signed_at | sydney_time }}
+    {% else %}
+    <span class="unsigned-line">Signature ____________________________&nbsp;&nbsp;
+    Name ____________________________&nbsp;&nbsp; Date ______________</span>
+    {% endif %}
+  </div>
+  <div class="pdf-foot">
+    {{ document.content.venue }} &middot; ABN {{ document.content.venue_abn }} &middot; {{ document.content.venue_address }}
+  </div>
+</div>
+{% else %}
 <div class="card">
   {% if is_staff_preview %}
   <div class="staff-preview-banner">Staff preview — this has not been sent to the client.</div>
@@ -149,5 +274,6 @@
   </form>
   {% endif %}
 </div>
+{% endif %}
 </body>
 </html>

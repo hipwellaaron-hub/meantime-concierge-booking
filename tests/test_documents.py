@@ -690,3 +690,82 @@ def test_editing_a_beo_food_order_clears_the_no_food_order_note(admin_client, db
     totals = document.content["total_food_spend"]
     assert totals["total"] == "750.00"
     assert "add a food order" not in (totals["note"] or "")
+
+
+# --- one-page print layout ---------------------------------------------------
+
+
+def _agreement_pdf_pages(db, booking) -> int:
+    import io
+
+    # pypdf, not a rasterizing library: it ships as a dependency of
+    # xhtml2pdf itself, so counting pages needs nothing new installed.
+    from pypdf import PdfReader
+
+    from app.services.pdf import render_html_to_pdf
+    from app.templating import templates
+
+    document = create_new_version(
+        db, booking, DocumentType.agreement, generate_agreement_content(booking), actor="test"
+    )
+    html = templates.get_template("document.html").render(
+        document=document, booking=booking, is_pdf=True
+    )
+    return len(PdfReader(io.BytesIO(render_html_to_pdf(html))).pages)
+
+
+def test_agreement_pdf_fits_one_page_worst_case(db, loft):
+    """An 18th at the Loft is the longest agreement this system produces:
+    all ten standard clauses plus the conditions appendix. If that fits on
+    one page, everything shorter does."""
+    booking = _booking_in(db, loft, event_type="18th Birthday", adult_count=60)
+    content = generate_agreement_content(booking)
+    assert len(content["terms_sections"]) == 11  # 10 standard + the 18th appendix
+    assert _agreement_pdf_pages(db, booking) == 1
+
+
+def test_agreement_pdf_fits_one_page_for_a_short_agreement(db, lounge):
+    # The Lounge has a single [REVIEW] clause -- the opposite extreme.
+    assert _agreement_pdf_pages(db, _booking_in(db, lounge)) == 1
+
+
+def test_balance_columns_splits_on_height_not_clause_count():
+    from app.templating import balance_columns
+
+    sections = [{"heading": "Long", "body": "x" * 900}] + [
+        {"heading": f"Short {i}", "body": "y" * 40} for i in range(6)
+    ]
+    left, right = balance_columns(sections)
+    # Splitting 7 clauses down the middle by count would put the one huge
+    # clause plus three others on the left. Height-balanced, it stands alone.
+    assert len(left) == 1
+    assert len(right) == 6
+    assert left[0]["heading"] == "Long"
+
+
+def test_balance_columns_handles_a_single_clause():
+    from app.templating import balance_columns
+
+    left, right = balance_columns([{"heading": "Terms", "body": "Only one."}])
+    assert len(left) == 1
+    assert right == []
+    assert balance_columns([]) == ([], [])
+
+
+def test_agreement_pdf_uses_the_wordmark_when_no_logo_file_is_present(db, loft, monkeypatch):
+    """The logo is an optional deploy-time asset. Without it the document
+    must still look deliberate -- never a broken-image box on a contract."""
+    from app import templating
+
+    monkeypatch.setattr(templating, "has_venue_logo", lambda: False)
+    templating.templates.env.globals["has_venue_logo"] = lambda: False
+
+    booking = _booking_in(db, loft)
+    document = create_new_version(
+        db, booking, DocumentType.agreement, generate_agreement_content(booking), actor="test"
+    )
+    html = templating.templates.get_template("document.html").render(
+        document=document, booking=booking, is_pdf=True
+    )
+    assert "doc-wordmark" in html
+    assert "<img" not in html
