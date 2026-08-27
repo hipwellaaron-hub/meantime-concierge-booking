@@ -149,10 +149,18 @@
   <form method="post" action="/admin/bookings/{{ booking.id }}/enquiry-notification/resend">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <button class="btn" type="submit">Resend notification</button>
+    <a href="/admin/bookings/{{ booking.id }}/enquiry-notification/preview">See the email</a>
   </form>
 </div>
 {% elif booking.enquiry_notification_sent_at %}
-<p class="muted" style="font-size:0.85rem;">Enquiry notification sent {{ booking.enquiry_notification_sent_at | sydney_time }}.</p>
+<p class="muted" style="font-size:0.85rem;">
+  Enquiry notification sent {{ booking.enquiry_notification_sent_at | sydney_time }}.
+  <a href="/admin/bookings/{{ booking.id }}/enquiry-notification/preview">See the email</a>
+</p>
+{% else %}
+<p class="muted" style="font-size:0.85rem;">
+  <a href="/admin/bookings/{{ booking.id }}/enquiry-notification/preview">See the enquiry notification email</a>
+</p>
 {% endif %}
 
 {% if not contact_email_valid %}

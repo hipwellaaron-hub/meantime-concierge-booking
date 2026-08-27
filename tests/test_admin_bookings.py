@@ -1120,3 +1120,47 @@ def test_resend_enquiry_notification_route_surfaces_failure(admin_client, db, un
             follow_redirects=False,
         )
     assert resp.status_code == 502
+
+
+def test_enquiry_notification_preview_shows_the_real_email(admin_client, db, loft):
+    """The preview must be built by the same functions that send, so it
+    can't drift from what actually goes out."""
+    from app.services.enquiry_classification import preview_enquiry_notification
+    from app.services.notifications import (
+        ENQUIRY_NOTIFICATION_RECIPIENT,
+        build_enquiry_notification_subject,
+    )
+
+    booking = create_booking(
+        db, space_id=loft.id, contact_id=None, event_date=dt.date(2026, 11, 28),
+        event_name="meantime Christmas party", event_type=None,
+        adult_count=0, child_count=0, notes=None, actor="test",
+    )
+
+    recipient, subject, body = preview_enquiry_notification(booking)
+    assert recipient == ENQUIRY_NOTIFICATION_RECIPIENT
+    assert subject == build_enquiry_notification_subject(booking)
+    assert "meantime Christmas party" in subject
+    assert "guest count TBD" in subject  # no guest count captured
+    assert "Reference:" in body and str(booking.reference_code) in body
+
+    page = admin_client.get(f"/admin/bookings/{booking.id}/enquiry-notification/preview")
+    assert page.status_code == 200
+    assert ENQUIRY_NOTIFICATION_RECIPIENT in page.text
+    assert "meantime Christmas party" in page.text
+
+
+def test_enquiry_notification_preview_sends_nothing(admin_client, db, loft):
+    """Opening the preview must not send, and must not record a send."""
+    from unittest.mock import patch
+
+    booking = create_booking(
+        db, space_id=loft.id, contact_id=None, event_date=dt.date(2026, 11, 28),
+        event_name="Preview Only", event_type=None,
+        adult_count=10, child_count=0, notes=None, actor="test",
+    )
+    with patch("app.services.notifications._send_via_gmail_smtp") as send:
+        admin_client.get(f"/admin/bookings/{booking.id}/enquiry-notification/preview")
+    send.assert_not_called()
+    db.refresh(booking)
+    assert booking.enquiry_notification_sent_at is None

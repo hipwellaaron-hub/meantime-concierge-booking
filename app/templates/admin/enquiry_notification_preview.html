@@ -1,0 +1,41 @@
+{% extends "admin/_base.html" %}
+{% block title %}Enquiry notification preview{% endblock %}
+{% block content %}
+<p><a href="/admin/bookings/{{ booking.id }}">&larr; {{ booking.event_name }}</a></p>
+<h1>Enquiry notification</h1>
+<p class="muted">
+  Exactly what lands in the venue inbox for this enquiry, built by the same code that sends it.
+  Nothing is sent by opening this page.
+</p>
+
+<div class="card">
+  <table>
+    <tr><td class="label">To</td><td>{{ recipient }}</td></tr>
+    <tr>
+      <td class="label">Reply-To</td>
+      <td>
+        {% if reply_to %}{{ reply_to }} <span class="muted">(hitting Reply goes to the client)</span>
+        {% else %}<span class="muted">No valid client email on file, so Reply would go nowhere useful.</span>{% endif %}
+      </td>
+    </tr>
+    <tr><td class="label">Subject</td><td><strong>{{ subject }}</strong></td></tr>
+  </table>
+</div>
+
+<div class="card">
+  <h2>Body</h2>
+  <pre style="white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.82rem; margin: 0;">{{ body }}</pre>
+</div>
+
+<div class="card">
+  <h2>Status</h2>
+  {% if booking.enquiry_notification_sent_at %}
+  <p>Sent {{ booking.enquiry_notification_sent_at | sydney_time }}.</p>
+  {% else %}
+  <p class="muted">
+    Not sent for this booking. That is expected for anything imported from iVvy or added by hand,
+    which never goes through the enquiry notification at all.
+  </p>
+  {% endif %}
+</div>
+{% endblock %}

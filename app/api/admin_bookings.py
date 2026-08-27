@@ -742,6 +742,32 @@ def set_outside_cake_permitted(
     return _redirect_to_detail(booking_id)
 
 
+@router.get("/{booking_id}/enquiry-notification/preview", response_class=HTMLResponse)
+def preview_enquiry_notification(
+    booking_id: uuid.UUID, request: Request, db: Session = Depends(get_db), staff: StaffUser = Depends(require_staff)
+):
+    """Shows exactly what the venue's new-enquiry notification for this
+    booking says. Deliberately works whether or not Gmail is configured
+    and whether or not this booking ever had one sent -- the question
+    "what would this email say" is worth answering on its own."""
+    booking = _get_booking_or_404(db, booking_id)
+    recipient, subject, body = enquiry_classification.preview_enquiry_notification(booking)
+    contact = booking.contact
+    return templates.TemplateResponse(
+        request,
+        "admin/enquiry_notification_preview.html",
+        admin_ctx(
+            request,
+            staff,
+            booking=booking,
+            recipient=recipient,
+            subject=subject,
+            body=body,
+            reply_to=contact.email if contact and is_valid_email(contact.email) else None,
+        ),
+    )
+
+
 @router.post("/{booking_id}/enquiry-notification/resend", dependencies=[Depends(require_csrf)])
 def resend_enquiry_notification(
     booking_id: uuid.UUID, request: Request, db: Session = Depends(get_db), staff: StaffUser = Depends(require_staff)

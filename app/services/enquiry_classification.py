@@ -327,6 +327,25 @@ def notify_new_enquiry(db: Session, booking: Booking, *, flags: list[str], actor
     _record_notification_failure(db, booking, reason=str(last_error), actor=actor)
 
 
+def _flags_from_audit_trail(booking: Booking) -> list[str]:
+    return [e.new_value for e in booking.events if e.event_type == "enquiry_flagged" and e.new_value]
+
+
+def preview_enquiry_notification(booking: Booking) -> tuple[str, str, str]:
+    """The exact recipient, subject and body that a send for this booking
+    would produce -- built by the same functions that do the sending, so
+    the preview cannot drift from the real thing. Sends nothing, records
+    nothing, and needs no Gmail credentials: it answers "what would this
+    email say" without requiring the mail path to be working."""
+    return (
+        notifications.ENQUIRY_NOTIFICATION_RECIPIENT,
+        notifications.build_enquiry_notification_subject(booking),
+        notifications.build_enquiry_notification_body(
+            booking, flags=_flags_from_audit_trail(booking), dashboard_base_url=settings.dashboard_base_url
+        ),
+    )
+
+
 def resend_enquiry_notification(db: Session, booking: Booking, *, actor: str) -> None:
     """The staff-facing recovery path once the automatic attempt above has
     exhausted its one retry. Re-derives flags from the booking's own audit
@@ -336,7 +355,7 @@ def resend_enquiry_notification(db: Session, booking: Booking, *, actor: str) ->
     -- the caller is a deliberate staff action, not a background step of
     enquiry submission, so a failure here should surface to whoever
     clicked the button, not just to the log."""
-    flags = [e.new_value for e in booking.events if e.event_type == "enquiry_flagged" and e.new_value]
+    flags = _flags_from_audit_trail(booking)
     try:
         notifications.send_enquiry_notification_email(
             booking, flags=flags, dashboard_base_url=settings.dashboard_base_url
