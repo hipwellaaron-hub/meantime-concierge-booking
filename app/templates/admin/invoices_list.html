@@ -1,0 +1,56 @@
+{% extends "admin/_base.html" %}
+{% block title %}Invoices{% endblock %}
+{% block content %}
+<h1>Invoices</h1>
+
+<form method="get" action="/admin/invoices" class="card" style="display:flex; gap:12px; align-items:flex-end;">
+  <div style="flex:1;">
+    <label for="status">Status</label>
+    <select id="status" name="status">
+      <option value="">Any</option>
+      {% for s in statuses %}
+      <option value="{{ s.value }}" {% if status == s %}selected{% endif %}>{{ s.value }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <button class="btn" type="submit">Filter</button>
+</form>
+
+{% if total_outstanding %}
+<p class="muted" style="font-size:0.85rem;">
+  ${{ "%.2f"|format(total_outstanding) }} outstanding across {{ invoices | selectattr("status.value", "equalto", "sent") | list | length }} unpaid invoice(s).
+</p>
+{% endif %}
+
+<div class="card" style="padding:0;">
+  {% if invoices %}
+  <table>
+    <thead>
+      <tr><th>Invoice</th><th>Booking</th><th>Type</th><th>Due</th><th>Total</th><th>Status</th></tr>
+    </thead>
+    <tbody>
+    {% for invoice in invoices %}
+      <tr onclick="window.location='/admin/bookings/{{ invoice.booking_id }}'" style="cursor:pointer;">
+        <td>#{{ invoice.invoice_number }}</td>
+        <td>
+          {{ invoice.booking.event_name }}
+          <div class="muted" style="font-size:0.72rem;">{{ invoice.booking.reference_code }}</div>
+        </td>
+        <td class="muted">{{ invoice.type.value }}</td>
+        <td class="muted">{{ invoice.due_date }}</td>
+        <td>${{ "%.2f"|format(invoice.total) }}</td>
+        <td>
+          <span class="badge">{{ invoice.status.value }}</span>
+          {% if invoice.status.value == "sent" and invoice.viewed_at %}
+          <div class="muted" style="font-size:0.72rem;">Opened {{ invoice.viewed_at | sydney_time }}</div>
+          {% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty-state" style="padding:20px;">No invoices match.</div>
+  {% endif %}
+</div>
+{% endblock %}

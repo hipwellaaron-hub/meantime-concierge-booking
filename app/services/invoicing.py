@@ -399,3 +399,23 @@ def record_payment(
     db.commit()
     db.refresh(payment)
     return payment
+
+
+def search_invoices(
+    db: Session, venue_id: uuid.UUID, *, status: InvoiceStatus | None = None
+) -> list[Invoice]:
+    """Every invoice across the venue, newest first, optionally filtered by
+    status. Scoped through Booking -> Space to the venue the same way the
+    dashboard's own counts are, so the list and the count on the tile that
+    links to it can never disagree."""
+    from app.models import Space
+
+    query = (
+        select(Invoice)
+        .join(Booking, Invoice.booking_id == Booking.id)
+        .join(Space, Booking.space_id == Space.id)
+        .where(Space.venue_id == venue_id)
+    )
+    if status is not None:
+        query = query.where(Invoice.status == status)
+    return list(db.scalars(query.order_by(Invoice.created_at.desc())))

@@ -8,6 +8,7 @@ from app.api.admin_auth import router as admin_auth_router
 from app.api.admin_bookings import router as admin_bookings_router
 from app.api.admin_calendar import router as admin_calendar_router
 from app.api.admin_dashboard import router as admin_dashboard_router
+from app.api.admin_invoices import router as admin_invoices_router
 from app.api.admin_reports import router as admin_reports_router
 from app.api.admin_triage import router as admin_triage_router
 from app.api.availability import router as availability_router
@@ -75,6 +76,7 @@ app.include_router(wizard_router)
 app.include_router(admin_auth_router)
 app.include_router(admin_dashboard_router)
 app.include_router(admin_bookings_router)
+app.include_router(admin_invoices_router)
 app.include_router(admin_triage_router)
 app.include_router(admin_calendar_router)
 app.include_router(admin_reports_router)

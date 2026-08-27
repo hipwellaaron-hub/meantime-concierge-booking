@@ -4,10 +4,10 @@
 <h1>Dashboard</h1>
 
 <div class="grid cols-5">
-  <div class="card stat">
+  <a class="card stat" href="/admin/bookings?status=enquiry" style="text-decoration:none;">
     <div class="num">{{ counts.open_enquiries }}</div>
     <div class="label">Open enquiries</div>
-  </div>
+  </a>
   <a class="card stat" href="/admin/triage" style="text-decoration:none;">
     <div class="num">{{ counts.triage }}</div>
     <div class="label">Awaiting triage</div>
@@ -16,10 +16,10 @@
     <div class="num">{{ counts.wizard_ready }}</div>
     <div class="label">Wizard-ready</div>
   </a>
-  <div class="card stat">
+  <a class="card stat" href="/admin/invoices?status=sent" style="text-decoration:none;">
     <div class="num">{{ counts.unpaid_invoices }}</div>
     <div class="label">Unpaid invoices</div>
-  </div>
+  </a>
   <a class="card stat" href="/admin/triage" style="text-decoration:none; {% if counts.notification_failures %}border-color: var(--ember);{% endif %}">
     <div class="num" style="{% if counts.notification_failures %}color: var(--ember);{% endif %}">{{ counts.notification_failures }}</div>
     <div class="label">Enquiry emails failed</div>
