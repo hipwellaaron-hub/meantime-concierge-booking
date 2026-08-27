@@ -457,7 +457,9 @@ def save_document_edit(
                 continue  # a blanked-out row is how the form deletes a line item
             try:
                 line_items.append({
-                    "item": description.strip(),
+                    # "description", matching what the wizard and invoicing
+                    # both write -- see the note in document.html.
+                    "description": description.strip(),
                     "quantity": int(quantity),
                     "unit_price": str(Decimal(unit_price)),
                 })

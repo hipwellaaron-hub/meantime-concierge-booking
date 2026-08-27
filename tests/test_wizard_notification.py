@@ -129,3 +129,74 @@ def test_dashboard_tile_count_matches_the_worklist(admin_client, db, loft, hamil
     triage = admin_client.get("/admin/triage")
     listed = documents_service.get_beos_awaiting_review(db, hamilton)
     assert f"BEOs to review ({len(listed)})" in triage.text
+
+
+# --- the BEO must actually show what the client chose -------------------------
+
+
+def test_a_wizard_generated_beo_renders_its_food_item_names(db, loft, hamilton, menu_items):
+    """Regression: document.html read item["item"] while the wizard writes
+    item["description"], so every wizard-generated BEO rendered a food
+    table with prices and quantities but a blank Item column -- on the
+    staff preview, the client's copy and the PDF alike."""
+    from app.services.wizard_generation import build_food_line_items
+    from app.templating import templates
+
+    booking = _booking(db, loft, name="Food Names Shown")
+    grazing = menu_items["Grazing Platter"]
+    food_response = {
+        "platters": [{"menu_item_id": str(grazing.id), "quantity": 2}],
+        "pizzas": [],
+    }
+    line_items, outstanding = build_food_line_items(db, booking, food_response)
+    assert outstanding == []
+    assert line_items[0]["description"] == "Grazing Platter"
+
+    document = documents_service.create_new_version(
+        db, booking, DocumentType.beo, generate_beo_content(booking, line_items), actor="test"
+    )
+    html = templates.get_template("document.html").render(
+        document=document, booking=booking, is_staff_preview=True
+    )
+    assert "Grazing Platter" in html, "the client's own selections must appear on the BEO"
+
+
+def test_a_beo_stored_with_the_older_item_key_still_renders(db, loft):
+    """BEOs already saved before the key was standardised must not go
+    blank."""
+    from app.templating import templates
+
+    booking = _booking(db, loft, name="Legacy Key")
+    legacy = generate_beo_content(booking, [{"item": "Antipasto Platter", "quantity": 1, "unit_price": "100.00"}])
+    document = documents_service.create_new_version(db, booking, DocumentType.beo, legacy, actor="test")
+    html = templates.get_template("document.html").render(
+        document=document, booking=booking, is_staff_preview=True
+    )
+    assert "Antipasto Platter" in html
+
+
+def test_editing_a_beo_writes_the_description_key(admin_client, db, loft):
+    """The edit form must write what the renderer and invoicing read, or
+    a hand-edited BEO goes blank the moment it's saved."""
+    import re
+
+    booking = _booking(db, loft, name="Edit Writes Description")
+    document = documents_service.create_new_version(
+        db, booking, DocumentType.beo, generate_beo_content(booking), actor="test"
+    )
+    form = admin_client.get(f"/admin/bookings/{booking.id}/documents/{document.id}/edit")
+    csrf_token = re.search(r'name="csrf_token" value="([^"]+)"', form.text).group(1)
+    admin_client.post(
+        f"/admin/bookings/{booking.id}/documents/{document.id}/edit",
+        data={
+            "csrf_token": csrf_token,
+            "item_descriptions": ["Pork Belly Bites"],
+            "item_quantities": ["3"],
+            "item_unit_prices": ["100.00"],
+            "catering_order_and_service_style": "", "bar_structure": "",
+            "room_layout_notes": "", "music_entertainment": "", "special_notes": "",
+        },
+        follow_redirects=False,
+    )
+    db.refresh(document)
+    assert document.content["food_order"]["line_items"][0]["description"] == "Pork Belly Bites"

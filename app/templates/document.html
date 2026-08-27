@@ -225,7 +225,11 @@
     <table class="food-items">
       <tr><th>Item</th><th>Qty</th><th>Unit price</th></tr>
       {% for item in document.content.food_order.line_items %}
-      <tr><td>{{ item.item }}</td><td>{{ item.quantity }}</td><td>${{ item.unit_price }}</td></tr>
+      {# "description" is the key every real producer writes (the wizard's
+         build_food_line_items, and invoicing). The "item" fallback is only
+         for BEOs already stored with the older key -- new writes use
+         description, so this can go once none are left. #}
+      <tr><td>{{ item.description or item.item }}</td><td>{{ item.quantity }}</td><td>${{ item.unit_price }}</td></tr>
       {% endfor %}
     </table>
     {% else %}

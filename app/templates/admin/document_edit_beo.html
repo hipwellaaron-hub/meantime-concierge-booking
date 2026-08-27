@@ -18,7 +18,7 @@
     <div id="line-items">
       {% for item in document.content.food_order.line_items %}
       <div class="field-row line-item">
-        <div><label>Item</label><input type="text" name="item_descriptions" value="{{ item.item }}" maxlength="255"></div>
+        <div><label>Item</label><input type="text" name="item_descriptions" value="{{ item.description or item.item }}" maxlength="255"></div>
         <div><label>Qty</label><input type="number" name="item_quantities" value="{{ item.quantity }}" min="0" step="1"></div>
         <div><label>Unit price</label><input type="text" name="item_unit_prices" value="{{ item.unit_price }}"></div>
       </div>
