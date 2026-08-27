@@ -1,6 +1,5 @@
 import datetime as dt
 import enum
-import secrets
 import uuid
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, String, func
@@ -9,6 +8,7 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
+from app.utils import generate_access_token as _generate_access_token
 
 
 class WizardSessionStatus(str, enum.Enum):
@@ -32,7 +32,8 @@ wizard_step_enum = SAEnum(WizardStep, name="wizard_step", native_enum=True)
 
 
 def generate_access_token() -> str:
-    return secrets.token_urlsafe(32)
+    # See app.models.document.generate_access_token on why this indirection.
+    return _generate_access_token()
 
 
 class WizardSession(Base):

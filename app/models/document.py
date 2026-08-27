@@ -1,6 +1,5 @@
 import datetime as dt
 import enum
-import secrets
 import uuid
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, UniqueConstraint, func, text
@@ -9,6 +8,7 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
+from app.utils import generate_access_token as _generate_access_token
 
 
 class DocumentType(str, enum.Enum):
@@ -28,7 +28,10 @@ document_status_enum = SAEnum(DocumentStatus, name="document_status", native_enu
 
 
 def generate_access_token() -> str:
-    return secrets.token_urlsafe(32)
+    # Re-exported rather than inlined: this name is the column default and
+    # is referenced in migrations, so it stays put while the actual
+    # generation lives in one shared place (see app.utils).
+    return _generate_access_token()
 
 
 class Document(Base):

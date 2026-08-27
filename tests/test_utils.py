@@ -47,3 +47,40 @@ def test_is_valid_email_rejects_missing_at_sign():
 
 def test_is_valid_email_rejects_no_domain():
     assert is_valid_email("someone@") is False
+
+
+# --- client-facing link tokens -----------------------------------------------
+
+
+def test_access_tokens_are_short_enough_for_an_email_link():
+    from app.utils import generate_access_token
+
+    token = generate_access_token()
+    assert len(token) == 22, "a longer token makes client links look like spam"
+    assert looks_like_a_token(token)
+
+
+def test_access_tokens_are_unguessable_and_unique():
+    from app.utils import ACCESS_TOKEN_BYTES, generate_access_token
+
+    # 128 bits. Well beyond brute force, and these links can sign a contract.
+    assert ACCESS_TOKEN_BYTES * 8 >= 128
+    assert len({generate_access_token() for _ in range(1000)}) == 1000
+
+
+def test_tokens_issued_before_the_length_change_still_validate():
+    """Real links already in clients' inboxes are 43 characters. They are
+    looked up by exact match, so they must keep resolving -- shortening
+    new tokens must never invalidate an agreement someone already holds."""
+    assert looks_like_a_token("gHdI-CyR8grz8J9k586BJzTu6kigyoFS1RJDUiBJRv4")
+    assert looks_like_a_token("fUxH5m9BxwuQaXnKStwCdxF6RWsLlOOnoXd9gJLG6N8")
+
+
+def test_every_client_facing_model_uses_the_shared_token_generator():
+    """Document, Invoice and WizardSession each had their own copy of the
+    generator; a length change to one and not the others would be silent."""
+    from app.models.document import generate_access_token as document_token
+    from app.models.invoice import generate_access_token as invoice_token
+    from app.models.wizard_session import generate_access_token as wizard_token
+
+    assert {len(document_token()), len(invoice_token()), len(wizard_token())} == {22}

@@ -1,6 +1,5 @@
 import datetime as dt
 import enum
-import secrets
 import uuid
 from decimal import Decimal
 
@@ -10,6 +9,7 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
+from app.utils import generate_access_token as _generate_access_token
 
 
 class InvoiceType(str, enum.Enum):
@@ -29,7 +29,8 @@ invoice_status_enum = SAEnum(InvoiceStatus, name="invoice_status", native_enum=T
 
 
 def generate_access_token() -> str:
-    return secrets.token_urlsafe(32)
+    # See app.models.document.generate_access_token on why this indirection.
+    return _generate_access_token()
 
 
 class Invoice(Base):
