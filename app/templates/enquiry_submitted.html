@@ -36,7 +36,7 @@
 </head>
 <body>
 <div class="card">
-  <h1>Thanks, {{ booking.contact.name if booking.contact else "" }}</h1>
+  <h1>Thanks, {{ (booking.contact.name | person_name) if booking.contact else "" }}</h1>
   <p>Your enquiry for <strong style="color: var(--cream);">{{ booking.event_name }}</strong> has been received.</p>
   <p>Reference: <span class="reference">{{ booking.reference_code }}</span></p>
   <p>We'll be in touch shortly.</p>

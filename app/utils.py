@@ -66,3 +66,28 @@ _TOKEN_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
 def looks_like_a_token(value: str) -> bool:
     return bool(_TOKEN_PATTERN.match(value))
+
+
+def format_person_name(name: str | None) -> str | None:
+    """Display casing for a person's name on client-facing documents.
+
+    Contact names are stored exactly as typed into the enquiry form, and
+    clients routinely type all-lowercase ("ruby hipwell") -- which then
+    headlines their own Event Order. Recased ONLY when the input is
+    entirely lowercase or entirely uppercase (clearly un-cased typing);
+    anything mixed-case is deliberate ("McDonald", "van der Berg") and is
+    never touched, because a wrong "fix" to a real name is worse than
+    none. Capitalizes after spaces, hyphens and apostrophes so
+    "mary-jane o'brien" comes out "Mary-Jane O'Brien".
+    """
+    if not name:
+        return name
+    stripped = name.strip()
+    if not stripped or not (stripped.islower() or stripped.isupper()):
+        return stripped
+    result = []
+    capitalize_next = True
+    for ch in stripped.lower():
+        result.append(ch.upper() if capitalize_next and ch.isalpha() else ch)
+        capitalize_next = ch in (" ", "-", "'")
+    return "".join(result)

@@ -394,3 +394,33 @@ def test_playlist_music_text_carries_the_name_only_rule():
     text = build_music_text({"music_type": "own_playlist", "notes": "Party Mix 2027", "bump_in_notes": None})
     assert "set to public" in text
     assert "no links" in text
+
+
+# --- client name casing --------------------------------------------------------
+
+
+def test_lowercase_client_name_renders_cased_on_the_event_order(db, loft):
+    """A client who typed "ruby hipwell" into the form must not headline
+    her own Event Order in lowercase -- on any surface, including a BEO
+    already stored with the lowercase name (the render filter fixes those
+    without a regenerate)."""
+    contact = Contact(name="ruby hipwell", email="ruby.case@example.com")
+    db.add(contact)
+    db.flush()
+    booking = create_booking(
+        db, space_id=loft.id, contact_id=contact.id, event_date=dt.date(2026, 11, 28),
+        start_time=dt.time(18, 0), end_time=dt.time(23, 0), event_name="meantime Christmas party",
+        event_type="Christmas party", adult_count=40, child_count=0, notes=None, actor="test",
+    )
+    # New generation stores the cased name...
+    content = generate_beo_content(booking)
+    assert content["_reference"]["client_name"] == "Ruby Hipwell"
+
+    # ...and a document stored BEFORE the fix (lowercase frozen in) still
+    # renders cased, because the template filter applies at render time.
+    content["_reference"]["client_name"] = "ruby hipwell"
+    document = documents_service.create_new_version(db, booking, DocumentType.beo, content, actor="test")
+    for surface in ({"is_staff_preview": True}, {}, {"is_pdf": True}):
+        html = _render(document, booking, **surface)
+        assert "Ruby Hipwell Event Order" in html
+        assert "ruby hipwell" not in html

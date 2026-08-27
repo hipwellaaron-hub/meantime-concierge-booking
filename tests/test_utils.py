@@ -84,3 +84,26 @@ def test_every_client_facing_model_uses_the_shared_token_generator():
     from app.models.wizard_session import generate_access_token as wizard_token
 
     assert {len(document_token()), len(invoice_token()), len(wizard_token())} == {22}
+
+
+# --- person-name display casing ----------------------------------------------
+
+
+def test_all_lowercase_names_are_recased_for_display():
+    from app.utils import format_person_name
+
+    assert format_person_name("ruby hipwell") == "Ruby Hipwell"
+    assert format_person_name("mary-jane o'brien") == "Mary-Jane O'Brien"
+    assert format_person_name("KATRINA MENTIS") == "Katrina Mentis"
+
+
+def test_deliberate_casing_is_never_touched():
+    """A wrong 'fix' to a real name is worse than none -- anything
+    mixed-case is treated as deliberate."""
+    from app.utils import format_person_name
+
+    assert format_person_name("McDonald") == "McDonald"
+    assert format_person_name("van der Berg") == "van der Berg"
+    assert format_person_name("Ruby Hipwell") == "Ruby Hipwell"
+    assert format_person_name(None) is None
+    assert format_person_name("  ") == ""

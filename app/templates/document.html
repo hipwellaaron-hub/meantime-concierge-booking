@@ -358,7 +358,7 @@
    notes are structurally unreachable. #}
 {% set content = document.content %}
 {% set ref = content._reference %}
-{% set client_name = ref.get("client_name") or (booking.contact.name if booking.contact else None) %}
+{% set client_name = (ref.get("client_name") or (booking.contact.name if booking.contact else None)) | person_name %}
 <div class="card">
   <table class="beo-header">
     <tr>
@@ -382,7 +382,7 @@
       <td>
         <span class="k">Event Coordinator:</span> {{ venue_contact_name }}<br>
         <span class="k">Client:</span> {{ client_name or "—" }}{% if ref.get("client_phone") %} ({{ ref.client_phone }}){% endif %}<br>
-        <span class="k">Onsite Contact:</span> {{ content.get("onsite_contact") or client_name or "—" }}
+        <span class="k">Onsite Contact:</span> {{ (content.get("onsite_contact") | person_name) or client_name or "—" }}
       </td>
       <td class="right">
         <span class="k">Event Order:</span> EO-{{ booking.reference_code }}-v{{ document.version }}<br>
@@ -473,7 +473,7 @@
   {% set content = document.content %}
   {% set ref = content._reference %}
   {% set staff = is_staff_preview and not is_pdf %}
-  {% set client_name = ref.get("client_name") or (booking.contact.name if booking.contact else None) %}
+  {% set client_name = (ref.get("client_name") or (booking.contact.name if booking.contact else None)) | person_name %}
 
   <div class="beo-header">
     <div>
@@ -494,7 +494,7 @@
     <div>
       <span class="k">Event Coordinator:</span> {{ venue_contact_name }}<br>
       <span class="k">Client:</span> {{ client_name or "—" }}{% if ref.get("client_phone") %} ({{ ref.client_phone }}){% endif %}<br>
-      <span class="k">Onsite Contact:</span> {{ content.get("onsite_contact") or client_name or "—" }}
+      <span class="k">Onsite Contact:</span> {{ (content.get("onsite_contact") | person_name) or client_name or "—" }}
     </div>
     <div class="right">
       <span class="k">Event Order:</span> EO-{{ booking.reference_code }}-v{{ document.version }}<br>

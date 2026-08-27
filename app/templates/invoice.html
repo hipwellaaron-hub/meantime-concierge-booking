@@ -115,7 +115,7 @@
         <div class="box">
           <div class="box-title">Customer Details</div>
           {% if booking.contact %}
-          <div class="name">{{ booking.contact.name }}</div>
+          <div class="name">{{ booking.contact.name | person_name }}</div>
           <div class="muted">{{ booking.contact.email }}{% if booking.contact.phone %} &middot; {{ booking.contact.phone }}{% endif %}</div>
           {% else %}
           <div class="muted">No contact on file</div>

@@ -11,6 +11,7 @@ from decimal import Decimal, InvalidOperation
 from app.models import Booking
 from app.services import policy
 from app.services.enquiry_classification import looks_like_18th
+from app.utils import format_person_name
 from app.services.policy import STANDARD_DEPOSIT
 
 REVIEW = "[REVIEW]"
@@ -470,7 +471,10 @@ def generate_beo_content(
             "space_name": booking.space.name,
             "adult_count": booking.adult_count,
             "child_count": booking.child_count,
-            "client_name": contact.name if contact else None,
+            # Display-cased: a client who typed "ruby hipwell" into the
+            # form should not headline her own Event Order in lowercase.
+            # The stored Contact record keeps what was typed.
+            "client_name": format_person_name(contact.name) if contact else None,
             "client_phone": contact.phone if contact else None,
             "total_paid": str(total_paid) if total_paid is not None else None,
         },
