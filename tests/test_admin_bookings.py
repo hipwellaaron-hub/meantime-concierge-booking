@@ -8,7 +8,7 @@ from app.models.document import DocumentStatus, DocumentType
 from app.models.invoice import InvoiceStatus
 from app.services import documents as documents_service
 from app.services import invoicing
-from app.services.booking import change_status, create_booking
+from app.services.booking import change_status, create_booking, flag_for_review
 
 
 def _csrf(html: str) -> str:
@@ -637,6 +637,102 @@ def test_toggle_outside_cake_permitted(admin_client, db, booking):
     assert resp2.status_code == 303
     db.refresh(booking)
     assert booking.outside_cake_permitted is False
+
+
+def test_booking_detail_shows_no_contact_banner_when_missing(admin_client, db, unassigned_space):
+    booking = create_booking(
+        db, space_id=unassigned_space.id, contact_id=None, event_date=dt.date(2026, 11, 7),
+        event_name="Imported No Contact", event_type=None, adult_count=30, child_count=0,
+        notes=None, actor="test",
+    )
+    resp = _detail_page(admin_client, booking.id)
+    assert "No contact on file" in resp.text
+
+
+def test_add_contact_to_a_booking_with_none(admin_client, db, unassigned_space):
+    booking = create_booking(
+        db, space_id=unassigned_space.id, contact_id=None, event_date=dt.date(2026, 11, 7),
+        event_name="Imported No Contact", event_type=None, adult_count=30, child_count=0,
+        notes=None, actor="test",
+    )
+    page = _detail_page(admin_client, booking.id)
+    csrf_token = _csrf(page.text)
+
+    resp = admin_client.post(
+        f"/admin/bookings/{booking.id}/contact",
+        data={"csrf_token": csrf_token, "name": "Melanie Sterjovski", "email": "melaniesterjovskihair@hotmail.com", "phone": "0400000000"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+
+    db.refresh(booking)
+    assert booking.contact is not None
+    assert booking.contact.email == "melaniesterjovskihair@hotmail.com"
+    assert booking.contact.name == "Melanie Sterjovski"
+
+    after = _detail_page(admin_client, booking.id)
+    assert "No contact on file" not in after.text
+    assert "melaniesterjovskihair@hotmail.com" in after.text
+
+
+def test_change_contact_reuses_an_existing_contact_by_email(admin_client, db, unassigned_space, booking):
+    """An email that already matches an existing Contact is reused, not
+    duplicated -- same dedupe rule as everywhere else a contact is
+    resolved from an email."""
+    from app.models import Contact
+
+    other_booking = create_booking(
+        db, space_id=unassigned_space.id, contact_id=None, event_date=dt.date(2026, 11, 7),
+        event_name="Second Booking Same Client", event_type=None, adult_count=10, child_count=0,
+        notes=None, actor="test",
+    )
+    page = _detail_page(admin_client, other_booking.id)
+    csrf_token = _csrf(page.text)
+
+    resp = admin_client.post(
+        f"/admin/bookings/{other_booking.id}/contact",
+        data={"csrf_token": csrf_token, "name": "Wilson Wedding Contact", "email": booking.contact.email, "phone": ""},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+
+    db.refresh(other_booking)
+    assert other_booking.contact_id == booking.contact_id
+    assert db.query(Contact).filter_by(email=booking.contact.email).count() == 1
+
+
+def test_add_contact_requires_name_and_email(admin_client, db, unassigned_space):
+    booking = create_booking(
+        db, space_id=unassigned_space.id, contact_id=None, event_date=dt.date(2026, 11, 7),
+        event_name="Imported No Contact", event_type=None, adult_count=30, child_count=0,
+        notes=None, actor="test",
+    )
+    page = _detail_page(admin_client, booking.id)
+    csrf_token = _csrf(page.text)
+
+    resp = admin_client.post(
+        f"/admin/bookings/{booking.id}/contact",
+        data={"csrf_token": csrf_token, "name": "", "email": ""},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 422
+
+
+def test_flag_for_review_surfaces_on_the_clarification_banner(admin_client, db, unassigned_space):
+    booking = create_booking(
+        db, space_id=unassigned_space.id, contact_id=None, event_date=dt.date(2026, 11, 28),
+        event_name="Alyssa Booking", event_type=None, adult_count=50, child_count=0,
+        notes=None, actor="test",
+    )
+    flag_for_review(
+        db, booking, note="iVvy recorded 'Alyssa Boswood'; the live email thread says 'Alyssa Ross' -- confirm same person.",
+        actor="test",
+    )
+
+    resp = _detail_page(admin_client, booking.id)
+    assert "Needs clarification before proceeding" in resp.text
+    assert "Alyssa Boswood" in resp.text
+    assert "Alyssa Ross" in resp.text
 
 
 def test_assign_space_conflict_returns_409(admin_client, db, loft, unassigned_space):

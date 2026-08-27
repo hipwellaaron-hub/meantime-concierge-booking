@@ -20,6 +20,7 @@ from app.models.staff_user import StaffUser
 from app.models.wizard_session import WizardSessionStatus
 from app.schemas.enquiry import EVENT_TYPES, EnquiryCreate
 from app.services import booking as booking_service
+from app.services.contact_matching import find_or_create_contact
 from app.services import documents as documents_service
 from app.services import enquiry_classification
 from app.services import invoicing
@@ -256,6 +257,29 @@ def assign_space(
     except IntegrityError as exc:
         db.rollback()
         raise HTTPException(status_code=409, detail="That space is already booked for an overlapping time") from exc
+    return _redirect_to_detail(booking_id)
+
+
+@router.post("/{booking_id}/contact", dependencies=[Depends(require_csrf)])
+def set_booking_contact(
+    booking_id: uuid.UUID,
+    request: Request,
+    name: str = Form(...),
+    email: str = Form(...),
+    phone: str | None = Form(None),
+    db: Session = Depends(get_db),
+    staff: StaffUser = Depends(require_staff),
+):
+    """Attaches or replaces a booking's contact -- the recurring need
+    app.services.ivvy_calendar_import creates by design: a booking
+    imported with real space/time but no email at all only gets a real
+    contact once staff track one down, often from a live email thread."""
+    booking = _get_booking_or_404(db, booking_id)
+    name, email = name.strip(), email.strip()
+    if not name or not email:
+        raise HTTPException(status_code=422, detail="Name and email are both required")
+    contact, _duplicates = find_or_create_contact(db, name, email, (phone or "").strip() or None)
+    booking_service.set_contact(db, booking, contact_id=contact.id, actor=_actor(staff))
     return _redirect_to_detail(booking_id)
 
 

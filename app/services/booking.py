@@ -421,6 +421,58 @@ def set_outside_cake_permitted(db: Session, booking: Booking, *, permitted: bool
     return booking
 
 
+def set_contact(db: Session, booking: Booking, *, contact_id: uuid.UUID, actor: str) -> Booking:
+    """Attaches or replaces a booking's contact -- the gap
+    app.services.ivvy_calendar_import documents by design: a booking
+    imported with real space/time but no email at all (that export has
+    no email column) can only get a real contact once staff track one
+    down, often from a live email thread rather than iVvy itself. Every
+    client-facing send path already refuses without a contact with a
+    valid email on file, so nothing goes out until this has actually run.
+
+    Logs both the old and new contact id either way, including when
+    there was no previous contact -- silently swapping who a booking's
+    documents and invoices are addressed to should never be an
+    unannounced change."""
+    old_contact_id = booking.contact_id
+    if old_contact_id == contact_id:
+        return booking
+    booking.contact_id = contact_id
+    db.add(
+        BookingEvent(
+            booking_id=booking.id,
+            event_type="field_changed",
+            field_name="contact_id",
+            old_value=str(old_contact_id) if old_contact_id else None,
+            new_value=str(contact_id),
+            actor=actor,
+        )
+    )
+    db.commit()
+    db.refresh(booking)
+    return booking
+
+
+def flag_for_review(db: Session, booking: Booking, *, note: str, actor: str) -> Booking:
+    """Surfaces `note` on the booking's own "needs clarification" banner
+    and the Triage "flagged bookings" worklist -- the same
+    "enquiry_flagged" marker app.services.enquiry_classification.
+    classify_and_flag already writes, reused here for anything else that
+    needs a human to check before proceeding, regardless of how the
+    booking arrived."""
+    db.add(
+        BookingEvent(
+            booking_id=booking.id,
+            event_type="enquiry_flagged",
+            field_name="manual_review",
+            new_value=note,
+            actor=actor,
+        )
+    )
+    db.commit()
+    return booking
+
+
 def get_bookings_with_unrecorded_minimum_reduction(db: Session, venue_id: uuid.UUID) -> list[Booking]:
     """Master Policy v1.3 SS4.4, enforceable version: agreed_min_adults
     should never differ from the space's own standard without a recorded

@@ -13,7 +13,29 @@
   &middot; {{ booking.adult_count }} adults, {{ booking.child_count }} children (min {{ booking.agreed_min_adults }})
 </p>
 {% if booking.contact %}
-<p class="muted">{{ booking.contact.name }} &middot; {{ booking.contact.email }}{% if booking.contact.phone %} &middot; {{ booking.contact.phone }}{% endif %}</p>
+<p class="muted">{{ booking.contact.name }} &middot; {{ booking.contact.email }}{% if booking.contact.phone %} &middot; {{ booking.contact.phone }}{% endif %}
+  <details style="display:inline;"><summary style="display:inline; cursor:pointer; color:var(--gold);">Change</summary>
+  <form method="post" action="/admin/bookings/{{ booking.id }}/contact" class="field-row" style="margin-top:8px;">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div><input type="text" name="name" placeholder="Name" value="{{ booking.contact.name }}" required></div>
+    <div><input type="email" name="email" placeholder="Email" value="{{ booking.contact.email }}" required></div>
+    <div><input type="tel" name="phone" placeholder="Phone" value="{{ booking.contact.phone or '' }}"></div>
+    <div style="flex:0 0 auto;"><button class="btn secondary" type="submit">Save</button></div>
+  </form>
+  </details>
+</p>
+{% else %}
+<div class="card" style="border-color: var(--ember); background: rgba(212,98,43,0.08);">
+  <h2 style="color: var(--ember); margin-bottom: 10px;">No contact on file</h2>
+  <p class="muted" style="margin-bottom:10px;">Nothing can be sent to this client -- no agreement, invoice, or wizard link -- until a real contact is added.</p>
+  <form method="post" action="/admin/bookings/{{ booking.id }}/contact" class="field-row">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div><input type="text" name="name" placeholder="Name" required></div>
+    <div><input type="email" name="email" placeholder="Email" required></div>
+    <div><input type="tel" name="phone" placeholder="Phone"></div>
+    <div style="flex:0 0 auto;"><button class="btn" type="submit">Add contact</button></div>
+  </form>
+</div>
 {% endif %}
 
 {% if booking.event_type or booking.proposed_time_slot or booking.notes or booking.lead_source %}
