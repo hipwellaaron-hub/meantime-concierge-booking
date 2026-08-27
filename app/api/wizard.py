@@ -26,7 +26,7 @@ from app.services.document_generation import format_day_date
 from app.services.policy import AV_USB_DEADLINE_DAYS_BEFORE_EVENT, PLATTER_GUESTS_PER_PLATTER
 from app.services.validation import MUSIC_OFF_TIME, SETUP_ACCESS_STANDARD_TIME
 from app.templating import templates
-from app.utils import looks_like_a_token, truncate
+from app.utils import format_date_dmy, looks_like_a_token, truncate
 
 router = APIRouter(tags=["wizard"])
 
@@ -104,6 +104,9 @@ def view_wizard(token: str, request: Request, db: Session = Depends(get_db)):
             "event_name": booking.event_name,
             "reference_code": booking.reference_code,
             "event_date": booking.event_date.isoformat(),
+            # Display-only sibling: the ISO value above stays for any code
+            # that parses it; this one is what humans see.
+            "event_date_display": format_date_dmy(booking.event_date),
             "space_name": booking.space.name,
             "start_time": str(booking.start_time) if booking.start_time else None,
             "end_time": str(booking.end_time) if booking.end_time else None,

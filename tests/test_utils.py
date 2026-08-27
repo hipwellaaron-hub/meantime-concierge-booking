@@ -107,3 +107,25 @@ def test_deliberate_casing_is_never_touched():
     assert format_person_name("Ruby Hipwell") == "Ruby Hipwell"
     assert format_person_name(None) is None
     assert format_person_name("  ") == ""
+
+
+# --- day-first date display ---------------------------------------------------
+
+
+def test_dates_display_day_first():
+    import datetime as dt
+
+    from app.utils import format_date_dmy
+
+    assert format_date_dmy(dt.date(2026, 7, 10)) == "10-07-2026"
+    assert format_date_dmy("2026-07-10") == "10-07-2026"
+    assert format_date_dmy(dt.datetime(2026, 7, 10, 18, 30)) == "10-07-2026"
+
+
+def test_non_date_strings_pass_through_untouched():
+    """Placeholders piped through the template filter must survive."""
+    from app.utils import format_date_dmy
+
+    assert format_date_dmy("Date TBD") == "Date TBD"
+    assert format_date_dmy("[REVIEW] event date not yet confirmed") == "[REVIEW] event date not yet confirmed"
+    assert format_date_dmy(None) == ""

@@ -21,6 +21,8 @@ it was sent.
 
 import dataclasses
 import datetime as dt
+
+from app.utils import format_date_dmy
 from decimal import Decimal
 
 from sqlalchemy import select
@@ -92,14 +94,14 @@ def render_digest_text(content: DigestContent, *, dashboard_base_url: str) -> tu
     if content.wizard_eligible:
         lines.append(f"READY FOR THE GUIDED WIZARD ({len(content.wizard_eligible)})")
         for b in content.wizard_eligible:
-            lines.append(f"  - {b.event_name} ({b.event_date.isoformat()}) -- {dashboard_base_url}/admin/bookings/{b.id}")
+            lines.append(f"  - {b.event_name} ({format_date_dmy(b.event_date)}) -- {dashboard_base_url}/admin/bookings/{b.id}")
         lines.append("")
 
     if content.overdue_invoices:
         lines.append(f"OVERDUE INVOICES ({len(content.overdue_invoices)})")
         for item in content.overdue_invoices:
             lines.append(
-                f"  - {item.booking.event_name}: ${item.balance_due} overdue since {item.invoice.due_date.isoformat()} "
+                f"  - {item.booking.event_name}: ${item.balance_due} overdue since {format_date_dmy(item.invoice.due_date)} "
                 f"-- {dashboard_base_url}/admin/bookings/{item.booking.id}"
             )
         lines.append("")

@@ -133,7 +133,7 @@ def test_body_includes_every_captured_field():
     assert "0400 000 000" in body
     assert "Jane's 30th" in body
     assert "Birthday" in body
-    assert "2026-09-12" in body
+    assert "12-09-2026" in body  # day-first, per Aaron
     assert "Evening" in body
     assert "45 total (40 adults, 5 children)" in body
     assert "Acme Pty Ltd" in body

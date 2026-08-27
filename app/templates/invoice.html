@@ -89,7 +89,7 @@
           <table class="kv">
             <tr><td class="label">Reference Code</td><td>{{ booking.reference_code }}</td></tr>
             <tr><td class="label">Name</td><td>{{ booking.event_name }}</td></tr>
-            <tr><td class="label">Date</td><td>{{ booking.event_date if booking.event_date else "TBD" }}</td></tr>
+            <tr><td class="label">Date</td><td>{{ booking.event_date | aus_date if booking.event_date else "TBD" }}</td></tr>
             <tr><td class="label">Your contact</td><td>{{ venue_contact_name }} ({{ venue_contact_email }})</td></tr>
           </table>
         </div>
@@ -101,7 +101,7 @@
             <tr><td class="label">Invoice #</td><td>{{ invoice.invoice_number }}</td></tr>
             <tr><td class="label">Date of issue</td><td>{{ invoice.created_at | sydney_time("%d %b %Y") }}</td></tr>
             <tr><td class="label">Currency</td><td>AUD</td></tr>
-            <tr><td class="label">Due Date</td><td>{{ invoice.due_date }}</td></tr>
+            <tr><td class="label">Due Date</td><td>{{ invoice.due_date | aus_date }}</td></tr>
             <tr><td class="label">Amount Owing</td><td>${{ summary.balance_due }}</td></tr>
           </table>
         </div>
@@ -126,7 +126,7 @@
         <div class="box">
           <div class="box-title">Payment Terms</div>
           {% for inv in booking.invoices | rejectattr("status.value", "equalto", "draft") | rejectattr("status.value", "equalto", "cancelled") | sort(attribute="type.value") %}
-          <div>{{ "Deposit" if inv.type.value == "deposit" else "Balance" }} Due on {{ inv.due_date }}</div>
+          <div>{{ "Deposit" if inv.type.value == "deposit" else "Balance" }} Due on {{ inv.due_date | aus_date }}</div>
           {% endfor %}
         </div>
       </td>
@@ -143,7 +143,7 @@
       </tr>
       {% for item in line_items %}
       <tr>
-        <td>{{ booking.event_date if booking.event_date else "TBD" }}</td>
+        <td>{{ booking.event_date | aus_date if booking.event_date else "TBD" }}</td>
         <td>{{ item.description }}</td>
         <td class="num">{{ item.quantity }}</td>
         <td class="num">${{ item.unit_price }}</td>

@@ -8,7 +8,7 @@
 
 <p><a href="/admin/bookings">&larr; All bookings</a></p>
 <h1>{{ booking.event_name }} <span class="badge gold">{{ booking.status.value }}</span></h1>
-<p class="muted">{{ booking.reference_code }} &middot; {{ booking.event_date if booking.event_date else "Date TBD" }} &middot; {{ booking.space.name }}
+<p class="muted">{{ booking.reference_code }} &middot; {{ booking.event_date | aus_date if booking.event_date else "Date TBD" }} &middot; {{ booking.space.name }}
   {% if booking.start_time and booking.end_time %} &middot; {{ booking.start_time }}&ndash;{{ booking.end_time }}{% endif %}
   &middot; {{ booking.adult_count }} adults, {{ booking.child_count }} children (min {{ booking.agreed_min_adults }})
 </p>
@@ -132,7 +132,7 @@
   {% if booking.status.value == "tentative" %}
   <h3 style="font-size:0.9rem; color:var(--muted); margin:20px 0 6px;">Hold expiry</h3>
   <p class="muted">
-    {% if booking.hold_expires_at %}Expires {{ booking.hold_expires_at }}.{% else %}Open-ended -- no expiry set.{% endif %}
+    {% if booking.hold_expires_at %}Expires {{ booking.hold_expires_at | aus_date }}.{% else %}Open-ended -- no expiry set.{% endif %}
   </p>
   <form method="post" action="/admin/bookings/{{ booking.id }}/hold-expiry" class="field-row">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -362,7 +362,7 @@
           <span class="badge {% if invoice.status.value == 'paid' %}green{% endif %}">{{ invoice.status.value }}</span>
           {% if invoice.viewed_at %}<div class="muted" style="font-size:0.72rem; margin-top:3px;">Opened {{ invoice.viewed_at | sydney_time }}</div>{% endif %}
         </td>
-        <td class="muted">{{ invoice.due_date }}</td>
+        <td class="muted">{{ invoice.due_date | aus_date }}</td>
         <td>
           {% if invoice.status.value == "draft" %}
           <form class="inline" method="post" action="/admin/bookings/{{ booking.id }}/invoices/{{ invoice.id }}/send">

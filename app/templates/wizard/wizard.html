@@ -273,7 +273,7 @@
   var btnNext = document.getElementById("btn-next");
 
   document.getElementById("event-meta").textContent =
-    DATA.booking.space_name + " · " + DATA.booking.event_date + " · Ref " + DATA.booking.reference_code;
+    DATA.booking.space_name + " · " + (DATA.booking.event_date_display || DATA.booking.event_date) + " · Ref " + DATA.booking.reference_code;
 
   function money(v) { return "$" + Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
   function qtyFor(list, id) { var e = list.find(function (i) { return i.menu_item_id === id; }); return e ? e.quantity : 0; }

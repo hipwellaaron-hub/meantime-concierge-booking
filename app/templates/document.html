@@ -304,7 +304,7 @@
   <table class="pdf-facts">
     <tr>
       <td class="k">Venue</td><td class="v">{{ document.content.venue }} &mdash; {{ document.content.space_name }}</td>
-      <td class="k">Date</td><td class="v">{{ document.content.event_date }}</td>
+      <td class="k">Date</td><td class="v">{{ document.content.event_date | aus_date }}</td>
     </tr>
     <tr>
       <td class="k">Time</td><td class="v">{{ document.content.start_time }}&ndash;{{ document.content.end_time }}</td>
@@ -364,7 +364,7 @@
     <tr>
       <td>
         <h1>{{ client_name or booking.event_name }} Event Order</h1>
-        <div class="date-line">{{ content.event_timeline.event_date_display or content.event_timeline.event_date }}</div>
+        <div class="date-line">{{ content.event_timeline.event_date_display or (content.event_timeline.event_date | aus_date) }}</div>
         <div class="venue-line">{{ venue_trading_name }} - {{ venue_phone }}, {{ venue_contact_email }}</div>
       </td>
       <td style="text-align: right;">
@@ -456,7 +456,7 @@
   <section>
     <table>
       <tr><td class="label">Venue</td><td>{{ document.content.venue }} — {{ document.content.space_name }}</td></tr>
-      <tr><td class="label">Date</td><td>{{ document.content.event_date }}</td></tr>
+      <tr><td class="label">Date</td><td>{{ document.content.event_date | aus_date }}</td></tr>
       <tr><td class="label">Time</td><td>{{ document.content.start_time }} – {{ document.content.end_time }}</td></tr>
       <tr><td class="label">Guests</td><td>{{ document.content.adult_count }} adults{% if document.content.child_count %}, {{ document.content.child_count }} children{% endif %}</td></tr>
       <tr><td class="label">Minimum food spend</td><td>${{ document.content.min_food_spend }}</td></tr>
@@ -478,7 +478,7 @@
   <div class="beo-header">
     <div>
       <h1>{{ client_name or booking.event_name }} Event Order</h1>
-      <div class="date-line">{{ content.event_timeline.event_date_display or content.event_timeline.event_date }}</div>
+      <div class="date-line">{{ content.event_timeline.event_date_display or (content.event_timeline.event_date | aus_date) }}</div>
       <div class="venue-line">{{ venue_trading_name }} - {{ venue_phone }}, {{ venue_contact_email }}</div>
     </div>
     <div>

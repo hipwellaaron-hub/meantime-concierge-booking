@@ -32,7 +32,7 @@
       <tr onclick="window.location='/admin/bookings/{{ booking.id }}'" style="cursor:pointer;">
         <td>{{ booking.event_name }}</td>
         <td class="muted">{{ booking.reference_code }}</td>
-        <td>{{ booking.event_date if booking.event_date else "Date TBD" }}</td>
+        <td>{{ booking.event_date | aus_date if booking.event_date else "Date TBD" }}</td>
         <td class="muted">{{ booking.space.name }}</td>
         <td><span class="badge">{{ booking.status.value }}</span></td>
         <td class="muted">{{ booking.adult_count + booking.child_count }}</td>

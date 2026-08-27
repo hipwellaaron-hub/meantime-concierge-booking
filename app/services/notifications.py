@@ -27,7 +27,7 @@ from email.message import EmailMessage
 
 from app.models import Booking
 from app.services import policy
-from app.utils import is_valid_email
+from app.utils import format_date_dmy, is_valid_email
 
 GMAIL_SMTP_HOST = "smtp.gmail.com"
 GMAIL_SMTP_PORT = 465
@@ -145,7 +145,7 @@ def build_enquiry_notification_body(booking: Booking, *, flags: list[str], dashb
         "EVENT",
         f"Event name: {booking.event_name}",
         f"Type: {booking.event_type or 'Not given'}",
-        f"Date: {booking.event_date.isoformat() if booking.event_date else 'Not given'}",
+        f"Date: {format_date_dmy(booking.event_date) if booking.event_date else 'Not given'}",
         f"Proposed time: {booking.proposed_time_slot or 'Not given'}",
         f"Guests: {guest_total} total ({booking.adult_count} adults, {booking.child_count} children)",
     ]
@@ -203,7 +203,7 @@ def build_wizard_submission_body(
     reason: read on a phone, and it's a working document rather than
     anything polished. Leads with whether the submission needs a human,
     because that's the only thing that changes what Aaron does next."""
-    date_str = booking.event_date.isoformat() if booking.event_date else "Not set"
+    date_str = format_date_dmy(booking.event_date) if booking.event_date else "Not set"
     guest_total = booking.adult_count + booking.child_count
 
     if outstanding_items:

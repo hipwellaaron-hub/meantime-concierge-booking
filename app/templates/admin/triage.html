@@ -14,7 +14,7 @@
       <tr>
         <td><a href="/admin/bookings/{{ booking.id }}">{{ booking.event_name }}</a></td>
         <td class="muted">{{ booking.reference_code }}</td>
-        <td>{{ booking.event_date if booking.event_date else "Date TBD" }}</td>
+        <td>{{ booking.event_date | aus_date if booking.event_date else "Date TBD" }}</td>
         <td>
           <ul style="margin:0; padding-left:18px;">
             {% for f in flags %}<li style="margin-bottom:4px;">{{ f.new_value }}</li>{% endfor %}
@@ -42,7 +42,7 @@
         <td><a href="/admin/bookings/{{ booking.id }}">{{ booking.event_name }}</a></td>
         <td class="muted">{{ booking.reference_code }}</td>
         <td><span class="badge">{{ booking.status.value }}</span></td>
-        <td>{{ booking.event_date if booking.event_date else "Date TBD" }}</td>
+        <td>{{ booking.event_date | aus_date if booking.event_date else "Date TBD" }}</td>
         <td>
           <ul style="margin:0; padding-left:18px;">
             {% for f in flags %}<li style="margin-bottom:4px;">{{ f.new_value }}</li>{% endfor %}
@@ -68,7 +68,7 @@
       <tr>
         <td><a href="/admin/bookings/{{ booking.id }}">{{ booking.event_name }}</a></td>
         <td class="muted">{{ booking.reference_code }}</td>
-        <td>{{ booking.event_date if booking.event_date else "Date TBD" }}</td>
+        <td>{{ booking.event_date | aus_date if booking.event_date else "Date TBD" }}</td>
         <td>
           <form method="post" action="/admin/bookings/{{ booking.id }}/enquiry-notification/resend">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -117,7 +117,7 @@
       <tr>
         <td><a href="/admin/bookings/{{ booking.id }}">{{ booking.event_name }}</a></td>
         <td class="muted">{{ booking.reference_code }}</td>
-        <td>{{ booking.event_date if booking.event_date else "Date TBD" }}</td>
+        <td>{{ booking.event_date | aus_date if booking.event_date else "Date TBD" }}</td>
         <td colspan="2">
           <form method="post" action="/admin/bookings/{{ booking.id }}/assign-space" class="field-row" style="align-items:flex-end;">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -155,7 +155,7 @@
       <tr>
         <td><a href="/admin/bookings/{{ booking.id }}">{{ booking.event_name }}</a></td>
         <td class="muted">{{ booking.reference_code }}</td>
-        <td>{{ booking.event_date if booking.event_date else "Date TBD" }}</td>
+        <td>{{ booking.event_date | aus_date if booking.event_date else "Date TBD" }}</td>
         <td>
           <form method="post" action="/admin/bookings/{{ booking.id }}/wizard/send">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -182,7 +182,7 @@
       <tr>
         <td><a href="/admin/bookings/{{ document.booking_id }}">{{ document.booking.event_name }}</a></td>
         <td class="muted">{{ document.booking.reference_code }}</td>
-        <td>{{ document.booking.event_date if document.booking.event_date else "Date TBD" }}</td>
+        <td>{{ document.booking.event_date | aus_date if document.booking.event_date else "Date TBD" }}</td>
         <td class="muted">v{{ document.version }}</td>
         <td>
           <a href="/admin/bookings/{{ document.booking_id }}/documents/{{ document.id }}/edit">Edit</a>

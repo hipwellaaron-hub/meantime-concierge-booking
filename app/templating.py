@@ -13,6 +13,7 @@ import markupsafe
 from fastapi.templating import Jinja2Templates
 
 from app.services import policy
+from app.utils import format_date_dmy as _format_date_dmy
 from app.utils import format_person_name as _format_person_name
 
 # The venue wordmark, shown on client-facing documents. Optional on
@@ -148,6 +149,7 @@ templates.env.filters["nl2br"] = nl2br
 templates.env.filters["balance_columns"] = balance_columns
 templates.env.filters["client_safe"] = client_safe
 templates.env.filters["person_name"] = _format_person_name
+templates.env.filters["aus_date"] = _format_date_dmy
 templates.env.filters["bullets"] = bullets
 templates.env.filters["line_total"] = line_total
 templates.env.globals["has_venue_logo"] = has_venue_logo

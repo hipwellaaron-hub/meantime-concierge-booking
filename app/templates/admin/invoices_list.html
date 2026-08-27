@@ -37,7 +37,7 @@
           <div class="muted" style="font-size:0.72rem;">{{ invoice.booking.reference_code }}</div>
         </td>
         <td class="muted">{{ invoice.type.value }}</td>
-        <td class="muted">{{ invoice.due_date }}</td>
+        <td class="muted">{{ invoice.due_date | aus_date }}</td>
         <td>${{ "%.2f"|format(invoice.total) }}</td>
         <td>
           <span class="badge">{{ invoice.status.value }}</span>

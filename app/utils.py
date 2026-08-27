@@ -91,3 +91,29 @@ def format_person_name(name: str | None) -> str | None:
         result.append(ch.upper() if capitalize_next and ch.isalpha() else ch)
         capitalize_next = ch in (" ", "-", "'")
     return "".join(result)
+
+
+def format_date_dmy(value) -> str:
+    """Australian day-first display format, DD-MM-YYYY.
+
+    Accepts a date/datetime, an ISO "YYYY-MM-DD" string (how dates sit
+    frozen inside stored document content), or anything else -- which
+    passes through untouched, so placeholders like "Date TBD" and
+    "[REVIEW] ..." markers survive being piped through the template
+    filter. Display only: date <input>s, URLs and JSON payloads keep ISO,
+    which browsers and parsers require.
+    """
+    import datetime as _dt
+
+    if value is None:
+        return ""
+    if isinstance(value, _dt.datetime):
+        value = value.date()
+    if isinstance(value, _dt.date):
+        return value.strftime("%d-%m-%Y")
+    if isinstance(value, str):
+        try:
+            return _dt.date.fromisoformat(value.strip()).strftime("%d-%m-%Y")
+        except ValueError:
+            return value
+    return str(value)
