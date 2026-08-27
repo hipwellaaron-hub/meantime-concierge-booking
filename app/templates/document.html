@@ -78,10 +78,12 @@
       <tr><td class="label">Deposit required</td><td>${{ document.content.deposit_required }}</td></tr>
     </table>
   </section>
+  {% for section in document.content.terms_sections %}
   <section>
-    <h2>Terms</h2>
-    <p class="terms-text {{ 'review' if '[REVIEW]' in document.content.terms_text else '' }}">{{ document.content.terms_text | nl2br }}</p>
+    <h2>{{ section.heading }}</h2>
+    <p class="terms-text {{ 'review' if '[REVIEW]' in section.body else '' }}">{{ section.body | nl2br }}</p>
   </section>
+  {% endfor %}
   {% else %}
   <section>
     <h2>Event Timeline</h2>

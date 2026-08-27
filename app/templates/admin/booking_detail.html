@@ -264,6 +264,7 @@
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <button class="btn danger" type="submit">Delete</button>
           </form>
+          <a href="/admin/bookings/{{ booking.id }}/documents/{{ current_agreement.id }}/edit">Edit</a>
           <a href="/admin/bookings/{{ booking.id }}/documents/{{ current_agreement.id }}/preview" target="_blank">Preview &rarr;</a>
           {% elif current_agreement %}
           <a href="/d/{{ current_agreement.access_token }}" target="_blank">View &rarr;</a>
@@ -293,6 +294,7 @@
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <button class="btn danger" type="submit">Delete</button>
           </form>
+          <a href="/admin/bookings/{{ booking.id }}/documents/{{ current_beo.id }}/edit">Edit</a>
           <a href="/admin/bookings/{{ booking.id }}/documents/{{ current_beo.id }}/preview" target="_blank">Preview &rarr;</a>
           {% elif current_beo %}
           <a href="/d/{{ current_beo.access_token }}" target="_blank">View &rarr;</a>

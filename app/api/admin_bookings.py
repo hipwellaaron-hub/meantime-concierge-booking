@@ -13,7 +13,7 @@ from app.admin_auth import admin_ctx, require_csrf, require_staff
 from app.database import get_db
 from app.models import Booking, Document, Invoice, Space, Venue
 from app.models.booking import BookingStatus, MinReductionReasonCode
-from app.models.document import DocumentType
+from app.models.document import DocumentStatus, DocumentType
 from app.models.invoice import InvoiceStatus
 from app.models.payment import PaymentMethod
 from app.models.staff_user import StaffUser
@@ -27,7 +27,14 @@ from app.services import invoicing
 from app.services import wizard as wizard_service
 from app.services import wizard_generation
 from app.services.attribution import summarize_channel
-from app.services.document_generation import generate_agreement_content, generate_beo_content
+from app.services.document_generation import (
+    REVIEW,
+    build_total_food_spend,
+    compute_food_order_total,
+    generate_agreement_content,
+    generate_beo_content,
+    rebuild_terms_text,
+)
 from app.templating import templates
 from app.utils import is_valid_email, truncate
 
@@ -372,6 +379,114 @@ def preview_document(
     return templates.TemplateResponse(
         request, "document.html", {"document": document, "booking": document.booking, "is_staff_preview": True}
     )
+
+
+def _get_draft_document_or_404(db: Session, booking_id: uuid.UUID, document_id: uuid.UUID) -> Document:
+    document = db.get(Document, document_id)
+    if document is None or document.booking_id != booking_id:
+        raise HTTPException(status_code=404, detail="Document not found on this booking")
+    if document.status != DocumentStatus.draft:
+        raise HTTPException(
+            status_code=409, detail=f"cannot edit a document that is already {document.status.value}"
+        )
+    return document
+
+
+@router.get("/{booking_id}/documents/{document_id}/edit", response_class=HTMLResponse)
+def edit_document_form(
+    booking_id: uuid.UUID,
+    document_id: uuid.UUID,
+    request: Request,
+    db: Session = Depends(get_db),
+    staff: StaffUser = Depends(require_staff),
+):
+    _get_booking_or_404(db, booking_id)
+    document = _get_draft_document_or_404(db, booking_id, document_id)
+    template = (
+        "admin/document_edit_agreement.html"
+        if document.type == DocumentType.agreement
+        else "admin/document_edit_beo.html"
+    )
+    return templates.TemplateResponse(
+        request, template, admin_ctx(request, staff, document=document, booking=document.booking)
+    )
+
+
+@router.post("/{booking_id}/documents/{document_id}/edit", dependencies=[Depends(require_csrf)])
+def save_document_edit(
+    booking_id: uuid.UUID,
+    document_id: uuid.UUID,
+    request: Request,
+    headings: list[str] = Form(default=[]),
+    bodies: list[str] = Form(default=[]),
+    catering_order_and_service_style: str = Form(default=""),
+    bar_structure: str = Form(default=""),
+    room_layout_notes: str = Form(default=""),
+    music_entertainment: str = Form(default=""),
+    special_notes: str = Form(default=""),
+    item_descriptions: list[str] = Form(default=[]),
+    item_quantities: list[str] = Form(default=[]),
+    item_unit_prices: list[str] = Form(default=[]),
+    db: Session = Depends(get_db),
+    staff: StaffUser = Depends(require_staff),
+):
+    """Only the negotiable wording is editable. Everything derived from the
+    booking itself (dates, times, guest counts, reference) is deliberately
+    left out of the form and carried through untouched -- a contract that
+    could silently drift from the live booking record would be worse than
+    one that can't be hand-tweaked at all."""
+    _get_booking_or_404(db, booking_id)
+    document = _get_draft_document_or_404(db, booking_id, document_id)
+    content = dict(document.content)
+
+    if document.type == DocumentType.agreement:
+        sections = [
+            {"heading": heading.strip(), "body": body.strip()}
+            for heading, body in zip(headings, bodies)
+            # A clause blanked out entirely is how the form deletes one.
+            if heading.strip() or body.strip()
+        ]
+        if not sections:
+            raise HTTPException(status_code=422, detail="An agreement needs at least one terms section")
+        content["terms_sections"] = sections
+        content["terms_text"] = rebuild_terms_text(sections)
+    else:
+        line_items = []
+        for description, quantity, unit_price in zip(item_descriptions, item_quantities, item_unit_prices):
+            if not description.strip():
+                continue  # a blanked-out row is how the form deletes a line item
+            try:
+                line_items.append({
+                    "item": description.strip(),
+                    "quantity": int(quantity),
+                    "unit_price": str(Decimal(unit_price)),
+                })
+            except (ValueError, InvalidOperation) as exc:
+                raise HTTPException(
+                    status_code=422, detail=f"'{description.strip()}' needs a whole-number quantity and a valid price"
+                ) from exc
+
+        content["catering_order_and_service_style"] = catering_order_and_service_style.strip()
+        content["bar_structure"] = bar_structure.strip()
+        content["room_layout_notes"] = room_layout_notes.strip()
+        content["music_entertainment"] = music_entertainment.strip()
+        content["special_notes"] = special_notes.strip()
+        content["food_order"] = {
+            "line_items": line_items,
+            "note": None if line_items else f"{REVIEW} no food order captured yet",
+        }
+
+        # Recomputed from the edited lines, never carried over stale. The
+        # deposit already recorded stays as-is (an edit to the food order
+        # says nothing about what's been paid).
+        existing_deposit = (content.get("total_food_spend") or {}).get("deposit_paid")
+        content["total_food_spend"] = build_total_food_spend(
+            compute_food_order_total(line_items),
+            Decimal(existing_deposit) if existing_deposit is not None else None,
+        )
+
+    documents_service.update_content(db, document, content, actor=_actor(staff))
+    return _redirect_to_detail(booking_id)
 
 
 @router.post("/{booking_id}/documents/{document_id}/delete", dependencies=[Depends(require_csrf)])

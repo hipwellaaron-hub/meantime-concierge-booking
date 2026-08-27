@@ -75,11 +75,11 @@ _MEZZANINE_MINIMUM_SPEND_CLAUSE = (
     "total, and be deducted from your final invoice."
 )
 
-# 18th birthday appendix (§3.3) -- appended after the space's own block
-# whenever the booking looks like an 18th (see _looks_like_18th, the same
-# detection already used to flag this at enquiry time).
+# 18th birthday appendix (§3.3) -- appended as its own final clause
+# whenever the booking looks like an 18th (see looks_like_18th, the same
+# detection already used to flag this at enquiry time). No heading line in
+# the body itself: "18th Birthday Conditions" is the section's own heading.
 _EIGHTEENTH_APPENDIX = (
-    "18th Birthday Conditions\n\n"
     "There are a few standard conditions that apply to all 18th birthday events:\n\n"
     "- A responsible adult, parent or guardian must be present for the full duration of the event and "
     "actively supervising.\n"
@@ -116,7 +116,17 @@ def _guest_numbers_clause(space_name: str, agreed_min_adults: int) -> str:
     )
 
 
-def _terms_text(booking: Booking) -> str:
+def rebuild_terms_text(terms_sections: list[dict]) -> str:
+    """The flattened plain-text form of terms_sections, kept alongside the
+    structured form for anything that wants one block of text (and so the
+    existing content["terms_text"] substring assertions in
+    tests/test_documents.py need no change). Shared by generation and by
+    the document edit save path, so the two never drift out of the same
+    "Heading\\n\\nBody" join format."""
+    return "\n\n".join(f"{section['heading']}\n\n{section['body']}" for section in terms_sections)
+
+
+def _terms_sections(booking: Booking) -> list[dict]:
     space_name = booking.space.name
     if space_name == "The Loft":
         minimum_spend_clause = _LOFT_MINIMUM_SPEND_CLAUSE
@@ -127,27 +137,32 @@ def _terms_text(booking: Booking) -> str:
         # yet -- Aaron's own words: "flag and stop with a [REVIEW]... do
         # not invent terms." No guest minimum and no shortfall charge at
         # all for the Lounge, so a Guest Numbers clause here would be
-        # actively wrong, not just unconfirmed.
-        return f"{REVIEW} no Master Policy contract clause exists yet for {space_name} -- confirm with Aaron before sending"
+        # actively wrong, not just unconfirmed. Still a one-item section
+        # list (not a bare string) so the template and the editor can
+        # treat every space the same way -- and so Aaron can type the
+        # Lounge's real terms in directly via the editor once they exist.
+        return [{
+            "heading": "Terms",
+            "body": f"{REVIEW} no Master Policy contract clause exists yet for {space_name} -- confirm with Aaron before sending",
+        }]
 
-    blocks = [
-        ("Deposits", _DEPOSITS_CLAUSE),
-        ("Credit Card", _CREDIT_CARD_CLAUSE),
-        ("Guest Numbers", _guest_numbers_clause(space_name, booking.agreed_min_adults)),
-        ("Minimum Spend", minimum_spend_clause),
-        ("Booking Agreement", _BOOKING_AGREEMENT_CLAUSE),
-        ("Decorations", _DECORATIONS_CLAUSE),
-        ("Credit Card Surcharges", _CREDIT_CARD_SURCHARGE_CLAUSE),
-        ("Cancellation Policy", _CANCELLATION_POLICY_CLAUSE),
-        ("Public Holidays", _PUBLIC_HOLIDAYS_CLAUSE),
-        ("Trading Hours", _TRADING_HOURS_CLAUSE),
+    sections = [
+        {"heading": "Deposits", "body": _DEPOSITS_CLAUSE},
+        {"heading": "Credit Card", "body": _CREDIT_CARD_CLAUSE},
+        {"heading": "Guest Numbers", "body": _guest_numbers_clause(space_name, booking.agreed_min_adults)},
+        {"heading": "Minimum Spend", "body": minimum_spend_clause},
+        {"heading": "Booking Agreement", "body": _BOOKING_AGREEMENT_CLAUSE},
+        {"heading": "Decorations", "body": _DECORATIONS_CLAUSE},
+        {"heading": "Credit Card Surcharges", "body": _CREDIT_CARD_SURCHARGE_CLAUSE},
+        {"heading": "Cancellation Policy", "body": _CANCELLATION_POLICY_CLAUSE},
+        {"heading": "Public Holidays", "body": _PUBLIC_HOLIDAYS_CLAUSE},
+        {"heading": "Trading Hours", "body": _TRADING_HOURS_CLAUSE},
     ]
-    text = "\n\n".join(f"{heading}\n\n{body}" for heading, body in blocks)
 
     if looks_like_18th(booking.event_type or "", booking.event_name, booking.notes):
-        text += "\n\n" + _EIGHTEENTH_APPENDIX
+        sections.append({"heading": "18th Birthday Conditions", "body": _EIGHTEENTH_APPENDIX})
 
-    return text
+    return sections
 
 
 def _format_time(value) -> str:
@@ -195,6 +210,32 @@ def compute_food_order_total(line_items: list[dict]) -> Decimal | None:
         raise ValueError(f"malformed food order line item: {exc}") from exc
 
 
+def build_total_food_spend(food_total: Decimal | None, deposit_paid: Decimal | None) -> dict:
+    """The total_food_spend block, derived from the two figures it depends
+    on. Shared by generation and by the document edit save path so an
+    edited food order can never keep a note that contradicts its own
+    numbers (e.g. still saying "add a food order" once one exists)."""
+    if food_total is None:
+        note = f"{REVIEW} add a food order above to compute the total"
+        balance_due = None
+    elif deposit_paid is None:
+        note = (
+            f"{REVIEW} deposit paid / balance due aren't derivable yet -- "
+            "payments aren't tracked in Concierge until Phase 3"
+        )
+        balance_due = None
+    else:
+        note = None
+        balance_due = food_total - deposit_paid
+
+    return {
+        "total": str(food_total) if food_total is not None else None,
+        "deposit_paid": str(deposit_paid) if deposit_paid is not None else None,
+        "balance_due": str(balance_due) if balance_due is not None else None,
+        "note": note,
+    }
+
+
 def generate_beo_content(
     booking: Booking,
     food_order_line_items: list[dict] | None = None,
@@ -215,19 +256,6 @@ def generate_beo_content(
     food_order_line_items = food_order_line_items or []
     food_total = compute_food_order_total(food_order_line_items)
 
-    if food_total is None:
-        total_food_spend_note = f"{REVIEW} add a food order above to compute the total"
-        balance_due = None
-    elif deposit_paid is None:
-        total_food_spend_note = (
-            f"{REVIEW} deposit paid / balance due aren't derivable yet -- "
-            "payments aren't tracked in Concierge until Phase 3"
-        )
-        balance_due = None
-    else:
-        total_food_spend_note = None
-        balance_due = food_total - deposit_paid
-
     return {
         "event_timeline": {
             "event_date": _format_date(booking.event_date),
@@ -240,12 +268,7 @@ def generate_beo_content(
             "line_items": food_order_line_items,
             "note": None if food_order_line_items else f"{REVIEW} no food order captured yet",
         },
-        "total_food_spend": {
-            "total": str(food_total) if food_total is not None else None,
-            "deposit_paid": str(deposit_paid) if deposit_paid is not None else None,
-            "balance_due": str(balance_due) if balance_due is not None else None,
-            "note": total_food_spend_note,
-        },
+        "total_food_spend": build_total_food_spend(food_total, deposit_paid),
         "bar_structure": bar_structure or f"{REVIEW} add bar structure",
         "room_layout_notes": room_layout_notes if room_layout_notes is not None else f"{REVIEW} add room layout notes",
         "music_entertainment": music_entertainment or f"{REVIEW} add music/entertainment detail",
@@ -269,6 +292,7 @@ def generate_agreement_content(booking: Booking) -> dict:
     is true today; an unpaid invoice should always point at the current
     bank details."""
     space = booking.space
+    terms_sections = _terms_sections(booking)
     return {
         "venue": policy.VENUE_TRADING_NAME,
         "space_name": space.name,
@@ -281,7 +305,12 @@ def generate_agreement_content(booking: Booking) -> dict:
         "min_food_spend": str(space.min_food_spend),
         "standard_min_adults": space.standard_min_adults,
         "deposit_required": str(STANDARD_DEPOSIT),
-        "terms_text": _terms_text(booking),
+        # Both forms are stored: terms_sections is what the template
+        # renders (real per-clause headings) and what the staff editor
+        # edits; terms_text is the same content flattened, for anything
+        # that wants one block of plain text.
+        "terms_sections": terms_sections,
+        "terms_text": rebuild_terms_text(terms_sections),
         "venue_abn": policy.VENUE_ABN,
         "venue_address": policy.VENUE_ADDRESS,
         "venue_contact_name": policy.VENUE_CONTACT_NAME,

@@ -71,6 +71,38 @@ def create_new_version(db: Session, booking: Booking, doc_type: DocumentType, co
     return document
 
 
+def update_content(db: Session, document: Document, content: dict, *, actor: str) -> Document:
+    """Hand-edit a draft's content in place. Draft-only, for the same
+    reason delete_draft is: a draft was never shown to a client, so
+    there's nothing for a client to have seen change under them. Anything
+    already sent/viewed/signed must go through create_new_version()
+    instead -- a link a client already holds must never silently start
+    resolving to different words.
+
+    Deliberately NOT a new version per save: one audit event per edit is
+    enough to know it was hand-edited, by whom and when, without spawning
+    a version per keystroke. Regenerating afterward still discards the
+    edit and re-derives from the booking, exactly as before.
+    """
+    db.refresh(document, with_for_update=True)
+    if document.status != DocumentStatus.draft:
+        raise ValueError(f"cannot edit a document that is already {document.status.value} -- only a draft can be edited")
+
+    document.content = content
+    db.add(
+        BookingEvent(
+            booking_id=document.booking_id,
+            event_type="document_edited",
+            field_name=f"{document.type.value}_version",
+            new_value=str(document.version),
+            actor=actor,
+        )
+    )
+    db.commit()
+    db.refresh(document)
+    return document
+
+
 def _transition(db: Session, document: Document, new_status: DocumentStatus, *, actor: str) -> Document:
     old_status = document.status
     document.status = new_status

@@ -1,0 +1,52 @@
+{% extends "admin/_base.html" %}
+{% block title %}Edit agreement{% endblock %}
+{% block content %}
+<p><a href="/admin/bookings/{{ booking.id }}">&larr; {{ booking.event_name }}</a></p>
+<h1>Edit agreement</h1>
+<p class="muted">
+  Draft v{{ document.version }} &middot; {{ booking.reference_code }}.
+  Only the terms below are editable. Venue, date, time, guest numbers and the deposit figure always come
+  straight from the booking record, so the contract can never drift from what's actually in Concierge.
+</p>
+
+<form method="post" action="/admin/bookings/{{ booking.id }}/documents/{{ document.id }}/edit">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+  <div class="card">
+    <h2>Terms</h2>
+    <p class="muted">Clear a clause's heading and body to remove it.</p>
+    <div id="sections">
+      {% for section in document.content.terms_sections %}
+      <div class="clause">
+        <label>Heading</label>
+        <input type="text" name="headings" value="{{ section.heading }}" maxlength="255">
+        <label>Body</label>
+        <textarea name="bodies" rows="5">{{ section.body }}</textarea>
+        <hr>
+      </div>
+      {% endfor %}
+    </div>
+    <button type="button" class="secondary" id="add-clause">Add a clause</button>
+  </div>
+
+  <button type="submit">Save changes</button>
+  <a class="secondary-link" href="/admin/bookings/{{ booking.id }}">Cancel</a>
+</form>
+
+<template id="clause-template">
+  <div class="clause">
+    <label>Heading</label>
+    <input type="text" name="headings" value="" maxlength="255">
+    <label>Body</label>
+    <textarea name="bodies" rows="5"></textarea>
+    <hr>
+  </div>
+</template>
+
+<script>
+  document.getElementById("add-clause").addEventListener("click", function () {
+    var tpl = document.getElementById("clause-template");
+    document.getElementById("sections").appendChild(tpl.content.cloneNode(true));
+  });
+</script>
+{% endblock %}

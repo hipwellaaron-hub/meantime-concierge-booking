@@ -1,0 +1,66 @@
+{% extends "admin/_base.html" %}
+{% block title %}Edit event order{% endblock %}
+{% block content %}
+<p><a href="/admin/bookings/{{ booking.id }}">&larr; {{ booking.event_name }}</a></p>
+<h1>Edit event order</h1>
+<p class="muted">
+  Draft v{{ document.version }} &middot; {{ booking.reference_code }}.
+  Event date, times and guest numbers come straight from the booking record and aren't editable here.
+  The food total and balance due recalculate from the line items when you save.
+</p>
+
+<form method="post" action="/admin/bookings/{{ booking.id }}/documents/{{ document.id }}/edit">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+  <div class="card">
+    <h2>Food order</h2>
+    <p class="muted">Clear an item's description to remove that line.</p>
+    <div id="line-items">
+      {% for item in document.content.food_order.line_items %}
+      <div class="field-row line-item">
+        <div><label>Item</label><input type="text" name="item_descriptions" value="{{ item.item }}" maxlength="255"></div>
+        <div><label>Qty</label><input type="number" name="item_quantities" value="{{ item.quantity }}" min="0" step="1"></div>
+        <div><label>Unit price</label><input type="text" name="item_unit_prices" value="{{ item.unit_price }}"></div>
+      </div>
+      {% endfor %}
+    </div>
+    <button type="button" class="secondary" id="add-item">Add an item</button>
+  </div>
+
+  <div class="card">
+    <h2>Details</h2>
+    <label>Catering order &amp; service style</label>
+    <textarea name="catering_order_and_service_style" rows="3">{{ document.content.catering_order_and_service_style }}</textarea>
+
+    <label>Bar structure</label>
+    <textarea name="bar_structure" rows="3">{{ document.content.bar_structure }}</textarea>
+
+    <label>Room layout notes</label>
+    <textarea name="room_layout_notes" rows="3">{{ document.content.room_layout_notes }}</textarea>
+
+    <label>Music / entertainment</label>
+    <textarea name="music_entertainment" rows="3">{{ document.content.music_entertainment }}</textarea>
+
+    <label>Special notes</label>
+    <textarea name="special_notes" rows="4">{{ document.content.special_notes }}</textarea>
+  </div>
+
+  <button type="submit">Save changes</button>
+  <a class="secondary-link" href="/admin/bookings/{{ booking.id }}">Cancel</a>
+</form>
+
+<template id="line-item-template">
+  <div class="field-row line-item">
+    <div><label>Item</label><input type="text" name="item_descriptions" value="" maxlength="255"></div>
+    <div><label>Qty</label><input type="number" name="item_quantities" value="1" min="0" step="1"></div>
+    <div><label>Unit price</label><input type="text" name="item_unit_prices" value="0.00"></div>
+  </div>
+</template>
+
+<script>
+  document.getElementById("add-item").addEventListener("click", function () {
+    var tpl = document.getElementById("line-item-template");
+    document.getElementById("line-items").appendChild(tpl.content.cloneNode(true));
+  });
+</script>
+{% endblock %}

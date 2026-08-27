@@ -6,8 +6,22 @@ from fastapi.testclient import TestClient
 from app.database import get_db
 from app.main import app
 from app.models.document import DocumentStatus, DocumentType
-from app.services.document_generation import compute_food_order_total, generate_agreement_content, generate_beo_content
-from app.services.documents import create_new_version, delete_draft, get_by_token, get_current, mark_sent, record_view, sign
+from app.services.document_generation import (
+    compute_food_order_total,
+    generate_agreement_content,
+    generate_beo_content,
+    rebuild_terms_text,
+)
+from app.services.documents import (
+    create_new_version,
+    delete_draft,
+    get_by_token,
+    get_current,
+    mark_sent,
+    record_view,
+    sign,
+    update_content,
+)
 
 
 def test_new_version_supersedes_not_overwrites(db, booking):
@@ -439,8 +453,29 @@ def test_guest_numbers_clause_omits_worked_example_when_minimum_too_low_for_it(d
 def test_lounge_has_no_fabricated_terms(db, lounge):
     booking = _booking_in(db, lounge)
     content = generate_agreement_content(booking)
-    assert content["terms_text"].startswith("[REVIEW]")
+    # One section, whose body is the REVIEW marker -- same shape as every
+    # other space so the template and the staff editor need no special case.
+    assert len(content["terms_sections"]) == 1
+    assert content["terms_sections"][0]["body"].startswith("[REVIEW]")
     assert "minimum requirement" not in content["terms_text"]  # Lounge has no guest minimum at all
+
+
+def test_agreement_terms_are_structured_sections_not_one_blob(db, loft):
+    content = generate_agreement_content(_booking_in(db, loft))
+    headings = [s["heading"] for s in content["terms_sections"]]
+    assert "Deposits" in headings
+    assert "Cancellation Policy" in headings
+    assert all(s["body"] for s in content["terms_sections"])
+    # terms_text stays the flattened equivalent, for anything wanting one block
+    assert content["terms_text"] == rebuild_terms_text(content["terms_sections"])
+
+
+def test_18th_conditions_are_their_own_section_without_a_duplicated_heading(db, loft):
+    content = generate_agreement_content(_booking_in(db, loft, event_type="18th Birthday"))
+    eighteenth = [s for s in content["terms_sections"] if s["heading"] == "18th Birthday Conditions"]
+    assert len(eighteenth) == 1
+    # The heading lives on the section, not repeated at the top of the body.
+    assert not eighteenth[0]["body"].startswith("18th Birthday Conditions")
 
 
 def test_18th_birthday_appends_the_conditions_block(db, loft):
@@ -544,3 +579,114 @@ def test_delete_sent_document_is_rejected(db, booking):
         delete_draft(db, document, actor="test")
     # still there, untouched
     assert get_by_token(db, document.access_token) is not None
+
+
+# --- draft-only content editing --------------------------------------------------
+
+
+def test_update_content_persists_an_edited_clause(db, booking):
+    document = create_new_version(db, booking, DocumentType.agreement, generate_agreement_content(booking), actor="test")
+    content = dict(document.content)
+    sections = [dict(s) for s in content["terms_sections"]]
+    sections[0]["body"] = "A hand-negotiated deposit arrangement applies to this booking."
+    content["terms_sections"] = sections
+    content["terms_text"] = rebuild_terms_text(sections)
+
+    update_content(db, document, content, actor="staff:aaron@meantime.com.au")
+
+    assert document.content["terms_sections"][0]["body"].startswith("A hand-negotiated deposit")
+    assert "A hand-negotiated deposit" in document.content["terms_text"]
+    assert document.version == 1  # edited in place, not versioned per save
+    assert "document_edited" in {e.event_type for e in booking.events}
+
+
+def test_update_content_rejected_once_sent(db, booking):
+    document = create_new_version(db, booking, DocumentType.agreement, generate_agreement_content(booking), actor="test")
+    document = mark_sent(db, document, actor="test")
+    original = dict(document.content)
+
+    with pytest.raises(ValueError):
+        update_content(db, document, {"terms_sections": [{"heading": "X", "body": "Y"}]}, actor="test")
+
+    db.refresh(document)
+    assert document.content == original
+
+
+def test_edit_form_is_refused_for_a_sent_document(admin_client, db, booking):
+    document = create_new_version(db, booking, DocumentType.agreement, generate_agreement_content(booking), actor="test")
+    mark_sent(db, document, actor="test")
+    response = admin_client.get(f"/admin/bookings/{booking.id}/documents/{document.id}/edit")
+    assert response.status_code == 409
+
+
+def test_editing_a_beo_line_item_recomputes_the_total(admin_client, db, booking):
+    import re
+    from decimal import Decimal
+
+    content = generate_beo_content(
+        booking,
+        [{"item": "Grazing Platter", "quantity": 1, "unit_price": "250.00"}],
+        deposit_paid=Decimal("500.00"),
+    )
+    document = create_new_version(db, booking, DocumentType.beo, content, actor="test")
+
+    form = admin_client.get(f"/admin/bookings/{booking.id}/documents/{document.id}/edit")
+    assert form.status_code == 200
+    csrf_token = re.search(r'name="csrf_token" value="([^"]+)"', form.text).group(1)
+
+    response = admin_client.post(
+        f"/admin/bookings/{booking.id}/documents/{document.id}/edit",
+        data={
+            "csrf_token": csrf_token,
+            "item_descriptions": ["Grazing Platter"],
+            "item_quantities": ["4"],
+            "item_unit_prices": ["250.00"],
+            "catering_order_and_service_style": "Shared platters on arrival",
+            "bar_structure": "Bar tab",
+            "room_layout_notes": "Long table",
+            "music_entertainment": "DJ",
+            "special_notes": "",
+        },
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+
+    db.refresh(document)
+    assert document.content["food_order"]["line_items"][0]["quantity"] == 4
+    assert document.content["total_food_spend"]["total"] == "1000.00"
+    # deposit carried through untouched, balance recomputed against it
+    assert document.content["total_food_spend"]["deposit_paid"] == "500.00"
+    assert document.content["total_food_spend"]["balance_due"] == "500.00"
+
+
+def test_editing_a_beo_food_order_clears_the_no_food_order_note(admin_client, db, booking):
+    """A BEO generated with no food order carries a '[REVIEW] add a food
+    order' note. Once one is typed in, that note must not survive -- it
+    would contradict the total sitting right next to it."""
+    import re
+
+    document = create_new_version(db, booking, DocumentType.beo, generate_beo_content(booking), actor="test")
+    assert "add a food order" in document.content["total_food_spend"]["note"]
+
+    form = admin_client.get(f"/admin/bookings/{booking.id}/documents/{document.id}/edit")
+    csrf_token = re.search(r'name="csrf_token" value="([^"]+)"', form.text).group(1)
+    admin_client.post(
+        f"/admin/bookings/{booking.id}/documents/{document.id}/edit",
+        data={
+            "csrf_token": csrf_token,
+            "item_descriptions": ["Grazing Platter"],
+            "item_quantities": ["3"],
+            "item_unit_prices": ["250.00"],
+            "catering_order_and_service_style": "Shared platters",
+            "bar_structure": "Cash bar",
+            "room_layout_notes": "",
+            "music_entertainment": "Spotify",
+            "special_notes": "",
+        },
+        follow_redirects=False,
+    )
+
+    db.refresh(document)
+    totals = document.content["total_food_spend"]
+    assert totals["total"] == "750.00"
+    assert "add a food order" not in (totals["note"] or "")
