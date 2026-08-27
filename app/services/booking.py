@@ -523,6 +523,13 @@ def assign_space_and_time(
     )
     db.commit()
     db.refresh(booking)
+
+    # Assigning a real space can be the last thing standing between a
+    # booking and confirmation: auto_confirm_if_ready refuses while a
+    # booking is still in the non-bookable placeholder, so a client who
+    # signed and paid before their room was decided would otherwise stay
+    # at enquiry forever with nothing left to trigger a re-check.
+    auto_confirm_if_ready(db, booking, actor=actor)
     return booking
 
 

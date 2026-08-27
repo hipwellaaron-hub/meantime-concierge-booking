@@ -245,3 +245,44 @@ def test_auto_confirm_is_a_no_op_on_an_already_confirmed_booking(db, loft):
     assert booking.status == BookingStatus.confirmed
 
     assert auto_confirm_if_ready(db, booking, actor="test") is False
+
+
+def test_assigning_a_space_confirms_a_booking_that_was_only_waiting_on_one(db, hamilton, loft):
+    """The real case this exists for: a client signs and pays while the
+    booking is still in the Unassigned placeholder. Nothing else would
+    ever re-check, so assigning the room has to be a trigger too."""
+    from app.models import Space
+    from app.services.booking import assign_space_and_time
+    from app.services.ivvy_import import get_unassigned_space_id
+
+    unassigned = db.get(Space, get_unassigned_space_id(db, hamilton))
+    booking = _booking(db, unassigned, name="Waiting On A Room")
+    _sign_agreement(db, booking)
+    _pay_deposit(db, booking)
+
+    db.refresh(booking)
+    assert booking.status != BookingStatus.confirmed  # correctly refused: no real room yet
+
+    assign_space_and_time(
+        db, booking, space_id=loft.id,
+        start_time=dt.time(19, 0), end_time=dt.time(23, 30), actor="staff:test",
+    )
+
+    db.refresh(booking)
+    assert booking.status == BookingStatus.confirmed
+
+
+def test_assigning_a_space_does_not_confirm_an_unsigned_booking(db, hamilton, loft):
+    from app.models import Space
+    from app.services.booking import assign_space_and_time
+    from app.services.ivvy_import import get_unassigned_space_id
+
+    unassigned = db.get(Space, get_unassigned_space_id(db, hamilton))
+    booking = _booking(db, unassigned, name="Room But Nothing Else")
+
+    assign_space_and_time(
+        db, booking, space_id=loft.id,
+        start_time=dt.time(9, 0), end_time=dt.time(11, 0), actor="staff:test",
+    )
+    db.refresh(booking)
+    assert booking.status != BookingStatus.confirmed

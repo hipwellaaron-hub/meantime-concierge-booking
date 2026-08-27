@@ -33,9 +33,21 @@ def test_dashboard_counts_match_real_data(admin_client, db, loft):
 
     resp = admin_client.get("/admin/")
     assert resp.status_code == 200
-    counts = [int(n) for n in re.findall(r'<div class="num"[^>]*>(\d+)</div>', resp.text)]
-    # open_enquiries, triage, wizard_ready, unpaid_invoices, notification_failures
-    assert counts == [1, 0, 0, 1, 0]
+    # Matched by label rather than position: asserting a bare list of
+    # numbers meant adding a tile broke this test without anything
+    # actually being wrong.
+    tiles = dict(
+        (label.strip(), int(number))
+        for number, label in re.findall(
+            r'<div class="num"[^>]*>(\d+)</div>\s*<div class="label">([^<]+)</div>', resp.text
+        )
+    )
+    assert tiles["Open enquiries"] == 1
+    assert tiles["Awaiting triage"] == 0
+    assert tiles["Wizard-ready"] == 0
+    assert tiles["Unpaid invoices"] == 1
+    assert tiles["Enquiry emails failed"] == 0
+    assert tiles["BEOs to review"] == 0
 
 
 def test_dashboard_shows_recent_activity(admin_client, db, booking):

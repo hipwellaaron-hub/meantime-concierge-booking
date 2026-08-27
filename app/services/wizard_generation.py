@@ -14,6 +14,7 @@ fields. Anything outstanding is collected into a separate list instead.
 """
 
 import dataclasses
+import logging
 import uuid
 from decimal import Decimal
 
@@ -28,7 +29,11 @@ from app.models.wizard_session import WizardSession
 from app.services import catalogue
 from app.services import documents as documents_service
 from app.services import invoicing
+from app.services import notifications
 from app.services.document_generation import generate_beo_content
+from app.utils import truncate
+
+logger = logging.getLogger(__name__)
 
 
 @dataclasses.dataclass
@@ -263,4 +268,54 @@ def generate_beo_and_invoice(db: Session, session: WizardSession, *, actor: str)
     db.refresh(document)
     db.refresh(invoice)
 
+    _notify_wizard_submission(db, booking, outstanding_items=outstanding_items, actor=actor)
+
     return WizardGenerationResult(document=document, invoice=invoice, outstanding_items=outstanding_items, is_clean=is_clean)
+
+
+def _notify_wizard_submission(db: Session, booking: Booking, *, outstanding_items: list[str], actor: str) -> None:
+    """Tells the venue a client has finished their wizard. Until this
+    existed, "escalated to Aaron" wrote a line to the audit trail and
+    stopped -- nothing actually reached him, so a submission could sit
+    unseen inside the 14-day window where details stop being negotiable.
+
+    Never raises, and never lets a failed send undo the submission: the
+    client has completed their wizard and the BEO exists either way. A
+    failure is written to the audit trail so it's visible in the app,
+    which is also the record the dashboard's own BEO worklist relies on
+    (that list is built from BEO drafts, not from this email, so it works
+    whether or not the email ever sends)."""
+    if not notifications.is_gmail_smtp_configured():
+        logger.warning(
+            "Wizard submission notification not sent for %s: Gmail SMTP is not configured", booking.reference_code
+        )
+        db.add(
+            BookingEvent(
+                booking_id=booking.id,
+                event_type="wizard_notification_failed",
+                new_value="Gmail SMTP is not configured",
+                actor=actor,
+            )
+        )
+        db.commit()
+        return
+
+    try:
+        notifications.send_wizard_submission_email(
+            booking, outstanding_items=outstanding_items, dashboard_base_url=settings.dashboard_base_url
+        )
+    except Exception as exc:  # noqa: BLE001 -- a mail problem must never lose a completed submission
+        logger.exception("Wizard submission notification failed for %s", booking.reference_code)
+        db.add(
+            BookingEvent(
+                booking_id=booking.id,
+                event_type="wizard_notification_failed",
+                new_value=truncate(str(exc), 500),
+                actor=actor,
+            )
+        )
+        db.commit()
+        return
+
+    db.add(BookingEvent(booking_id=booking.id, event_type="wizard_notification_sent", actor=actor))
+    db.commit()

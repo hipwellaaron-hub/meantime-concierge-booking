@@ -211,3 +211,35 @@ def sign(db: Session, document: Document, *, signer_name: str, signer_ip: str) -
             logger.exception("Auto-confirm after signing failed for document %s", document.id)
 
     return document
+
+
+def get_beos_awaiting_review(db: Session, venue) -> list[Document]:
+    """Current BEO drafts on live bookings: prepared but not yet sent.
+
+    Self-clearing in the same way every other worklist in this app is --
+    it reads current state rather than a delta, so sending the BEO (or
+    the booking going terminal) drops it off with nothing to tick.
+
+    Deliberately not restricted to wizard-generated BEOs. A draft BEO is
+    awaiting review whether a client's wizard produced it or a staff
+    member generated it by hand, and a list that quietly omitted half of
+    them would be worse than no list.
+    """
+    from app.models import Booking, Space
+    from app.services.booking import TERMINAL_STATUSES
+
+    return list(
+        db.scalars(
+            select(Document)
+            .join(Booking, Document.booking_id == Booking.id)
+            .join(Space, Booking.space_id == Space.id)
+            .where(
+                Space.venue_id == venue.id,
+                Document.type == DocumentType.beo,
+                Document.status == DocumentStatus.draft,
+                Document.is_current.is_(True),
+                Booking.status.notin_(TERMINAL_STATUSES),
+            )
+            .order_by(Booking.event_date)
+        ).all()
+    )

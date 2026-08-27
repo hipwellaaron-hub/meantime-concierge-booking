@@ -170,4 +170,30 @@
   <div class="empty-state">No bookings currently wizard-ready.</div>
   {% endif %}
 </div>
+
+<div class="card section-gap" id="beos-to-review">
+  <h2>BEOs to review ({{ beos_to_review | length }})</h2>
+  <p class="muted">Prepared but not yet sent. Clears itself once the BEO is sent.</p>
+  {% if beos_to_review %}
+  <table>
+    <thead><tr><th>Event</th><th>Reference</th><th>Date</th><th>Version</th><th></th></tr></thead>
+    <tbody>
+    {% for document in beos_to_review %}
+      <tr>
+        <td><a href="/admin/bookings/{{ document.booking_id }}">{{ document.booking.event_name }}</a></td>
+        <td class="muted">{{ document.booking.reference_code }}</td>
+        <td>{{ document.booking.event_date if document.booking.event_date else "Date TBD" }}</td>
+        <td class="muted">v{{ document.version }}</td>
+        <td>
+          <a href="/admin/bookings/{{ document.booking_id }}/documents/{{ document.id }}/edit">Edit</a>
+          <a href="/admin/bookings/{{ document.booking_id }}/documents/{{ document.id }}/preview" target="_blank">Preview &rarr;</a>
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty-state">No BEOs waiting on review.</div>
+  {% endif %}
+</div>
 {% endblock %}

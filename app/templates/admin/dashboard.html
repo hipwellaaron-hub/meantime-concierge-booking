@@ -3,7 +3,7 @@
 {% block content %}
 <h1>Dashboard</h1>
 
-<div class="grid cols-5">
+<div class="grid cols-6">
   <a class="card stat" href="/admin/bookings?status=enquiry" style="text-decoration:none;">
     <div class="num">{{ counts.open_enquiries }}</div>
     <div class="label">Open enquiries</div>
@@ -15,6 +15,10 @@
   <a class="card stat" href="/admin/triage" style="text-decoration:none;">
     <div class="num">{{ counts.wizard_ready }}</div>
     <div class="label">Wizard-ready</div>
+  </a>
+  <a class="card stat" href="/admin/triage#beos-to-review" style="text-decoration:none; {% if counts.beos_to_review %}border-color: var(--gold);{% endif %}">
+    <div class="num">{{ counts.beos_to_review }}</div>
+    <div class="label">BEOs to review</div>
   </a>
   <a class="card stat" href="/admin/invoices?status=sent" style="text-decoration:none;">
     <div class="num">{{ counts.unpaid_invoices }}</div>

@@ -72,8 +72,14 @@
   .grid { display: grid; gap: 18px; }
   .grid.cols-4 { grid-template-columns: repeat(4, 1fr); }
   .grid.cols-5 { grid-template-columns: repeat(5, 1fr); }
+  .grid.cols-6 { grid-template-columns: repeat(6, 1fr); }
+  /* Six tiles get too narrow to read before the phone breakpoint, so they
+     drop to three across first rather than squeezing on a laptop. */
+  @media (max-width: 1100px) {
+    .grid.cols-6 { grid-template-columns: repeat(3, 1fr); }
+  }
   @media (max-width: 800px) {
-    .grid.cols-4, .grid.cols-5 { grid-template-columns: repeat(2, 1fr); }
+    .grid.cols-4, .grid.cols-5, .grid.cols-6 { grid-template-columns: repeat(2, 1fr); }
   }
 
   table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }

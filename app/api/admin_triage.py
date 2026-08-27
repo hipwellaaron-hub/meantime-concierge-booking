@@ -8,6 +8,7 @@ from app.database import get_db
 from app.models import Space, Venue
 from app.models.staff_user import StaffUser
 from app.services import booking as booking_service
+from app.services import documents as documents_service
 from app.services import enquiry_classification, ivvy_import
 from app.services import wizard as wizard_service
 from app.templating import templates
@@ -28,6 +29,7 @@ def triage(request: Request, db: Session = Depends(get_db), staff: StaffUser = D
     flagged_in_progress = enquiry_classification.get_flagged_bookings_in_progress(db, venue)
     unrecorded_min_reductions = booking_service.get_bookings_with_unrecorded_minimum_reduction(db, venue.id)
     notification_failures = enquiry_classification.get_enquiry_notification_failures(db, venue)
+    beos_to_review = documents_service.get_beos_awaiting_review(db, venue)
     bookable_spaces = db.scalars(
         select(Space).where(Space.venue_id == venue.id, Space.is_bookable.is_(True)).order_by(Space.name)
     ).all()
@@ -43,6 +45,7 @@ def triage(request: Request, db: Session = Depends(get_db), staff: StaffUser = D
             flagged_in_progress=flagged_in_progress,
             unrecorded_min_reductions=unrecorded_min_reductions,
             notification_failures=notification_failures,
+            beos_to_review=beos_to_review,
             bookable_spaces=bookable_spaces,
         ),
     )

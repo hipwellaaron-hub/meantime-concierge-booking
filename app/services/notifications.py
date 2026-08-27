@@ -188,3 +188,68 @@ def send_enquiry_notification_email(booking: Booking, *, flags: list[str], dashb
     message.set_content(build_enquiry_notification_body(booking, flags=flags, dashboard_base_url=dashboard_base_url))
 
     _send_via_gmail_smtp(message)
+
+
+def build_wizard_submission_subject(booking: Booking) -> str:
+    """Leads with the reference so it's identifiable straight from a phone
+    lock screen, matching how the enquiry subject is built."""
+    return f"{booking.reference_code} has completed the Guided Booking Wizard"
+
+
+def build_wizard_submission_body(
+    booking: Booking, *, outstanding_items: list[str], dashboard_base_url: str
+) -> str:
+    """Plain text, same as the enquiry notification and for the same
+    reason: read on a phone, and it's a working document rather than
+    anything polished. Leads with whether the submission needs a human,
+    because that's the only thing that changes what Aaron does next."""
+    date_str = booking.event_date.isoformat() if booking.event_date else "Not set"
+    guest_total = booking.adult_count + booking.child_count
+
+    if outstanding_items:
+        lines = [
+            f"NEEDS REVIEW ({len(outstanding_items)} item(s))",
+            "",
+            "The BEO and invoice were prepared as drafts and have NOT been sent:",
+        ]
+        lines += [f"- {item}" for item in outstanding_items]
+    else:
+        lines = ["Submission was clean -- nothing outstanding."]
+
+    lines += [
+        "",
+        "BOOKING",
+        f"Reference: {booking.reference_code}",
+        f"Event: {booking.event_name}",
+        f"Date: {date_str}",
+        f"Space: {booking.space.name}",
+        f"Guests: {guest_total} total ({booking.adult_count} adults, {booking.child_count} children)",
+        "",
+        f"Review the BEO: {dashboard_base_url}/admin/bookings/{booking.id}",
+    ]
+    return "\n".join(lines)
+
+
+def send_wizard_submission_email(
+    booking: Booking, *, outstanding_items: list[str], dashboard_base_url: str
+) -> None:
+    """Fires when a client finishes the Guided Booking Wizard. Goes to the
+    venue's own inbox only -- the client gets the wizard's own confirmation
+    screen and is never emailed by this system.
+
+    No Reply-To to the client here, unlike the enquiry notification: this
+    isn't a message to reply to, it's a prompt to go and review a BEO.
+
+    Single attempt, raises on failure. The caller
+    (app.services.wizard_generation) owns swallowing that so a failed
+    notification can never lose a client's completed submission."""
+    message = EmailMessage()
+    message["From"] = f"Meantime Concierge <{DIGEST_GMAIL_ADDRESS}>"
+    message["To"] = ENQUIRY_NOTIFICATION_RECIPIENT
+    message["Subject"] = build_wizard_submission_subject(booking)
+    message.set_content(
+        build_wizard_submission_body(
+            booking, outstanding_items=outstanding_items, dashboard_base_url=dashboard_base_url
+        )
+    )
+    _send_via_gmail_smtp(message)
