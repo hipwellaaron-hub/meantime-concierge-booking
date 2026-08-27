@@ -4,6 +4,7 @@ doesn't define them.
 """
 
 import datetime as dt
+import logging
 import uuid
 from decimal import Decimal, InvalidOperation
 
@@ -11,6 +12,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models import Booking, BookingEvent, Invoice, Payment, PublicHoliday
+from app.services import booking as booking_service
 from app.models.invoice import InvoiceStatus, InvoiceType
 from app.models.payment import PaymentMethod
 from app.services.policy import (
@@ -21,6 +23,8 @@ from app.services.policy import (
     is_card_surcharge_permitted,
 )
 from app.utils import is_valid_email
+
+logger = logging.getLogger(__name__)
 
 
 def _round_money(value: Decimal) -> Decimal:
@@ -381,7 +385,8 @@ def record_payment(
     )
 
     total_paid = get_total_paid(db, invoice.id)
-    if total_paid >= invoice.total and invoice.status != InvoiceStatus.paid:
+    just_paid = total_paid >= invoice.total and invoice.status != InvoiceStatus.paid
+    if just_paid:
         old_status = invoice.status
         invoice.status = InvoiceStatus.paid
         invoice.paid_at = received_at
@@ -398,6 +403,23 @@ def record_payment(
 
     db.commit()
     db.refresh(payment)
+
+    if just_paid and invoice.type == InvoiceType.deposit:
+        # Paying the deposit is half of what confirms a booking; signing
+        # the agreement is the other half (see
+        # app.services.booking.auto_confirm_if_ready). Only on the payment
+        # that actually clears the balance -- a part-payment of a split
+        # deposit hasn't paid it yet.
+        #
+        # After the commit and never raising: the payment is real and
+        # recorded, and neither a client's card payment nor Stripe's
+        # webhook may fail because of what happens next. Same reasoning
+        # app/api/webhooks.py already applies to a cancelled invoice.
+        try:
+            booking_service.auto_confirm_if_ready(db, invoice.booking, actor=actor)
+        except Exception:  # noqa: BLE001 -- see above; a failure here must not undo a real payment
+            logger.exception("Auto-confirm after deposit payment failed for invoice %s", invoice.id)
+
     return payment
 
 

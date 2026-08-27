@@ -4,15 +4,21 @@ must never happen without leaving a trace of who/what/when/old->new.
 """
 
 import datetime as dt
+import logging
 import secrets
 import string
 import uuid
 
 from sqlalchemy import or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.models import Booking, BookingEvent, Contact, Space
+from app.models import Booking, BookingEvent, Contact, Document, Invoice, Space
 from app.models.booking import BookingStatus, MinReductionReasonCode
+from app.models.document import DocumentStatus, DocumentType
+from app.models.invoice import InvoiceStatus, InvoiceType
+
+logger = logging.getLogger(__name__)
 
 REFERENCE_ALPHABET = string.ascii_uppercase + string.digits
 REFERENCE_SUFFIX_LENGTH = 5
@@ -221,6 +227,121 @@ def transition_status(
         if child.status not in TERMINAL_STATUSES:
             change_status(db, child, new_status, actor=actor, reason=reason)
     return result
+
+
+# The two things that together mean a booking is genuinely won. Kept as
+# one-booking predicates here; app.services.wizard.get_wizard_eligible_bookings
+# expresses the same rule as bulk IN-subqueries because it answers a
+# different shape of question (a whole worklist, not one booking).
+# tests/test_auto_confirm.py asserts the two agree, so they can't drift.
+
+
+def has_paid_deposit(db: Session, booking: Booking) -> bool:
+    return (
+        db.execute(
+            select(Invoice.id).where(
+                Invoice.booking_id == booking.id,
+                Invoice.type == InvoiceType.deposit,
+                Invoice.status == InvoiceStatus.paid,
+            )
+        ).first()
+        is not None
+    )
+
+
+def has_signed_agreement(db: Session, booking: Booking) -> bool:
+    """The *current* agreement specifically: regenerating an agreement
+    supersedes the signed one (is_current flips to False), and what the
+    client signed no longer describes the deal on offer."""
+    return (
+        db.execute(
+            select(Document.id).where(
+                Document.booking_id == booking.id,
+                Document.type == DocumentType.agreement,
+                Document.status == DocumentStatus.signed,
+                Document.is_current.is_(True),
+            )
+        ).first()
+        is not None
+    )
+
+
+# The statuses an automatic confirmation may move a booking out of.
+# Everything else is either already confirmed (nothing to do) or terminal
+# -- and a terminal booking must never be resurrected by a late payment
+# or a stray signature. See AUTO_CONFIRM_REASON's use below.
+AUTO_CONFIRMABLE_STATUSES = (BookingStatus.enquiry, BookingStatus.offered, BookingStatus.tentative)
+
+AUTO_CONFIRM_REASON = "deposit paid and agreement signed"
+
+
+def auto_confirm_if_ready(db: Session, booking: Booking, *, actor: str) -> bool:
+    """Move a booking to confirmed once the client has both signed the
+    current agreement and paid the deposit. Returns whether it did.
+
+    Called after a signature and after a deposit payment, so whichever of
+    the two lands second is the one that confirms -- order doesn't matter.
+
+    Deliberately uses change_status rather than transition_status:
+    LEGAL_TRANSITIONS models the staff dropdown (enquiry -> offered ->
+    tentative -> confirmed), and it exists so staff don't skip steps by
+    hand. A client who has signed the contract and paid the deposit is
+    confirmed regardless of which stage staff had them sitting at, so
+    this states that directly instead of loosening LEGAL_TRANSITIONS and
+    thereby also loosening the staff-facing dropdown. The reason recorded
+    on the audit event says why the jump was allowed.
+    """
+    if booking.parent_booking_id is not None:
+        return False  # a linked child is only a second room; the parent owns the documents and invoices
+    if booking.status not in AUTO_CONFIRMABLE_STATUSES:
+        return False  # already confirmed, or terminal -- never resurrect a cancelled/archived booking
+    if not (has_signed_agreement(db, booking) and has_paid_deposit(db, booking)):
+        return False
+
+    space = db.get(Space, booking.space_id)
+    if space is None or not space.is_bookable:
+        # Still in the "Unassigned (pending triage)" placeholder: there is
+        # no real room yet, so "confirmed" would mean nothing, and would
+        # make a placeholder space start blocking real time against every
+        # other unassigned booking. Surfaced for a human instead of
+        # silently skipped -- this booking is now MORE urgent, not less.
+        flag_for_review(
+            db,
+            booking,
+            note="Deposit paid and agreement signed, but no real space is assigned yet -- assign a space to confirm.",
+            actor=actor,
+        )
+        return False
+
+    try:
+        change_status(db, booking, BookingStatus.confirmed, actor=actor, reason=AUTO_CONFIRM_REASON)
+    except IntegrityError:
+        # The exclusion constraint refused it: confirming makes a booking
+        # blocking (see BLOCKING_STATUSES), and this one overlaps a
+        # booking already holding the room. That's the constraint working,
+        # not a bug -- but it must not take down the client's signing
+        # request or a Stripe webhook. The signature and payment were
+        # committed before this ran and survive the rollback.
+        db.rollback()
+        booking = db.get(Booking, booking.id)
+        logger.exception("Auto-confirm collided with an existing booking for %s", booking.reference_code)
+        flag_for_review(
+            db,
+            booking,
+            note=(
+                "Deposit paid and agreement signed, but this booking's space and time clash with another "
+                "confirmed booking, so it could not be confirmed automatically. Resolve the clash."
+            ),
+            actor=actor,
+        )
+        return False
+
+    # Same cascade transition_status does: one event using two rooms must
+    # hold both, not just the parent's.
+    for child in db.scalars(select(Booking).where(Booking.parent_booking_id == booking.id)).all():
+        if child.status not in TERMINAL_STATUSES:
+            change_status(db, child, BookingStatus.confirmed, actor=actor, reason=AUTO_CONFIRM_REASON)
+    return True
 
 
 def search_bookings(

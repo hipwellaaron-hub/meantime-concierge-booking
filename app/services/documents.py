@@ -6,6 +6,7 @@ change should require re-reading an email chain to explain.
 """
 
 import datetime as dt
+import logging
 import uuid
 
 from sqlalchemy import select
@@ -13,7 +14,10 @@ from sqlalchemy.orm import Session
 
 from app.models import Booking, BookingEvent, Document
 from app.models.document import DocumentStatus, DocumentType
+from app.services import booking as booking_service
 from app.utils import is_valid_email, truncate
+
+logger = logging.getLogger(__name__)
 
 BOOKING_EVENT_ACTOR_MAX_LENGTH = 255
 
@@ -193,4 +197,17 @@ def sign(db: Session, document: Document, *, signer_name: str, signer_ip: str) -
     document.signer_name = signer_name
     document.signer_ip = signer_ip
     actor = truncate(f"client:{signer_name}", BOOKING_EVENT_ACTOR_MAX_LENGTH)
-    return _transition(db, document, DocumentStatus.signed, actor=actor)
+    document = _transition(db, document, DocumentStatus.signed, actor=actor)
+
+    if document.type == DocumentType.agreement:
+        # Signing is half of what confirms a booking; the deposit is the
+        # other half (see app.services.booking.auto_confirm_if_ready).
+        # Runs after the signature is committed and never raises: the
+        # client's signature must stand even if confirmation can't
+        # proceed, and they must not see an error for it.
+        try:
+            booking_service.auto_confirm_if_ready(db, document.booking, actor=actor)
+        except Exception:  # noqa: BLE001 -- see above; a failure here must not undo a real signature
+            logger.exception("Auto-confirm after signing failed for document %s", document.id)
+
+    return document
