@@ -1,0 +1,75 @@
+{% extends "admin/_base.html" %}
+{% block title %}Staff accounts{% endblock %}
+{% block content %}
+<h1>Staff accounts</h1>
+<p class="muted">
+  <b>Admin</b> accounts use the full Concierge dashboard. <b>Floor</b> accounts can only log into the
+  read-only Meantime Floor app at <code>/floor</code> &mdash; they are locked out of this admin entirely.
+  Deactivating someone kills their logins and every app token they hold.
+</p>
+
+<div class="card">
+  <h2>Add an account</h2>
+  <form method="post" action="/admin/staff/create" class="field-row" style="align-items:flex-end;">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div><label>Name</label><input type="text" name="name" required maxlength="255"></div>
+    <div><label>Email</label><input type="email" name="email" required maxlength="320"></div>
+    <div><label>Password <span class="muted">(min 8)</span></label><input type="password" name="password" required minlength="8"></div>
+    <div>
+      <label>Role</label>
+      <select name="role" required>
+        <option value="floor" selected>floor (app only)</option>
+        <option value="admin">admin (full access)</option>
+      </select>
+    </div>
+    <div style="flex:0 0 auto;"><button class="btn" type="submit">Create</button></div>
+  </form>
+</div>
+
+<div class="card" style="padding:0;">
+  <table>
+    <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th>App devices</th><th></th></tr></thead>
+    <tbody>
+    {% for user in users %}
+      <tr>
+        <td>{{ user.name }}{% if user.id == me.id %} <span class="muted">(you)</span>{% endif %}</td>
+        <td class="muted">{{ user.email }}</td>
+        <td><span class="badge {{ 'gold' if user.role == 'admin' else '' }}">{{ user.role }}</span></td>
+        <td>{% if user.is_active %}<span class="badge green">active</span>{% else %}<span class="badge wine">disabled</span>{% endif %}</td>
+        <td>
+          {% set tokens = tokens_by_user.get(user.id, []) %}
+          {% if tokens %}
+          {% for token in tokens %}
+          <form class="inline" method="post" action="/admin/staff/tokens/{{ token.id }}/revoke">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <span class="muted" style="font-size:0.75rem;">
+              {% if token.last_used_at %}last seen {{ token.last_used_at | sydney_time }}{% else %}never used{% endif %}
+            </span>
+            <button class="btn secondary" type="submit">Revoke</button>
+          </form>
+          {% endfor %}
+          {% else %}
+          <span class="muted">none</span>
+          {% endif %}
+        </td>
+        <td>
+          {% if user.id != me.id %}
+          {% if user.is_active %}
+          <form class="inline" method="post" action="/admin/staff/{{ user.id }}/deactivate" onsubmit="return confirm('Deactivate {{ user.name }}? Their logins and app tokens stop working immediately.');">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button class="btn danger" type="submit">Deactivate</button>
+          </form>
+          {% else %}
+          <form class="inline" method="post" action="/admin/staff/{{ user.id }}/reactivate">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button class="btn secondary" type="submit">Reactivate</button>
+          </form>
+          {% endif %}
+          {% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

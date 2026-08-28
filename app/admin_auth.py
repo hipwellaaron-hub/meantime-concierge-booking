@@ -32,6 +32,12 @@ def require_staff(request: Request, db: Session = Depends(get_db)) -> StaffUser:
     if staff is None or not staff.is_active:
         request.session.clear()
         raise NotAuthenticated()
+    if staff.role == "floor":
+        # Floor accounts exist for the read-only Meantime Floor app ONLY.
+        # A floor login must never open the admin -- cleared and bounced,
+        # exactly as if never authenticated.
+        request.session.clear()
+        raise NotAuthenticated()
     return staff
 
 

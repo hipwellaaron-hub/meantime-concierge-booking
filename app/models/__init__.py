@@ -8,6 +8,7 @@ from app.models.menu_item import MenuItem, MenuItemCategory  # noqa: F401
 from app.models.payment import Payment, PaymentMethod  # noqa: F401
 from app.models.public_holiday import PublicHoliday  # noqa: F401
 from app.models.space import Space  # noqa: F401
+from app.models.staff_app_token import StaffAppToken  # noqa: F401
 from app.models.staff_user import StaffUser  # noqa: F401
 from app.models.venue import Venue  # noqa: F401
 from app.models.wizard_session import WizardSession, WizardSessionStatus, WizardStep  # noqa: F401
@@ -33,6 +34,7 @@ __all__ = [
     "PaymentMethod",
     "PublicHoliday",
     "Space",
+    "StaffAppToken",
     "StaffUser",
     "Venue",
     "WizardSession",

@@ -146,13 +146,16 @@ def _reset_rate_limiters():
     from app.api.admin_auth import login_rate_limiter
     from app.api.documents import _sign_rate_limiter
     from app.api.enquiries import _enquiry_rate_limiter
+    from app.api.staff_app import _app_login_rate_limiter
     from app.api.wizard import _wizard_step_rate_limiter
 
+    _app_login_rate_limiter._hits.clear()
     _enquiry_rate_limiter._hits.clear()
     _sign_rate_limiter._hits.clear()
     _wizard_step_rate_limiter._hits.clear()
     login_rate_limiter._hits.clear()
     yield
+    _app_login_rate_limiter._hits.clear()
     _enquiry_rate_limiter._hits.clear()
     _sign_rate_limiter._hits.clear()
     _wizard_step_rate_limiter._hits.clear()

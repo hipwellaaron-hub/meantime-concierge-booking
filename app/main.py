@@ -10,12 +10,15 @@ from app.api.admin_calendar import router as admin_calendar_router
 from app.api.admin_dashboard import router as admin_dashboard_router
 from app.api.admin_invoices import router as admin_invoices_router
 from app.api.admin_reports import router as admin_reports_router
+from app.api.admin_staff import router as admin_staff_router
 from app.api.admin_triage import router as admin_triage_router
 from app.api.availability import router as availability_router
 from app.api.documents import router as documents_router
 from app.api.enquiries import router as enquiries_router
+from app.api.floor_app import router as floor_app_router
 from app.api.health import router as health_router
 from app.api.invoices import router as invoices_router
+from app.api.staff_app import router as staff_app_router
 from app.api.webhooks import router as webhooks_router
 from app.api.wizard import router as wizard_router
 from app.config import settings
@@ -80,6 +83,9 @@ app.include_router(admin_invoices_router)
 app.include_router(admin_triage_router)
 app.include_router(admin_calendar_router)
 app.include_router(admin_reports_router)
+app.include_router(admin_staff_router)
+app.include_router(staff_app_router)
+app.include_router(floor_app_router)
 
 
 @app.get("/health")

@@ -528,7 +528,10 @@
     </table>
   </div>
 
-  {% if staff and content.get("internal_notes") %}
+  {# The floor app (is_floor_app) is a staff surface too -- kitchen/bar
+     notes exist precisely for that team -- but it keeps client_safe
+     rendering elsewhere, so no raw [REVIEW] noise and no preview banner. #}
+  {% if (staff or is_floor_app) and content.get("internal_notes") %}
   <div class="beo-internal">
     <div class="tag">INTERNAL — not shown to client</div>
     <ul class="beo-bullets">

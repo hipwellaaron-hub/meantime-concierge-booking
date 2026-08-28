@@ -21,6 +21,11 @@ class StaffUser(Base):
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # 'admin' = full Concierge access; 'floor' = the read-only Meantime
+    # Floor app ONLY -- app/admin_auth.py rejects floor sessions from
+    # /admin outright. Plain string validated in Python, matching how
+    # BookingVendor.vendor_type avoids a native enum's migration friction.
+    role: Mapped[str] = mapped_column(String(20), nullable=False, default="admin")
 
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[dt.datetime] = mapped_column(
