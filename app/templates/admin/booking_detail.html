@@ -365,6 +365,7 @@
         <td class="muted">{{ invoice.due_date | aus_date }}</td>
         <td>
           {% if invoice.status.value == "draft" %}
+          <a href="/admin/bookings/{{ booking.id }}/invoices/{{ invoice.id }}/edit" class="btn secondary">Edit</a>
           <form class="inline" method="post" action="/admin/bookings/{{ booking.id }}/invoices/{{ invoice.id }}/send">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <button class="btn" type="submit">Send</button>
@@ -378,6 +379,12 @@
           <a href="/i/{{ invoice.access_token }}" target="_blank">View &rarr;</a>
           <a href="/i/{{ invoice.access_token }}/pdf">Download PDF</a>
           <button type="button" class="btn secondary" onclick="copyLink(this, '/i/{{ invoice.access_token }}')">Copy link</button>
+          {% if invoice.status.value == "sent" %}
+          <form class="inline" method="post" action="/admin/bookings/{{ booking.id }}/invoices/{{ invoice.id }}/revise" onsubmit="return confirm('Cancel this sent invoice and reopen it as a new editable draft? The client&#39;s current link stops working. (Blocked if any payment has been recorded.)');">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button class="btn secondary" type="submit">Revise (discount / change)</button>
+          </form>
+          {% endif %}
           {% endif %}
           {% if invoice.status.value == "sent" %}
           <details style="display:inline-block; margin-left:8px;">

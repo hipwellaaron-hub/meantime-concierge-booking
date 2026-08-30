@@ -26,6 +26,11 @@ from app.utils import is_valid_email
 
 logger = logging.getLogger(__name__)
 
+# The auto-added credit line on a final invoice (deposit already paid).
+# Named as a constant so update_invoice can strip and re-derive it rather
+# than treating it as a staff-entered charge line.
+DEPOSIT_CREDIT_DESCRIPTION = "Less: deposit credited"
+
 
 def _round_money(value: Decimal) -> Decimal:
     return value.quantize(Decimal("0.01"))
@@ -201,15 +206,30 @@ def create_final_invoice(
             "a final invoice already exists for this booking -- cancel or delete the existing one first"
         )
 
-    deposit_paid = get_deposit_paid(db, booking)
-    credit_line_items = (
-        [{"description": "Less: deposit credited", "quantity": 1, "unit_price": str(-deposit_paid)}]
-        if deposit_paid > 0
-        else []
-    )
+    credit_line_items = _deposit_credit_lines(db, booking)
     return create_invoice(
         db, booking, InvoiceType.final, line_items, due_date, actor=actor, credit_line_items=credit_line_items
     )
+
+
+def _deposit_credit_lines(db: Session, booking: Booking) -> list[dict]:
+    """The single auto "Less: deposit credited" line for a final invoice,
+    or [] when no deposit has been paid. Shared by create_final_invoice and
+    update_invoice so an edited invoice re-derives the credit from what's
+    actually been paid rather than trusting a stale figure echoed back by
+    the edit form."""
+    deposit_paid = get_deposit_paid(db, booking)
+    if deposit_paid <= 0:
+        return []
+    return [{"description": DEPOSIT_CREDIT_DESCRIPTION, "quantity": 1, "unit_price": str(-deposit_paid)}]
+
+
+def _charge_lines(line_items: list[dict]) -> list[dict]:
+    """The staff-entered charge lines, i.e. everything except the auto
+    deposit-credit line. Discounts (negative unit_price) are charge lines
+    and stay -- only the deposit credit is stripped, because it's
+    system-derived and must be recomputed, never edited by hand."""
+    return [li for li in line_items if li.get("description") != DEPOSIT_CREDIT_DESCRIPTION]
 
 
 def delete_draft(db: Session, invoice: Invoice, *, actor: str) -> None:
@@ -231,6 +251,95 @@ def delete_draft(db: Session, invoice: Invoice, *, actor: str) -> None:
     )
     db.delete(invoice)
     db.commit()
+
+
+def update_invoice(
+    db: Session, invoice: Invoice, *, line_items: list[dict], due_date: dt.date, actor: str
+) -> Invoice:
+    """Edit a DRAFT invoice's line items and due date -- the staff lever
+    for a discount (a line with a negative unit_price) or any amount
+    change. Only a draft is editable: a sent invoice is a claim a client
+    holds a real link at a stated figure, so it's revised via
+    revise_sent_invoice (cancel + fresh draft) instead of silently
+    changing underneath them.
+
+    Totals are recomputed exactly as at creation -- the public-holiday
+    surcharge on the true charge lines, then the deposit credit re-derived
+    from what's actually been paid (never trusted from the submitted
+    lines). A discount is a charge line and so correctly reduces the
+    surcharge base; the deposit credit is not.
+    """
+    db.refresh(invoice, with_for_update=True)
+    if invoice.status != InvoiceStatus.draft:
+        raise ValueError(
+            f"cannot edit an invoice that is already {invoice.status.value} -- "
+            "revise a sent invoice (cancel + reissue) instead"
+        )
+
+    charge_lines = _charge_lines(line_items)
+    if not charge_lines:
+        raise ValueError("an invoice needs at least one line item")
+
+    subtotal, surcharge, gross_total = compute_totals(db, invoice.booking.event_date, charge_lines)
+    if subtotal < 0:
+        # A discount larger than the charges it applies to is almost
+        # certainly a data-entry slip, not a real negative invoice.
+        raise ValueError("the discount is larger than the charges -- the invoice total can't be negative")
+
+    credit_line_items = _deposit_credit_lines(db, invoice.booking) if invoice.type == InvoiceType.final else []
+    credit_total = sum(
+        (Decimal(str(c["quantity"])) * Decimal(str(c["unit_price"])) for c in credit_line_items), Decimal("0.00")
+    )
+
+    old_total = invoice.total
+    invoice.line_items = charge_lines + credit_line_items
+    invoice.subtotal = subtotal
+    invoice.surcharge = surcharge
+    invoice.total = gross_total + credit_total
+    invoice.due_date = due_date
+
+    db.add(
+        BookingEvent(
+            booking_id=invoice.booking_id,
+            event_type="invoice_edited",
+            field_name=f"{invoice.type.value}_invoice",
+            old_value=str(old_total),
+            new_value=str(invoice.total),
+            actor=actor,
+        )
+    )
+    db.commit()
+    db.refresh(invoice)
+    return invoice
+
+
+def revise_sent_invoice(db: Session, invoice: Invoice, *, actor: str) -> Invoice:
+    """Cancel a SENT invoice and return a fresh draft cloned from its
+    charge lines, for staff to adjust (e.g. add a discount) and re-send.
+    Refused once any payment exists -- a part-paid invoice is a
+    reconciliation/refund question, not a quiet reissue. The deposit
+    credit is dropped and re-derived by the new draft, so it always
+    reflects what's genuinely been paid at reissue time.
+    """
+    db.refresh(invoice, with_for_update=True)
+    if invoice.status != InvoiceStatus.sent:
+        raise ValueError(f"only a sent invoice can be revised -- this one is {invoice.status.value}")
+    if get_total_paid(db, invoice.id) > 0:
+        raise ValueError(
+            "this invoice already has a payment recorded -- handle the balance or a refund directly "
+            "rather than reissuing it"
+        )
+
+    charge_lines = _charge_lines(invoice.line_items)
+    invoice_type = invoice.type
+    due_date = invoice.due_date
+    booking = invoice.booking
+
+    cancel_invoice(db, invoice, actor=actor)  # sent -> cancelled, logged
+
+    if invoice_type == InvoiceType.final:
+        return create_final_invoice(db, booking, line_items=charge_lines, due_date=due_date, actor=actor)
+    return create_invoice(db, booking, invoice_type, charge_lines, due_date, actor=actor)
 
 
 def get_by_token(db: Session, token: str) -> Invoice | None:

@@ -1167,3 +1167,81 @@ def test_enquiry_notification_preview_sends_nothing(admin_client, db, loft):
     send.assert_not_called()
     db.refresh(booking)
     assert booking.enquiry_notification_sent_at is None
+
+
+# --- invoice editing / revising (routes) --------------------------------------
+
+
+def _final_invoice(db, booking):
+    return invoicing.create_final_invoice(
+        db,
+        booking,
+        line_items=[{"description": "Catering", "quantity": 1, "unit_price": "800.00"}],
+        due_date=dt.date(2026, 10, 1),
+        actor="test",
+    )
+
+
+def test_edit_invoice_form_loads_for_draft(admin_client, booking, db):
+    invoice = _final_invoice(db, booking)
+    page = admin_client.get(f"/admin/bookings/{booking.id}/invoices/{invoice.id}/edit")
+    assert page.status_code == 200
+    assert "Edit invoice" in page.text
+
+
+def test_edit_invoice_form_redirects_for_sent(admin_client, booking, db):
+    invoice = _final_invoice(db, booking)
+    invoicing.mark_sent(db, invoice, actor="test")
+    resp = admin_client.get(
+        f"/admin/bookings/{booking.id}/invoices/{invoice.id}/edit", follow_redirects=False
+    )
+    assert resp.status_code == 303
+
+
+def test_edit_invoice_applies_discount(admin_client, booking, db):
+    invoice = _final_invoice(db, booking)
+    csrf = _csrf(admin_client.get(f"/admin/bookings/{booking.id}/invoices/{invoice.id}/edit").text)
+    resp = admin_client.post(
+        f"/admin/bookings/{booking.id}/invoices/{invoice.id}/edit",
+        data={
+            "csrf_token": csrf,
+            "due_date": "2026-10-05",
+            "description": ["Catering", "Discount"],
+            "quantity": ["1", "1"],
+            "unit_price": ["800.00", "-150.00"],
+        },
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    db.refresh(invoice)
+    assert invoice.subtotal == Decimal("650.00")
+
+
+def test_revise_sent_invoice_route_lands_on_new_draft_editor(admin_client, booking, db):
+    invoice = _final_invoice(db, booking)
+    invoicing.mark_sent(db, invoice, actor="test")
+    csrf = _csrf(_detail_page(admin_client, booking.id).text)
+    resp = admin_client.post(
+        f"/admin/bookings/{booking.id}/invoices/{invoice.id}/revise",
+        data={"csrf_token": csrf},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    assert "/edit" in resp.headers["location"]
+    db.refresh(invoice)
+    assert invoice.status == InvoiceStatus.cancelled
+
+
+def test_revise_paid_invoice_is_refused(admin_client, booking, db):
+    from app.models.payment import PaymentMethod
+
+    invoice = _final_invoice(db, booking)
+    invoicing.mark_sent(db, invoice, actor="test")
+    invoicing.record_payment(db, invoice, amount=Decimal("100.00"), method=PaymentMethod.bank_transfer, actor="test")
+    csrf = _csrf(_detail_page(admin_client, booking.id).text)
+    resp = admin_client.post(
+        f"/admin/bookings/{booking.id}/invoices/{invoice.id}/revise",
+        data={"csrf_token": csrf},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 409

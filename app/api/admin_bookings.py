@@ -732,20 +732,7 @@ def create_final_invoice(
 ):
     booking = _get_booking_or_404(db, booking_id)
 
-    line_items = []
-    for desc, qty, price in zip(description, quantity, unit_price):
-        desc = desc.strip()
-        if not desc:
-            continue  # a blank row in the form -- not a real line item
-        try:
-            parsed_qty = Decimal(qty)
-            parsed_price = Decimal(price)
-        except InvalidOperation:
-            raise HTTPException(status_code=422, detail=f"Invalid quantity or unit price for line item '{desc}'")
-        line_items.append({"description": desc, "quantity": str(parsed_qty), "unit_price": str(parsed_price)})
-
-    if not line_items:
-        raise HTTPException(status_code=422, detail="At least one line item is required")
+    line_items = _parse_invoice_line_items(description, quantity, unit_price)
 
     try:
         invoicing.create_final_invoice(db, booking, line_items=line_items, due_date=due_date, actor=_actor(staff))
@@ -809,6 +796,114 @@ def preview_invoice(
             "card_payment_amount": None,
             "is_staff_preview": True,
         },
+    )
+
+
+def _parse_invoice_line_items(
+    description: list[str], quantity: list[str], unit_price: list[str]
+) -> list[dict]:
+    """Shared by the create and edit invoice forms: turns the parallel
+    description/quantity/unit_price arrays into line-item dicts, skipping
+    blank rows and rejecting unparseable numbers. A negative unit_price is
+    allowed on purpose -- that's how a discount line is entered."""
+    line_items = []
+    for desc, qty, price in zip(description, quantity, unit_price):
+        desc = desc.strip()
+        if not desc:
+            continue
+        try:
+            parsed_qty = Decimal(qty)
+            parsed_price = Decimal(price)
+        except InvalidOperation:
+            raise HTTPException(status_code=422, detail=f"Invalid quantity or unit price for line item '{desc}'")
+        line_items.append({"description": desc, "quantity": str(parsed_qty), "unit_price": str(parsed_price)})
+    if not line_items:
+        raise HTTPException(status_code=422, detail="At least one line item is required")
+    return line_items
+
+
+@router.get("/{booking_id}/invoices/{invoice_id}/edit", response_class=HTMLResponse)
+def edit_invoice_form(
+    booking_id: uuid.UUID,
+    invoice_id: uuid.UUID,
+    request: Request,
+    db: Session = Depends(get_db),
+    staff: StaffUser = Depends(require_staff),
+):
+    _get_booking_or_404(db, booking_id)
+    invoice = db.get(Invoice, invoice_id)
+    if invoice is None or invoice.booking_id != booking_id:
+        raise HTTPException(status_code=404, detail="Invoice not found on this booking")
+    if invoice.status != InvoiceStatus.draft:
+        # Only drafts are editable; a sent invoice is revised (cancel +
+        # reissue), so bounce back rather than show an editor that would
+        # refuse the save anyway.
+        return _redirect_to_detail(booking_id)
+    # Show the staff-editable charge lines only -- the auto deposit credit
+    # is re-derived on save, never hand-edited.
+    editable_lines = invoicing._charge_lines(invoice.line_items)
+    deposit_credit = next(
+        (li for li in invoice.line_items if li.get("description") == invoicing.DEPOSIT_CREDIT_DESCRIPTION), None
+    )
+    return templates.TemplateResponse(
+        request,
+        "admin/invoice_edit.html",
+        admin_ctx(
+            request,
+            staff,
+            booking=invoice.booking,
+            invoice=invoice,
+            editable_lines=editable_lines,
+            deposit_credit=deposit_credit,
+        ),
+    )
+
+
+@router.post("/{booking_id}/invoices/{invoice_id}/edit", dependencies=[Depends(require_csrf)])
+def edit_invoice(
+    booking_id: uuid.UUID,
+    invoice_id: uuid.UUID,
+    request: Request,
+    due_date: dt.date = Form(...),
+    description: list[str] = Form(...),
+    quantity: list[str] = Form(...),
+    unit_price: list[str] = Form(...),
+    db: Session = Depends(get_db),
+    staff: StaffUser = Depends(require_staff),
+):
+    _get_booking_or_404(db, booking_id)
+    invoice = db.get(Invoice, invoice_id)
+    if invoice is None or invoice.booking_id != booking_id:
+        raise HTTPException(status_code=404, detail="Invoice not found on this booking")
+    line_items = _parse_invoice_line_items(description, quantity, unit_price)
+    try:
+        invoicing.update_invoice(db, invoice, line_items=line_items, due_date=due_date, actor=_actor(staff))
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return _redirect_to_detail(booking_id)
+
+
+@router.post("/{booking_id}/invoices/{invoice_id}/revise", dependencies=[Depends(require_csrf)])
+def revise_invoice(
+    booking_id: uuid.UUID,
+    invoice_id: uuid.UUID,
+    request: Request,
+    db: Session = Depends(get_db),
+    staff: StaffUser = Depends(require_staff),
+):
+    """Cancel a sent invoice and reopen it as a fresh draft, landing the
+    staff straight on that draft's editor to make the change (e.g. a
+    discount) and re-send."""
+    _get_booking_or_404(db, booking_id)
+    invoice = db.get(Invoice, invoice_id)
+    if invoice is None or invoice.booking_id != booking_id:
+        raise HTTPException(status_code=404, detail="Invoice not found on this booking")
+    try:
+        new_draft = invoicing.revise_sent_invoice(db, invoice, actor=_actor(staff))
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return RedirectResponse(
+        url=f"/admin/bookings/{booking_id}/invoices/{new_draft.id}/edit", status_code=303
     )
 
 

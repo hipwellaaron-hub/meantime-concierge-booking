@@ -585,3 +585,116 @@ def test_create_final_invoice_allowed_again_after_cancelling_the_first(db, booki
 
     second = create_final_invoice(db, booking, line_items=CATERING_ITEMS, due_date=dt.date(2026, 10, 1), actor="test")
     assert second.id != first.id
+
+
+# --- editing & revising -------------------------------------------------------
+
+
+def test_update_invoice_changes_amounts(db, booking):
+    invoice = create_final_invoice(db, booking, line_items=CATERING_ITEMS, due_date=dt.date(2026, 10, 1), actor="test")
+    original = invoice.total
+    from app.services.invoicing import update_invoice
+
+    updated = update_invoice(
+        db,
+        invoice,
+        line_items=[{"description": "Antipasto platter", "quantity": 8, "unit_price": "65.00"}],
+        due_date=dt.date(2026, 10, 5),
+        actor="test",
+    )
+    assert updated.subtotal == Decimal("520.00")
+    assert updated.total != original
+    assert updated.due_date == dt.date(2026, 10, 5)
+
+
+def test_update_invoice_applies_a_discount_line(db, booking):
+    invoice = create_final_invoice(db, booking, line_items=CATERING_ITEMS, due_date=dt.date(2026, 10, 1), actor="test")
+    from app.services.invoicing import update_invoice
+
+    updated = update_invoice(
+        db,
+        invoice,
+        line_items=CATERING_ITEMS + [{"description": "Loyalty discount", "quantity": 1, "unit_price": "-100.00"}],
+        due_date=dt.date(2026, 10, 1),
+        actor="test",
+    )
+    # 440 charges - 100 discount = 340 subtotal (surcharge base reduced too).
+    assert updated.subtotal == Decimal("340.00")
+
+
+def test_update_invoice_rejects_discount_bigger_than_charges(db, booking):
+    invoice = create_final_invoice(db, booking, line_items=CATERING_ITEMS, due_date=dt.date(2026, 10, 1), actor="test")
+    from app.services.invoicing import update_invoice
+
+    with pytest.raises(ValueError):
+        update_invoice(
+            db,
+            invoice,
+            line_items=CATERING_ITEMS + [{"description": "Huge discount", "quantity": 1, "unit_price": "-9999.00"}],
+            due_date=dt.date(2026, 10, 1),
+            actor="test",
+        )
+
+
+def test_update_invoice_refuses_a_sent_invoice(db, booking):
+    invoice = create_final_invoice(db, booking, line_items=CATERING_ITEMS, due_date=dt.date(2026, 10, 1), actor="test")
+    mark_sent(db, invoice, actor="test")
+    from app.services.invoicing import update_invoice
+
+    with pytest.raises(ValueError):
+        update_invoice(db, invoice, line_items=CATERING_ITEMS, due_date=dt.date(2026, 10, 1), actor="test")
+
+
+def test_update_invoice_rederives_deposit_credit_not_from_form(db, booking):
+    create_deposit_invoice(db, booking, due_date=dt.date(2026, 9, 1), actor="test")
+    dep = booking.invoices[0]
+    mark_sent(db, dep, actor="test")
+    record_payment(db, dep, amount=Decimal("500.00"), method=PaymentMethod.bank_transfer, actor="test")
+
+    final = create_final_invoice(db, booking, line_items=CATERING_ITEMS, due_date=dt.date(2026, 10, 1), actor="test")
+    from app.services.invoicing import DEPOSIT_CREDIT_DESCRIPTION, update_invoice
+
+    # Even if the form echoes a bogus credit line, it's stripped and re-derived.
+    updated = update_invoice(
+        db,
+        final,
+        line_items=CATERING_ITEMS + [{"description": DEPOSIT_CREDIT_DESCRIPTION, "quantity": 1, "unit_price": "-1.00"}],
+        due_date=dt.date(2026, 10, 1),
+        actor="test",
+    )
+    credit = [li for li in updated.line_items if li["description"] == DEPOSIT_CREDIT_DESCRIPTION]
+    assert len(credit) == 1
+    assert credit[0]["unit_price"] == "-500.00"  # real deposit, not the bogus -1.00
+
+
+def test_revise_sent_invoice_cancels_and_reopens_draft(db, booking):
+    invoice = create_final_invoice(db, booking, line_items=CATERING_ITEMS, due_date=dt.date(2026, 10, 1), actor="test")
+    mark_sent(db, invoice, actor="test")
+    from app.services.invoicing import revise_sent_invoice
+
+    draft = revise_sent_invoice(db, invoice, actor="test")
+    db.refresh(invoice)
+    assert invoice.status == InvoiceStatus.cancelled
+    assert draft.status == InvoiceStatus.draft
+    assert draft.id != invoice.id
+    # Same charge lines carried across.
+    descs = {li["description"] for li in draft.line_items}
+    assert "Antipasto platter" in descs
+
+
+def test_revise_refuses_when_a_payment_exists(db, booking):
+    invoice = create_final_invoice(db, booking, line_items=CATERING_ITEMS, due_date=dt.date(2026, 10, 1), actor="test")
+    mark_sent(db, invoice, actor="test")
+    record_payment(db, invoice, amount=Decimal("50.00"), method=PaymentMethod.bank_transfer, actor="test")
+    from app.services.invoicing import revise_sent_invoice
+
+    with pytest.raises(ValueError):
+        revise_sent_invoice(db, invoice, actor="test")
+
+
+def test_revise_refuses_a_draft(db, booking):
+    invoice = create_final_invoice(db, booking, line_items=CATERING_ITEMS, due_date=dt.date(2026, 10, 1), actor="test")
+    from app.services.invoicing import revise_sent_invoice
+
+    with pytest.raises(ValueError):
+        revise_sent_invoice(db, invoice, actor="test")

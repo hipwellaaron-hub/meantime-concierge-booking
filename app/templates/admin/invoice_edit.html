@@ -1,0 +1,90 @@
+{% extends "admin/_base.html" %}
+{% block title %}Edit invoice{% endblock %}
+{% block content %}
+<p><a href="/admin/bookings/{{ booking.id }}">&larr; {{ booking.event_name }}</a></p>
+<h1>Edit invoice #{{ invoice.invoice_number }}</h1>
+<p class="muted">
+  {{ invoice.type.value | capitalize }} invoice &middot; {{ booking.reference_code }} &middot; draft.
+  Change line amounts, add or remove lines, or add a <b>discount</b> line (enter a negative unit price,
+  e.g. &minus;150). The total recalculates live below and again on save. Any deposit already paid is
+  credited automatically &mdash; you don't add that line yourself.
+</p>
+
+<form method="post" action="/admin/bookings/{{ booking.id }}/invoices/{{ invoice.id }}/edit">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+  <div class="card">
+    <div class="field-row">
+      <div><label>Due date</label><input type="date" name="due_date" value="{{ invoice.due_date.isoformat() }}" required></div>
+    </div>
+
+    <h2 style="margin-top:14px;">Line items</h2>
+    <p class="muted" style="font-size:0.8rem;">Clear a row's description to remove that line. A negative unit price makes a discount.</p>
+    <div id="line-items">
+      {% for li in editable_lines %}
+      <div class="field-row line-item">
+        <div style="flex:2;"><label>Description</label><input type="text" name="description" value="{{ li.description }}" maxlength="255"></div>
+        <div style="flex:0 0 90px;"><label>Qty</label><input type="text" name="quantity" value="{{ li.quantity }}"></div>
+        <div style="flex:0 0 120px;"><label>Unit price</label><input type="text" name="unit_price" value="{{ li.unit_price }}"></div>
+        <div><label>Line total</label><div class="line-total muted" style="padding-top:9px;">&mdash;</div></div>
+      </div>
+      {% endfor %}
+      {# One spare blank row so a discount can be added without the JS. #}
+      <div class="field-row line-item">
+        <div style="flex:2;"><label>Description</label><input type="text" name="description" value="" maxlength="255" placeholder="e.g. Loyalty discount"></div>
+        <div style="flex:0 0 90px;"><label>Qty</label><input type="text" name="quantity" value="1"></div>
+        <div style="flex:0 0 120px;"><label>Unit price</label><input type="text" name="unit_price" value="" placeholder="-150.00"></div>
+        <div><label>Line total</label><div class="line-total muted" style="padding-top:9px;">&mdash;</div></div>
+      </div>
+    </div>
+    <button type="button" class="btn secondary" id="add-item" style="margin-top:8px;">Add line</button>
+
+    <div style="margin-top:16px; border-top:1px solid var(--border); padding-top:10px;">
+      <div>Charges subtotal: <b id="running-subtotal">$0.00</b></div>
+      {% if deposit_credit %}
+      <div class="muted" style="font-size:0.85rem;">Less: deposit credited: ${{ deposit_credit.unit_price }} <span>(re-derived on save from payments received)</span></div>
+      {% endif %}
+      <p class="muted" style="font-size:0.78rem; margin-top:4px;">
+        A public-holiday surcharge, if the event date attracts one, is applied on save. This preview shows the charge subtotal only.
+      </p>
+    </div>
+
+    <button class="btn" type="submit" style="margin-top:12px;">Save invoice</button>
+    <a href="/admin/bookings/{{ booking.id }}" class="btn secondary" style="margin-left:6px;">Cancel</a>
+  </div>
+</form>
+
+<template id="line-item-template">
+  <div class="field-row line-item">
+    <div style="flex:2;"><label>Description</label><input type="text" name="description" value="" maxlength="255"></div>
+    <div style="flex:0 0 90px;"><label>Qty</label><input type="text" name="quantity" value="1"></div>
+    <div style="flex:0 0 120px;"><label>Unit price</label><input type="text" name="unit_price" value=""></div>
+    <div><label>Line total</label><div class="line-total muted" style="padding-top:9px;">&mdash;</div></div>
+  </div>
+</template>
+
+<script>
+  document.getElementById("add-item").addEventListener("click", function () {
+    var tpl = document.getElementById("line-item-template");
+    document.getElementById("line-items").appendChild(tpl.content.cloneNode(true));
+    recalc();
+  });
+  function money(n) {
+    return (n < 0 ? "-$" : "$") + Math.abs(n).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  }
+  function recalc() {
+    var subtotal = 0;
+    document.querySelectorAll("#line-items .line-item").forEach(function (row) {
+      var desc = row.querySelector('input[name="description"]').value.trim();
+      var qty = parseFloat(row.querySelector('input[name="quantity"]').value) || 0;
+      var price = parseFloat(row.querySelector('input[name="unit_price"]').value) || 0;
+      var total = qty * price;
+      row.querySelector(".line-total").textContent = desc ? money(total) : "—";
+      if (desc) subtotal += total;
+    });
+    document.getElementById("running-subtotal").textContent = money(subtotal);
+  }
+  document.getElementById("line-items").addEventListener("input", recalc);
+  recalc();
+</script>
+{% endblock %}
