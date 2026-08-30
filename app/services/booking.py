@@ -776,3 +776,76 @@ def add_linked_space(
     db.commit()
     db.refresh(child)
     return child
+
+
+def _summarise_for_deletion(db: Session, booking: "Booking") -> str:
+    """A one-line forensic record of what a hard delete is about to remove.
+    Logged before deletion because the booking's own booking_events (its
+    normal audit trail) go with it -- this line, plus PITR, is the only
+    trace left afterward."""
+    from app.models import Payment
+
+    invoices = db.scalars(select(Invoice).where(Invoice.booking_id == booking.id)).all()
+    inv_bits = []
+    for inv in invoices:
+        paid = db.scalars(select(Payment.amount).where(Payment.invoice_id == inv.id)).all()
+        inv_bits.append(
+            f"#{inv.invoice_number} {inv.type.value} {inv.status.value} total={inv.total} "
+            f"payments={[str(p) for p in paid]}"
+        )
+    return (
+        f"reference={booking.reference_code} event={booking.event_name!r} "
+        f"date={booking.event_date} status={booking.status.value} "
+        f"invoices=[{'; '.join(inv_bits) or 'none'}]"
+    )
+
+
+def delete_booking_and_dependents(db: Session, booking: Booking, *, actor: str) -> str:
+    """Hard-delete a booking and everything attached to it -- invoices,
+    payments, documents, events, wizard session, vendors, and any linked
+    child-space bookings. Deliberately the ONLY hard delete in this
+    codebase (everything else archives/deactivates), for removing test or
+    erroneous bookings. Irreversible in-app; recoverable only via the
+    database's point-in-time recovery.
+
+    Logs a full snapshot first (the booking's own audit rows are about to
+    be gone), then deletes children-before-parents in FK-safe order inside
+    one transaction. Returns the reference code that was removed. Refuses a
+    linked child directly -- delete via its parent so a two-room event
+    can't be half-removed."""
+    from sqlalchemy import delete as sql_delete
+
+    from app.models import BookingVendor, Payment
+    from app.models.wizard_session import WizardSession
+
+    if booking.parent_booking_id is not None:
+        raise ValueError(
+            "this is a linked second-room booking -- delete its parent booking instead, which removes both"
+        )
+
+    snapshot = _summarise_for_deletion(db, booking)
+    reference = booking.reference_code
+
+    # booking_events is append-only at the DB level (a trigger). Permit its
+    # rows to be removed only for this deliberate purge, flagged
+    # transaction-locally so the guard stays fully in force everywhere else.
+    from sqlalchemy import text
+
+    db.execute(text("SET LOCAL app.allow_booking_purge = 'on'"))
+
+    # Children first (they carry a FK back to the parent), parent last.
+    children = db.scalars(select(Booking).where(Booking.parent_booking_id == booking.id)).all()
+    for target in list(children) + [booking]:
+        invoice_ids = db.scalars(select(Invoice.id).where(Invoice.booking_id == target.id)).all()
+        if invoice_ids:
+            db.execute(sql_delete(Payment).where(Payment.invoice_id.in_(invoice_ids)))
+            db.execute(sql_delete(Invoice).where(Invoice.booking_id == target.id))
+        db.execute(sql_delete(Document).where(Document.booking_id == target.id))
+        db.execute(sql_delete(BookingEvent).where(BookingEvent.booking_id == target.id))
+        db.execute(sql_delete(WizardSession).where(WizardSession.booking_id == target.id))
+        db.execute(sql_delete(BookingVendor).where(BookingVendor.booking_id == target.id))
+        db.execute(sql_delete(Booking).where(Booking.id == target.id))
+
+    logger.warning("HARD DELETE booking by %s -- %s", actor, snapshot)
+    db.commit()
+    return reference

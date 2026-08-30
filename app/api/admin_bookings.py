@@ -70,6 +70,31 @@ def _redirect_to_detail(booking_id: uuid.UUID) -> RedirectResponse:
     return RedirectResponse(url=f"/admin/bookings/{booking_id}", status_code=303)
 
 
+@router.post("/{booking_id}/delete", dependencies=[Depends(require_csrf)])
+def delete_booking(
+    booking_id: uuid.UUID,
+    request: Request,
+    confirm_reference: str = Form(...),
+    db: Session = Depends(get_db),
+    staff: StaffUser = Depends(require_staff),
+):
+    """Hard-delete a booking and everything attached to it. The only hard
+    delete in the app -- guarded by requiring the exact reference code to
+    be typed, so it can't happen on a stray click. For removing test or
+    erroneous bookings; recoverable only via database PITR."""
+    booking = _get_booking_or_404(db, booking_id)
+    if confirm_reference.strip() != booking.reference_code:
+        raise HTTPException(
+            status_code=422,
+            detail="Type the booking's exact reference code to confirm deletion",
+        )
+    try:
+        booking_service.delete_booking_and_dependents(db, booking, actor=_actor(staff))
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return RedirectResponse(url="/admin/bookings", status_code=303)
+
+
 @router.get("", response_class=HTMLResponse)
 def list_bookings(
     request: Request,

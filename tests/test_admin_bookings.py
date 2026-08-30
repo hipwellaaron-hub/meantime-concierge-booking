@@ -2,13 +2,15 @@ import datetime as dt
 import re
 from decimal import Decimal
 
-from app.models import Booking, Contact
+from sqlalchemy import select
+
+from app.models import Booking, BookingEvent, Contact, Document, Invoice
 from app.models.booking import BookingStatus, MinReductionReasonCode
 from app.models.document import DocumentStatus, DocumentType
 from app.models.invoice import InvoiceStatus
 from app.services import documents as documents_service
 from app.services import invoicing
-from app.services.booking import change_status, create_booking, flag_for_review
+from app.services.booking import add_linked_space, change_status, create_booking, flag_for_review
 
 
 def _csrf(html: str) -> str:
@@ -1245,3 +1247,83 @@ def test_revise_paid_invoice_is_refused(admin_client, booking, db):
         follow_redirects=False,
     )
     assert resp.status_code == 409
+
+
+# --- hard delete booking ------------------------------------------------------
+
+
+def _booking_with_everything(db, loft, mezzanine):
+    """A booking carrying an invoice + payment + document + a linked child,
+    to prove the delete cascades through all of it."""
+    from app.models import Contact
+    from app.models.payment import PaymentMethod
+
+    contact = Contact(name="Delete Test", email="delete.test@example.com")
+    db.add(contact)
+    db.flush()
+    booking = create_booking(
+        db, space_id=loft.id, contact_id=contact.id, event_date=dt.date(2027, 5, 1),
+        start_time=dt.time(18, 0), end_time=dt.time(23, 0), event_name="Delete Me",
+        event_type="birthday", adult_count=40, child_count=0, notes=None, actor="test",
+    )
+    add_linked_space(db, booking, space_id=mezzanine.id, actor="test")
+    inv = invoicing.create_final_invoice(
+        db, booking, line_items=[{"description": "Catering", "quantity": 1, "unit_price": "800.00"}],
+        due_date=dt.date(2027, 4, 1), actor="test",
+    )
+    invoicing.mark_sent(db, inv, actor="test")
+    invoicing.record_payment(db, inv, amount=Decimal("100.00"), method=PaymentMethod.card, actor="test")
+    documents_service.create_new_version(db, booking, DocumentType.beo, {"n": 1}, actor="test")
+    return booking
+
+
+def test_delete_booking_requires_exact_reference(admin_client, booking, db):
+    csrf = _csrf(_detail_page(admin_client, booking.id).text)
+    resp = admin_client.post(
+        f"/admin/bookings/{booking.id}/delete",
+        data={"csrf_token": csrf, "confirm_reference": "WRONG-CODE"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 422
+    assert db.get(Booking, booking.id) is not None  # still there
+
+
+def test_delete_booking_removes_everything(admin_client, db, loft, mezzanine):
+    from app.models import Payment
+    from app.models.wizard_session import WizardSession
+
+    booking = _booking_with_everything(db, loft, mezzanine)
+    booking_id = booking.id
+    child_id = booking.linked_bookings[0].id
+    invoice_ids = [i.id for i in booking.invoices]
+
+    csrf = _csrf(_detail_page(admin_client, booking_id).text)
+    resp = admin_client.post(
+        f"/admin/bookings/{booking_id}/delete",
+        data={"csrf_token": csrf, "confirm_reference": booking.reference_code},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/admin/bookings"
+
+    assert db.get(Booking, booking_id) is None
+    assert db.get(Booking, child_id) is None  # linked child gone too
+    for inv_id in invoice_ids:
+        assert db.get(Invoice, inv_id) is None
+    assert db.scalars(select(Payment.id).where(Payment.invoice_id.in_(invoice_ids))).first() is None
+    assert db.scalars(select(Document.id).where(Document.booking_id == booking_id)).first() is None
+    assert db.scalars(select(BookingEvent.id).where(BookingEvent.booking_id == booking_id)).first() is None
+    assert db.scalars(select(WizardSession.id).where(WizardSession.booking_id == booking_id)).first() is None
+
+
+def test_cannot_delete_a_linked_child_directly(admin_client, db, loft, mezzanine):
+    booking = _booking_with_everything(db, loft, mezzanine)
+    child = booking.linked_bookings[0]
+    csrf = _csrf(_detail_page(admin_client, child.id).text)
+    resp = admin_client.post(
+        f"/admin/bookings/{child.id}/delete",
+        data={"csrf_token": csrf, "confirm_reference": child.reference_code},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 409
+    assert db.get(Booking, child.id) is not None

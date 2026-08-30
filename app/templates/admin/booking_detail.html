@@ -508,6 +508,24 @@
   {% endif %}
 </div>
 
+<div class="card" style="border-color: var(--wine, #7a2b3a);">
+  <h2 style="color: var(--wine, #b5495f);">Danger zone</h2>
+  <p class="muted" style="font-size:0.85rem;">
+    Permanently delete this booking and everything attached to it &mdash; invoices, payments,
+    documents, and any linked second-room booking. This is the one action in Concierge that can't be
+    undone from here (only a database restore can bring it back), so it exists for removing test or
+    mistaken bookings, not real ones. Type the reference code <b>{{ booking.reference_code }}</b> to confirm.
+  </p>
+  <form method="post" action="/admin/bookings/{{ booking.id }}/delete"
+        onsubmit="return confirm('Permanently delete {{ booking.reference_code }} and all its invoices, payments and documents? This cannot be undone from Concierge.');">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="field-row" style="align-items:flex-end;">
+      <div><label>Confirm reference</label><input type="text" name="confirm_reference" placeholder="{{ booking.reference_code }}" autocomplete="off" required></div>
+      <div style="flex:0 0 auto;"><button class="btn danger" type="submit">Delete booking</button></div>
+    </div>
+  </form>
+</div>
+
 <script>
 function copyLink(button, path) {
   const url = window.location.origin + path;
