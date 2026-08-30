@@ -22,11 +22,12 @@ BOOKING_EVENT_ACTOR_MAX_LENGTH = 255
 
 
 def _client_ip(request: Request) -> str:
-    # Railway (and most PaaS) sits behind a proxy, so request.client.host
-    # would just be the proxy's address -- prefer the first hop of
-    # X-Forwarded-For, which is the actual client. Truncated defensively:
-    # a forged/garbage header should never be able to overflow the
-    # signer_ip column and crash a real signing attempt.
+    # Delegates to the shared client_ip (app/rate_limit.py), which derives
+    # the real client from the trusted end of X-Forwarded-For rather than
+    # the spoofable leftmost hop -- so signer_ip records the actual signer,
+    # not a value the signer chose. Truncated defensively: a forged/garbage
+    # header must never overflow the signer_ip column and crash a real
+    # signing attempt.
     return truncate(client_ip(request), SIGNER_IP_MAX_LENGTH)
 
 

@@ -16,6 +16,8 @@ from collections import deque
 
 from fastapi import HTTPException, Request
 
+from app.config import settings
+
 
 class InMemoryRateLimiter:
     def __init__(self, max_requests: int, window_seconds: float):
@@ -51,12 +53,28 @@ class InMemoryRateLimiter:
 
 
 def client_ip(request: Request) -> str:
-    # Same precedence as app/api/documents.py's _client_ip: Railway (and
-    # most PaaS) sits behind a proxy, so request.client.host alone would
-    # just be the proxy's address.
+    """The real client IP, for rate-limit keying and audit records.
+
+    Railway (like most PaaS) fronts the app with a proxy, so
+    request.client.host is just the proxy's address and X-Forwarded-For
+    carries the chain. Critically, the LEFTMOST XFF entries are whatever
+    the client themselves sent -- fully spoofable -- and only the last
+    `trusted_proxy_hops` entries were appended by infrastructure we trust.
+    Taking the leftmost value (the old behaviour) let a client rotate a
+    forged header to hand every request its own fresh rate-limit bucket,
+    defeating the limit, and let a signer forge their recorded signer_ip.
+    So we count `trusted_proxy_hops` in from the right instead.
+    """
+    hops = settings.trusted_proxy_hops
     forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
+    if forwarded and hops > 0:
+        parts = [p.strip() for p in forwarded.split(",") if p.strip()]
+        if parts:
+            # The entry the closest trusted proxy appended is parts[-hops];
+            # clamp so a chain shorter than expected just yields the
+            # left-most-available trusted entry rather than indexing off
+            # the end.
+            return parts[-min(hops, len(parts))]
     return request.client.host if request.client else "unknown"
 
 

@@ -53,7 +53,56 @@ class MaxBodySizeMiddleware:
         await self.app(scope, receive, send)
 
 
-app = FastAPI(title="Meantime Concierge")
+app = FastAPI(
+    title="Meantime Concierge",
+    # Interactive API docs are closed unless explicitly enabled (see
+    # settings.expose_api_docs): a private booking system shouldn't publish
+    # a full route/parameter map to anyone who asks.
+    docs_url="/docs" if settings.expose_api_docs else None,
+    redoc_url="/redoc" if settings.expose_api_docs else None,
+    openapi_url="/openapi.json" if settings.expose_api_docs else None,
+)
+
+
+class SecurityHeadersMiddleware:
+    """Baseline hardening headers on every response. None of these change
+    behaviour for a well-behaved browser; they close off clickjacking
+    (X-Frame-Options), MIME-sniffing (X-Content-Type-Options), referer
+    leakage of tokened URLs to third parties (Referrer-Policy), and pin
+    HTTPS for return visits (HSTS). A full Content-Security-Policy is
+    deliberately not set here yet -- the wizard and floor pages rely on
+    inline <script> blocks, so a CSP needs per-page nonces to avoid
+    breaking them; tracked as a follow-up rather than shipped half-done.
+    """
+
+    _HEADERS = {
+        b"x-frame-options": b"SAMEORIGIN",
+        b"x-content-type-options": b"nosniff",
+        b"referrer-policy": b"strict-origin-when-cross-origin",
+        b"strict-transport-security": b"max-age=31536000; includeSubDomains",
+    }
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        async def _send(message):
+            if message["type"] == "http.response.start":
+                headers = message.setdefault("headers", [])
+                existing = {k.lower() for k, _ in headers}
+                for key, value in self._HEADERS.items():
+                    if key not in existing:
+                        headers.append((key, value))
+            await send(message)
+
+        await self.app(scope, receive, _send)
+
+
+app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(MaxBodySizeMiddleware, max_size=MAX_BODY_SIZE)
 # Signs the staff session cookie (app/admin_auth.py). https_only mirrors
 # session_cookie_secure -- see app/config.py for why that's overridable.

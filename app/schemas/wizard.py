@@ -52,10 +52,14 @@ class WizardFoodItem(BaseModel):
 
 
 class WizardFoodStep(BaseModel):
-    platters: list[WizardFoodItem] = Field(default_factory=list)
-    pizzas: list[WizardFoodItem] = Field(default_factory=list)
-    sides: list[WizardFoodItem] = Field(default_factory=list)
-    desserts: list[WizardFoodItem] = Field(default_factory=list)
+    # Bounded like every other list on the public wizard payload (key_moments
+    # 20, vendors 10, music 3): a real order is a handful of lines per
+    # category, and each item triggers a catalogue price lookup server-side,
+    # so an unbounded list is needless work to hand a hostile client.
+    platters: list[WizardFoodItem] = Field(default_factory=list, max_length=100)
+    pizzas: list[WizardFoodItem] = Field(default_factory=list, max_length=100)
+    sides: list[WizardFoodItem] = Field(default_factory=list, max_length=100)
+    desserts: list[WizardFoodItem] = Field(default_factory=list, max_length=100)
 
 
 class WizardBeverageStep(BaseModel):

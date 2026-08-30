@@ -17,6 +17,18 @@ class Settings(BaseSettings):
     # can't set a Secure cookie, so this is overridable to False locally.
     session_cookie_secure: bool = True
 
+    # How many trusted proxies sit in front of the app, for deriving the
+    # real client IP from X-Forwarded-For (see app/rate_limit.py). The
+    # LEFTMOST XFF entries are client-supplied and spoofable; only the
+    # rightmost `trusted_proxy_hops` entries were appended by
+    # infrastructure we trust. Railway fronts the app with a single edge
+    # proxy, so the real client is the last XFF entry -> default 1. Set to
+    # 0 to ignore XFF entirely and use the raw socket peer (correct only
+    # with no proxy, e.g. some local setups). Getting this wrong doesn't
+    # breach anything; too-low lets a client spoof their rate-limit bucket,
+    # too-high collapses distinct clients into one bucket.
+    trusted_proxy_hops: int = 1
+
     # Guided Booking Wizard auto-routing. Both default OFF: a clean wizard
     # submission (no [REVIEW] markers, no escalation) is technically ready
     # to generate/send automatically, but "nothing client-facing auto-
@@ -26,6 +38,14 @@ class Settings(BaseSettings):
     # switchable rather than one combined flag).
     wizard_beo_auto_finalize: bool = False
     wizard_invoice_auto_send: bool = False
+
+    # FastAPI's interactive API docs (/docs, /redoc, /openapi.json). Off by
+    # default: this is a private booking system, and an open schema just
+    # hands a stranger a complete map of every route and parameter. The
+    # endpoints behind it are auth-gated regardless, so this is defence in
+    # depth, not the lock itself. Flip to True in a local .env if you want
+    # the Swagger UI while developing.
+    expose_api_docs: bool = False
 
     # The one public URL every internal notification email (enquiry
     # notification, staff digest) links back into -- a single place to

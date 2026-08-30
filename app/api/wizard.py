@@ -1,5 +1,4 @@
 import dataclasses
-import json
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
@@ -170,7 +169,11 @@ def view_wizard(token: str, request: Request, db: Session = Depends(get_db)):
     return templates.TemplateResponse(
         request,
         "wizard/wizard.html",
-        {"booking": booking, "bootstrap_json": json.dumps(bootstrap)},
+        # Passed as a dict and rendered with Jinja's |tojson, which escapes
+        # <, >, & as \uXXXX -- so a client-supplied event name or vendor
+        # name containing </script> can't break out of the JSON island and
+        # inject markup. Never render this via json.dumps + |safe.
+        {"booking": booking, "bootstrap": bootstrap},
     )
 
 

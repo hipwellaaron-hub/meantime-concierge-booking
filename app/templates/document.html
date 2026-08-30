@@ -251,11 +251,14 @@
 {% endif %}
 {% endmacro %}
 
-{% macro beo_left_column(content, staff) %}
+{% macro beo_left_column(content, staff, is_floor_app=false) %}
 {{ beo_timeline(content, staff) }}
 {{ beo_section("Catering Order + Service Style", content.catering_order_and_service_style, staff) }}
 {{ beo_food_groups(content, staff) }}
-{{ beo_totals(content, staff) }}
+{# Total Food Spend is money -- withheld from the floor surface, where the
+   paid/owing pill is the only financial signal. Kept on the client's PDF
+   and the admin screen view. #}
+{% if not is_floor_app %}{{ beo_totals(content, staff) }}{% endif %}
 {{ beo_section("Bar Structure", content.bar_structure, staff) }}
 {% endmacro %}
 
@@ -493,13 +496,13 @@
   <div class="beo-meta">
     <div>
       <span class="k">Event Coordinator:</span> {{ venue_contact_name }}<br>
-      <span class="k">Client:</span> {{ client_name or "—" }}{% if ref.get("client_phone") %} ({{ ref.client_phone }}){% endif %}<br>
+      <span class="k">Client:</span> {{ client_name or "—" }}{% if ref.get("client_phone") and not is_floor_app %} ({{ ref.client_phone }}){% endif %}<br>
       <span class="k">Onsite Contact:</span> {{ (content.get("onsite_contact") | person_name) or client_name or "—" }}
     </div>
     <div class="right">
       <span class="k">Event Order:</span> EO-{{ booking.reference_code }}-v{{ document.version }}<br>
-      <span class="k">Booking Reference:</span> {{ booking.reference_code }}<br>
-      <span class="k">Total Paid:</span> {{ ("A$" + ref.total_paid) if ref.get("total_paid") else "—" }}
+      <span class="k">Booking Reference:</span> {{ booking.reference_code }}{% if not is_floor_app %}<br>
+      <span class="k">Total Paid:</span> {{ ("A$" + ref.total_paid) if ref.get("total_paid") else "—" }}{% endif %}
     </div>
   </div>
 
@@ -512,13 +515,19 @@
 
   <div class="beo-cols">
     <div>
-      {{ beo_left_column(content, staff) }}
+      {{ beo_left_column(content, staff, is_floor_app) }}
     </div>
     <div>
       {{ beo_right_column(content, staff, document) }}
     </div>
   </div>
 
+  {# Money is deliberately withheld from the floor surface (is_floor_app):
+     the team's question is what's on and who's paid at a glance -- the
+     paid/owing pill answers that -- not the dollar figures. The client's
+     own PDF (is_pdf, the clean render served by booking_beo_pdf) keeps
+     the full billing summary. #}
+  {% if not is_floor_app %}
   <div class="beo-billing">
     <table>
       <tr><td><b>Billing Summary</b></td><td style="text-align:right;"></td></tr>
@@ -527,6 +536,7 @@
       <tr><td><b>Balance owing</b></td><td style="text-align:right;"><b>{{ ("$" + content.total_food_spend.balance_due) if content.total_food_spend.balance_due else "—" }}</b></td></tr>
     </table>
   </div>
+  {% endif %}
 
   {# The floor app (is_floor_app) is a staff surface too -- kitchen/bar
      notes exist precisely for that team -- but it keeps client_safe
