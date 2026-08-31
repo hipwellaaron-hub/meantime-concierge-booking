@@ -164,7 +164,7 @@
     <a class="brand" href="/admin/">Meantime Concierge</a>
     <div class="header-right">
       <div class="status-cluster">
-        <span class="health-dot" id="health-dot" title="Checking system status…"></span>
+        <span class="badge" id="db-status" title="Checking database…">Database</span>
         {% if stripe_mode and stripe_mode.value == "live" %}<span class="badge green" title="Stripe is live — card payment links charge real cards.">Stripe</span>{% endif %}
         <span class="badge" id="gmail-status" title="Checking email…">Gmail</span>
       </div>
@@ -188,17 +188,20 @@
 
 <script>
 (function () {
-  var dot = document.getElementById("health-dot");
+  var db = document.getElementById("db-status");
   var gmail = document.getElementById("gmail-status");
-  if (!dot) return;
+  if (!db && !gmail) return;
 
-  function summarize(data) {
-    if (data.status === "ok") return "All systems operational";
-    if (data.status === "down") return "Database unreachable -- Concierge is down";
-    var notes = [];
-    if (data.checks && data.checks.enquiry_notifications_failing) notes.push("enquiry notification emails are failing");
-    if (data.checks && data.checks.gmail_configured === false) notes.push("Gmail is not configured");
-    return "Degraded" + (notes.length ? ": " + notes.join(", ") : "");
+  function setDatabase(data) {
+    if (!db) return;
+    // The database badge reflects the database ONLY -- not email health,
+    // which has its own badge. A reachable DB is green even while, say,
+    // enquiry emails are backlogged.
+    if (data.checks && data.checks.database) {
+      db.className = "badge green"; db.title = "Database is connected.";
+    } else {
+      db.className = "badge wine"; db.title = "Database is unreachable -- Concierge can't read or write.";
+    }
   }
 
   function setGmail(data) {
@@ -208,7 +211,8 @@
     if (ok && !failing) {
       gmail.className = "badge green"; gmail.title = "Gmail is connected -- emails are sending.";
     } else if (ok && failing) {
-      gmail.className = "badge ember"; gmail.title = "Gmail is connected but some emails are failing to send.";
+      gmail.className = "badge ember";
+      gmail.title = "Gmail is connected, but some enquiry emails haven't sent -- resend them from Triage.";
     } else {
       gmail.className = "badge wine"; gmail.title = "Gmail is not connected -- no emails will send.";
     }
@@ -221,14 +225,11 @@
         return resp.json();
       })
       .then(function (data) {
-        var cls = data.status === "ok" ? "ok" : data.status === "degraded" ? "degraded" : "down";
-        dot.className = "health-dot " + cls;
-        dot.title = summarize(data);
+        setDatabase(data);
         setGmail(data);
       })
       .catch(function () {
-        dot.className = "health-dot down";
-        dot.title = "Cannot reach Concierge -- the server may be down.";
+        if (db) { db.className = "badge wine"; db.title = "Can't reach the server."; }
         if (gmail) { gmail.className = "badge wine"; gmail.title = "Can't reach the server."; }
       });
   }
