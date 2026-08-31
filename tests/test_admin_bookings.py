@@ -1355,3 +1355,56 @@ def test_cannot_delete_a_linked_child_directly(admin_client, db, loft, mezzanine
     )
     assert resp.status_code == 409
     assert db.get(Booking, child.id) is not None
+
+
+# --- recording a payment with a chosen date -----------------------------------
+
+
+def _sent_deposit(db, booking):
+    inv = invoicing.create_invoice(
+        db, booking, __import__("app.models.invoice", fromlist=["InvoiceType"]).InvoiceType.deposit,
+        [{"description": "Deposit", "quantity": 1, "unit_price": "500.00"}], dt.date.today(), actor="test",
+    )
+    invoicing.mark_sent(db, inv, actor="test")
+    return inv
+
+
+def test_record_payment_with_a_back_dated_date(admin_client, booking, db):
+    from app.models import Payment
+
+    inv = _sent_deposit(db, booking)
+    csrf = _csrf(_detail_page(admin_client, booking.id).text)
+    resp = admin_client.post(
+        f"/admin/bookings/{booking.id}/invoices/{inv.id}/payments",
+        data={"csrf_token": csrf, "amount": "500.00", "method": "bank_transfer", "received_date": "2026-08-20"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    payment = db.scalars(select(Payment).where(Payment.invoice_id == inv.id)).one()
+    assert payment.received_at.date() == dt.date(2026, 8, 20)
+
+
+def test_record_payment_blank_date_defaults_to_now(admin_client, booking, db):
+    from app.models import Payment
+
+    inv = _sent_deposit(db, booking)
+    csrf = _csrf(_detail_page(admin_client, booking.id).text)
+    resp = admin_client.post(
+        f"/admin/bookings/{booking.id}/invoices/{inv.id}/payments",
+        data={"csrf_token": csrf, "amount": "500.00", "method": "bank_transfer", "received_date": ""},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    payment = db.scalars(select(Payment).where(Payment.invoice_id == inv.id)).one()
+    assert payment.received_at.date() == dt.datetime.now(dt.timezone.utc).date()
+
+
+def test_record_payment_rejects_a_bad_date(admin_client, booking, db):
+    inv = _sent_deposit(db, booking)
+    csrf = _csrf(_detail_page(admin_client, booking.id).text)
+    resp = admin_client.post(
+        f"/admin/bookings/{booking.id}/invoices/{inv.id}/payments",
+        data={"csrf_token": csrf, "amount": "500.00", "method": "bank_transfer", "received_date": "not-a-date"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 422

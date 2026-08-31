@@ -953,6 +953,7 @@ def record_payment(
     method: PaymentMethod = Form(...),
     reference: str | None = Form(None),
     payer_name: str | None = Form(None),
+    received_date: str | None = Form(None),
     db: Session = Depends(get_db),
     staff: StaffUser = Depends(require_staff),
 ):
@@ -964,6 +965,20 @@ def record_payment(
         parsed_amount = Decimal(amount)
     except InvalidOperation:
         raise HTTPException(status_code=422, detail="Invalid payment amount")
+
+    # Optional back-dating: staff record a payment that actually arrived
+    # earlier (a bank transfer that landed last week). Blank means "today",
+    # keeping the common case a single click. Stored at midday UTC so the
+    # calendar date can't slip either side of the venue's local day.
+    received_at = None
+    if received_date and received_date.strip():
+        try:
+            received_at = dt.datetime.combine(
+                dt.date.fromisoformat(received_date.strip()), dt.time(12, 0), tzinfo=dt.timezone.utc
+            )
+        except ValueError:
+            raise HTTPException(status_code=422, detail="Invalid payment date")
+
     try:
         invoicing.record_payment(
             db,
@@ -972,6 +987,7 @@ def record_payment(
             method=method,
             reference=reference or None,
             payer_name=payer_name or None,
+            received_at=received_at,
             actor=_actor(staff),
         )
     except ValueError as exc:
