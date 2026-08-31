@@ -43,22 +43,32 @@
 
 <div class="section-gap">
   <h2>Recent activity</h2>
+  <style>
+    .activity-table thead th {
+      position: sticky; top: 0; z-index: 1;
+      background: var(--surface); /* opaque, so scrolled rows don't show through the header */
+    }
+  </style>
   <div class="card" style="padding:0;">
     {% if recent_events %}
-    <table>
-      <thead><tr><th>When</th><th>Event</th><th>Field</th><th>Detail</th><th>Actor</th></tr></thead>
-      <tbody>
-      {% for event in recent_events %}
-        <tr>
-          <td class="muted">{{ event.created_at | sydney_time }}</td>
-          <td>{{ event.event_type }}</td>
-          <td class="muted">{{ event.field_name or "" }}</td>
-          <td class="muted">{{ event.new_value or "" }}</td>
-          <td class="muted">{{ event.actor }}</td>
-        </tr>
-      {% endfor %}
-      </tbody>
-    </table>
+    {# ~10 rows show; the rest scroll inside this window with the header
+       pinned, so a long audit trail never pushes the page down forever. #}
+    <div style="max-height: 26rem; overflow-y: auto;">
+      <table class="activity-table">
+        <thead><tr><th>When</th><th>Event</th><th>Field</th><th>Detail</th><th>Actor</th></tr></thead>
+        <tbody>
+        {% for event in recent_events %}
+          <tr>
+            <td class="muted" style="white-space: nowrap;">{{ event.created_at | sydney_time }}</td>
+            <td>{{ event.event_type }}</td>
+            <td class="muted">{{ event.field_name or "" }}</td>
+            <td class="muted">{{ event.new_value or "" }}</td>
+            <td class="muted">{{ event.actor }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
     {% else %}
     <div class="empty-state" style="padding:20px;">No activity yet.</div>
     {% endif %}

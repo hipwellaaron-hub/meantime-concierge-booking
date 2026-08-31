@@ -47,7 +47,9 @@ def dashboard(request: Request, db: Session = Depends(get_db), staff: StaffUser 
         .join(Space, Booking.space_id == Space.id)
         .where(Space.venue_id == venue.id)
         .order_by(BookingEvent.created_at.desc())
-        .limit(15)
+        # ~10 show without scrolling; the rest are reachable in the scroll
+        # window on the dashboard, so load a fuller recent history.
+        .limit(60)
     ).all()
 
     return templates.TemplateResponse(
