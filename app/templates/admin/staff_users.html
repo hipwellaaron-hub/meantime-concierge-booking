@@ -58,6 +58,12 @@
           {% endif %}
         </td>
         <td>
+          {% if user.role == "floor" and user.is_active %}
+          <form class="inline" method="post" action="/admin/staff/{{ user.id }}/resend-welcome" onsubmit="return confirm('Re-send the Meantime Floor setup email to {{ user.name }}?');">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button class="btn secondary" type="submit">Resend setup email</button>
+          </form>
+          {% endif %}
           {% if user.id != me.id %}
           {% if user.is_active %}
           <form class="inline" method="post" action="/admin/staff/{{ user.id }}/deactivate" onsubmit="return confirm('Deactivate {{ user.name }}? Their logins and app tokens stop working immediately.');">

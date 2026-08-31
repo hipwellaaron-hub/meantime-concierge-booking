@@ -502,3 +502,32 @@ def test_floor_welcome_failure_still_creates_account(db, admin_client, monkeypat
     assert "welcome=failed" in resp.headers["location"]
     # account exists regardless
     assert staff_auth.authenticate(db, "karly.floor@meantime.com.au", "karlypass12") is not None
+
+
+def test_resend_floor_welcome(db, admin_client, floor_user, monkeypatch):
+    calls = []
+    monkeypatch.setattr("app.services.notifications.notify_floor_welcome", lambda **kw: calls.append(kw) or True)
+    csrf = _csrf_of(admin_client)
+    resp = admin_client.post(
+        f"/admin/staff/{floor_user.id}/resend-welcome", data={"csrf_token": csrf}, follow_redirects=False
+    )
+    assert resp.status_code == 303
+    assert "welcome=sent" in resp.headers["location"]
+    assert calls == [{"name": floor_user.name, "email": floor_user.email}]
+
+
+def test_resend_welcome_refused_for_admin_account(db, admin_client, staff_user, monkeypatch):
+    calls = []
+    monkeypatch.setattr("app.services.notifications.notify_floor_welcome", lambda **kw: calls.append(kw) or True)
+    csrf = _csrf_of(admin_client)
+    resp = admin_client.post(
+        f"/admin/staff/{staff_user.id}/resend-welcome", data={"csrf_token": csrf}, follow_redirects=False
+    )
+    assert resp.status_code == 422
+    assert calls == []
+
+
+def test_resend_welcome_button_shows_only_for_floor(db, admin_client, floor_user):
+    page = admin_client.get("/admin/staff").text
+    # The floor user's row offers a resend; the admin (you) row does not get one for itself.
+    assert "Resend setup email" in page

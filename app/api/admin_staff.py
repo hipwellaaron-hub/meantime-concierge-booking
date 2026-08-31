@@ -72,6 +72,24 @@ def create_staff(
     return _redirect()
 
 
+@router.post("/{user_id}/resend-welcome", dependencies=[Depends(require_csrf)])
+def resend_floor_welcome(
+    user_id: uuid.UUID,
+    request: Request,
+    db: Session = Depends(get_db),
+    staff: StaffUser = Depends(require_staff),
+):
+    """Re-send the Floor setup-and-usage email -- for a new phone, a lost
+    email, etc. Floor accounts only (admins don't use /floor)."""
+    user = db.get(StaffUser, user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="No such staff user")
+    if user.role != "floor":
+        raise HTTPException(status_code=422, detail="Only floor accounts use the Meantime Floor app")
+    sent = notifications.notify_floor_welcome(name=user.name, email=user.email)
+    return RedirectResponse(url=f"/admin/staff?welcome={'sent' if sent else 'failed'}", status_code=303)
+
+
 @router.post("/{user_id}/deactivate", dependencies=[Depends(require_csrf)])
 def deactivate_staff(
     user_id: uuid.UUID,
