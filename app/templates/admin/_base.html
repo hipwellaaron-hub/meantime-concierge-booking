@@ -88,6 +88,7 @@
     overflow-x: auto;
   }
   .grid { display: grid; gap: 18px; }
+  .grid.cols-3 { grid-template-columns: repeat(3, 1fr); }
   .grid.cols-4 { grid-template-columns: repeat(4, 1fr); }
   .grid.cols-5 { grid-template-columns: repeat(5, 1fr); }
   .grid.cols-6 { grid-template-columns: repeat(6, 1fr); }
@@ -97,7 +98,7 @@
     .grid.cols-6 { grid-template-columns: repeat(3, 1fr); }
   }
   @media (max-width: 800px) {
-    .grid.cols-4, .grid.cols-5, .grid.cols-6 { grid-template-columns: repeat(2, 1fr); }
+    .grid.cols-3, .grid.cols-4, .grid.cols-5, .grid.cols-6 { grid-template-columns: repeat(2, 1fr); }
   }
 
   table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }

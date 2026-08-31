@@ -3,7 +3,7 @@
 {% block content %}
 <h1>Dashboard</h1>
 
-<div class="grid cols-6">
+<div class="grid cols-3">
   <a class="card stat" href="/admin/bookings?status=enquiry" style="text-decoration:none;">
     <div class="num">{{ counts.open_enquiries }}</div>
     <div class="label">Open enquiries</div>
@@ -11,6 +11,10 @@
   <a class="card stat" href="/admin/triage" style="text-decoration:none;">
     <div class="num">{{ counts.triage }}</div>
     <div class="label">Awaiting triage</div>
+  </a>
+  <a class="card stat" href="/admin/triage" style="text-decoration:none; {% if counts.notification_failures %}border-color: var(--ember);{% endif %}">
+    <div class="num" style="{% if counts.notification_failures %}color: var(--ember);{% endif %}">{{ counts.notification_failures }}</div>
+    <div class="label">Enquiry emails failed</div>
   </a>
   <a class="card stat" href="/admin/triage" style="text-decoration:none;">
     <div class="num">{{ counts.wizard_ready }}</div>
@@ -24,21 +28,6 @@
     <div class="num">{{ counts.unpaid_invoices }}</div>
     <div class="label">Unpaid invoices</div>
   </a>
-  <a class="card stat" href="/admin/triage" style="text-decoration:none; {% if counts.notification_failures %}border-color: var(--ember);{% endif %}">
-    <div class="num" style="{% if counts.notification_failures %}color: var(--ember);{% endif %}">{{ counts.notification_failures }}</div>
-    <div class="label">Enquiry emails failed</div>
-  </a>
-</div>
-
-<div class="card section-gap" style="{% if stripe_mode.value == 'test' %}border-color: var(--ember);{% elif stripe_mode.value == 'not_configured' %}border-color: var(--wine);{% else %}border-color: var(--safe-green);{% endif %}">
-  <h2>Payments</h2>
-  {% if stripe_mode.value == "live" %}
-  <p style="margin:0;"><span class="badge green">Stripe live</span> <span class="muted">Card payment links charge real cards.</span></p>
-  {% elif stripe_mode.value == "test" %}
-  <p style="margin:0;"><span class="badge ember">Stripe test mode</span> <span class="muted">Card payment links use Stripe test cards only -- no real money moves. See the go-live checklist before switching this.</span></p>
-  {% else %}
-  <p style="margin:0;"><span class="badge wine">Stripe not configured</span> <span class="muted">No card payment links can be created. Invoices default to bank transfer.</span></p>
-  {% endif %}
 </div>
 
 <div class="section-gap">

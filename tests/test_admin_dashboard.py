@@ -65,7 +65,7 @@ def test_dashboard_shows_not_configured_by_default(admin_client):
     # deployment -- this is the real default, not a contrived patch.
     resp = admin_client.get("/admin/")
     assert resp.status_code == 200
-    assert "Stripe not configured" in resp.text
+    assert "STRIPE NOT CONFIGURED" in resp.text  # the header banner
     assert "STRIPE TEST MODE" not in resp.text
 
 
