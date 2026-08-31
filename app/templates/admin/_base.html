@@ -30,14 +30,19 @@
   body { margin: 0; font-family: var(--font-body); background: var(--bg); color: var(--cream); -webkit-font-smoothing: antialiased; }
   a { color: var(--gold); }
   header.top {
-    display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap;
-    padding: 14px 24px; gap: 10px; background: var(--surface-hi); border-bottom: 1px solid var(--border);
+    display: flex; flex-direction: column; gap: 10px;
+    padding: 14px 24px; background: var(--surface-hi); border-bottom: 1px solid var(--border);
     position: sticky; top: 0; z-index: 10;
   }
-  header.top .brand { font-family: var(--font-head); font-size: 1.15rem; font-weight: 600; color: var(--cream); text-decoration: none; }
-  .brand-row { display: flex; align-items: center; gap: 10px; }
-  @media (max-width: 640px) {
-    nav.primary { order: 3; width: 100%; flex-wrap: wrap; gap: 10px 16px; }
+  /* Brand centred; the system-status cluster + log out sit at the right,
+     overlaid so the brand stays truly centred regardless of their width. */
+  .header-top { position: relative; display: flex; justify-content: center; align-items: center; min-height: 30px; }
+  header.top .brand { font-family: var(--font-head); font-size: 1.35rem; font-weight: 600; color: var(--cream); text-decoration: none; letter-spacing: 0.01em; }
+  .header-right { position: absolute; right: 0; top: 50%; transform: translateY(-50%); display: flex; align-items: center; gap: 12px; }
+  .status-cluster { display: flex; align-items: center; gap: 8px; }
+  @media (max-width: 820px) {
+    .header-right { position: static; transform: none; width: 100%; justify-content: center; flex-wrap: wrap; margin-top: 8px; }
+    nav.primary { flex-wrap: wrap; gap: 10px 16px; justify-content: center; }
   }
 
   .stripe-banner {
@@ -48,7 +53,7 @@
   .stripe-banner.mode-test { background: var(--ember); color: #201a10; }
   .stripe-banner.mode-not_configured { background: var(--wine); color: #f5e2e5; }
   .stripe-banner .detail { font-weight: 500; text-transform: none; letter-spacing: normal; }
-  nav.primary { display: flex; gap: 18px; align-items: center; }
+  nav.primary { display: flex; gap: 18px; align-items: center; justify-content: center; }
   nav.primary a { font-size: 0.85rem; font-weight: 600; text-decoration: none; color: var(--muted); }
   nav.primary a.active, nav.primary a:hover { color: var(--gold); }
   .staff-info { display: flex; align-items: center; gap: 12px; font-size: 0.8rem; color: var(--muted); }
@@ -155,9 +160,20 @@
 <body>
 
 <header class="top">
-  <div class="brand-row">
+  <div class="header-top">
     <a class="brand" href="/admin/">Meantime Concierge</a>
-    {% if stripe_mode and stripe_mode.value == "live" %}<span class="badge green">Stripe live</span>{% endif %}
+    <div class="header-right">
+      <div class="status-cluster">
+        <span class="health-dot" id="health-dot" title="Checking system status…"></span>
+        {% if stripe_mode and stripe_mode.value == "live" %}<span class="badge green" title="Stripe is live — card payment links charge real cards.">Stripe</span>{% endif %}
+        <span class="badge" id="gmail-status" title="Checking email…">Gmail</span>
+      </div>
+      <span class="staff-info"><span>{{ staff.name }}</span>
+      <form method="post" action="/admin/logout">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit">Log out</button>
+      </form></span>
+    </div>
   </div>
   <nav class="primary">
     <a href="/admin/">Dashboard</a>
@@ -168,19 +184,12 @@
     <a href="/admin/reports/attribution">Reports</a>
     <a href="/admin/staff">Staff</a>
   </nav>
-  <div class="staff-info">
-    <span class="health-dot" id="health-dot" title="Checking system status…"></span>
-    <span>{{ staff.name }}</span>
-    <form method="post" action="/admin/logout">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-      <button type="submit">Log out</button>
-    </form>
-  </div>
 </header>
 
 <script>
 (function () {
   var dot = document.getElementById("health-dot");
+  var gmail = document.getElementById("gmail-status");
   if (!dot) return;
 
   function summarize(data) {
@@ -190,6 +199,19 @@
     if (data.checks && data.checks.enquiry_notifications_failing) notes.push("enquiry notification emails are failing");
     if (data.checks && data.checks.gmail_configured === false) notes.push("Gmail is not configured");
     return "Degraded" + (notes.length ? ": " + notes.join(", ") : "");
+  }
+
+  function setGmail(data) {
+    if (!gmail) return;
+    var ok = data.checks && data.checks.gmail_configured;
+    var failing = data.checks && data.checks.enquiry_notifications_failing;
+    if (ok && !failing) {
+      gmail.className = "badge green"; gmail.title = "Gmail is connected -- emails are sending.";
+    } else if (ok && failing) {
+      gmail.className = "badge ember"; gmail.title = "Gmail is connected but some emails are failing to send.";
+    } else {
+      gmail.className = "badge wine"; gmail.title = "Gmail is not connected -- no emails will send.";
+    }
   }
 
   function check() {
@@ -202,10 +224,12 @@
         var cls = data.status === "ok" ? "ok" : data.status === "degraded" ? "degraded" : "down";
         dot.className = "health-dot " + cls;
         dot.title = summarize(data);
+        setGmail(data);
       })
       .catch(function () {
         dot.className = "health-dot down";
         dot.title = "Cannot reach Concierge -- the server may be down.";
+        if (gmail) { gmail.className = "badge wine"; gmail.title = "Can't reach the server."; }
       });
   }
 

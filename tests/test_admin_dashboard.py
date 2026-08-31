@@ -89,7 +89,7 @@ def test_dashboard_shows_live_badge_not_alarming_banner(admin_client):
     with patch.object(stripe_integration, "STRIPE_SECRET_KEY", "sk_live_fake"):
         resp = admin_client.get("/admin/")
     assert resp.status_code == 200
-    assert "Stripe live" in resp.text
+    assert "Stripe is live" in resp.text  # the green header status badge's tooltip
     assert "STRIPE TEST MODE" not in resp.text
     assert "STRIPE NOT CONFIGURED" not in resp.text
 
