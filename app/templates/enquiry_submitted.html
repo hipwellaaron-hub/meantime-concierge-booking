@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Thank you — Meantime Hamilton</title>
+{% include "_tracking_head.html" %}
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Playfair+Display:wght@600;700&display=swap" rel="stylesheet">
@@ -41,5 +42,6 @@
   <p>Reference: <span class="reference">{{ booking.reference_code }}</span></p>
   <p>We'll be in touch shortly.</p>
 </div>
+{% if emit_conversion %}{% include "_tracking_conversion.html" %}{% endif %}
 </body>
 </html>

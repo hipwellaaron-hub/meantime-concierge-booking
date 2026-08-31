@@ -53,5 +53,16 @@ class Settings(BaseSettings):
     # app.services.notifications and app.send_digest.
     dashboard_base_url: str = "https://meantime-concierge-booking-production.up.railway.app"
 
+    # Public web-measurement identifiers for the enquiry funnel. Both PUBLIC
+    # (not secrets) and both default EMPTY so local/dev/test never loads a
+    # real tag or pollutes production analytics with test traffic -- the
+    # templates render the GA4 / Meta Pixel snippets only when the matching
+    # id is set. Production (book.meantime.com.au) sets these to the
+    # confirmed Meantime values via Railway variables:
+    #   GA4_MEASUREMENT_ID = G-XM8C86CGM6   (same GA4 property as meantime.com.au)
+    #   META_PIXEL_ID      = 7461755457239404 (existing MeantimeHamilton pixel)
+    ga4_measurement_id: str = ""
+    meta_pixel_id: str = ""
+
 
 settings = Settings()

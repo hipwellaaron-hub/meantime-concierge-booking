@@ -1,0 +1,39 @@
+{# The ad-conversion snippet, rendered by the thank-you page ONLY when the
+   server has decided this is a genuine, not-yet-emitted public enquiry (see
+   app.api.enquiries.enquiry_thanks) and set conversion_emitted_at. That
+   server flag is the authoritative once-only guard; the localStorage check
+   below is belt-and-braces against a bfcache re-execution. Both dedup on
+   the same reference_code, so ONE enquiry = ONE function_enquiry_submitted
+   = ONE Meta Lead, regardless of refresh / Back-Forward / re-open.
+
+   Non-PII only: lead_id is the reference_code (event date + random suffix,
+   no personal data); no name, email, phone or free text is ever sent. #}
+<script>
+(function () {
+  var LEAD_ID = {{ conversion_lead_id | tojson }};
+  var ENQUIRY_TYPE = {{ conversion_enquiry_type | tojson }};
+  var KEY = "mtc_conv_" + LEAD_ID;
+  try { if (window.localStorage && localStorage.getItem(KEY)) return; } catch (e) {}
+  try { if (window.localStorage) localStorage.setItem(KEY, "1"); } catch (e) {}
+
+  try {
+    if (typeof gtag === "function") {
+      gtag('event', 'function_enquiry_submitted', {
+        lead_id: LEAD_ID,
+        venue: 'hamilton',
+        source_system: 'meantime_concierge',
+        enquiry_type: ENQUIRY_TYPE || undefined
+      });
+    }
+  } catch (e) {}
+
+  try {
+    if (typeof fbq === "function") {
+      fbq('track', 'Lead',
+        { content_category: ENQUIRY_TYPE || undefined },
+        { eventID: LEAD_ID }
+      );
+    }
+  } catch (e) {}
+})();
+</script>

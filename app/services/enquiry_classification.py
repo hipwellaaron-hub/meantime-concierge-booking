@@ -22,8 +22,9 @@ import datetime as dt
 import logging
 import re
 import time
+from contextlib import contextmanager
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -178,6 +179,26 @@ def classify_and_flag(
     return flags
 
 
+@contextmanager
+def _enquiry_submission_lock(db: Session, email: str):
+    """Serialises concurrent submissions from the same email at the
+    database level, closing the check-then-create race the 15s window
+    alone can't: two near-simultaneous identical POSTs would otherwise
+    both pass _find_recent_duplicate before either committed, and both
+    create a booking (and a duplicate contact).
+
+    A TRANSACTION-level advisory lock (pg_advisory_xact_lock), not a
+    session-level one, on purpose: create_booking commits inside the
+    critical section, and a session lock would then be stranded on a
+    pooled connection. A transaction lock is auto-released at exactly that
+    commit -- the moment the first submission's booking becomes visible --
+    so the second submission unblocks, finds the duplicate, and reuses it.
+    ONE submission = ONE enquiry = ONE reference_code."""
+    key = f"enquiry:{email.strip().lower()}"
+    db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:k)::bigint)"), {"k": key})
+    yield
+
+
 def _find_recent_duplicate(db: Session, *, contact_id, event_date, event_name) -> Booking | None:
     cutoff = dt.datetime.now(dt.timezone.utc) - DUPLICATE_SUBMISSION_WINDOW
     return db.execute(
@@ -222,13 +243,75 @@ def create_enquiry_booking(
     form submission gets. Returns (booking, duplicate_candidates,
     is_new) -- is_new is False when a near-identical submission already
     exists within DUPLICATE_SUBMISSION_WINDOW and that existing booking
-    was reused instead of creating a second one."""
-    contact, duplicate_candidates = find_or_create_contact(db, full_name, email, phone)
+    was reused instead of creating a second one.
 
-    existing = _find_recent_duplicate(db, contact_id=contact.id, event_date=event_date, event_name=event_name)
-    if existing is not None:
-        return existing, duplicate_candidates, False
+    The find-or-create + duplicate-check + create runs under an advisory
+    lock keyed on the email (see _enquiry_submission_lock), so two
+    simultaneous identical POSTs can never both create -- the concurrency
+    fix the tracking work depends on, since one enquiry must map to one
+    conversion."""
+    with _enquiry_submission_lock(db, email):
+        contact, duplicate_candidates = find_or_create_contact(db, full_name, email, phone)
 
+        existing = _find_recent_duplicate(db, contact_id=contact.id, event_date=event_date, event_name=event_name)
+        if existing is not None:
+            return existing, duplicate_candidates, False
+
+        booking = _create_enquiry_booking_locked(
+            db,
+            venue=venue,
+            contact=contact,
+            event_name=event_name,
+            event_type=event_type,
+            event_date=event_date,
+            proposed_time_slot=proposed_time_slot,
+            attendee_count=attendee_count,
+            adult_count=adult_count,
+            company_name=company_name,
+            dates_flexible=dates_flexible,
+            comments=comments,
+            lead_source=lead_source,
+            lead_referrer=lead_referrer,
+            actor=actor,
+            first_touch_attribution=first_touch_attribution,
+            last_touch_attribution=last_touch_attribution,
+        )
+        flags = classify_and_flag(
+            db,
+            booking,
+            event_type=event_type,
+            adult_count=adult_count,
+            attendee_count=attendee_count,
+            actor=actor,
+            possible_duplicate_contact=len(duplicate_candidates) > 0,
+        )
+
+    # Lock released: the notification email (a slow SMTP call with its own
+    # retry) must never be held under the submission lock.
+    notify_new_enquiry(db, booking, flags=flags, actor=actor)
+    return booking, duplicate_candidates, True
+
+
+def _create_enquiry_booking_locked(
+    db: Session,
+    *,
+    venue: Venue,
+    contact,
+    event_name: str,
+    event_type: str,
+    event_date: dt.date | None,
+    proposed_time_slot: str | None,
+    attendee_count: int | None,
+    adult_count: int | None,
+    company_name: str | None,
+    dates_flexible: bool,
+    comments: str | None,
+    lead_source: str,
+    lead_referrer: str | None,
+    actor: str,
+    first_touch_attribution: dict | None,
+    last_touch_attribution: dict | None,
+) -> Booking:
     unassigned_space_id = ivvy_import.get_unassigned_space_id(db, venue)
 
     notes_parts = []
@@ -255,7 +338,7 @@ def create_enquiry_booking(
         resolved_adult_count = attendee_count
         resolved_child_count = 0
 
-    booking = create_booking(
+    return create_booking(
         db,
         space_id=unassigned_space_id,
         contact_id=contact.id,
@@ -272,20 +355,6 @@ def create_enquiry_booking(
         first_touch_attribution=first_touch_attribution,
         last_touch_attribution=last_touch_attribution,
     )
-
-    flags = classify_and_flag(
-        db,
-        booking,
-        event_type=event_type,
-        adult_count=adult_count,
-        attendee_count=attendee_count,
-        actor=actor,
-        possible_duplicate_contact=len(duplicate_candidates) > 0,
-    )
-
-    notify_new_enquiry(db, booking, flags=flags, actor=actor)
-
-    return booking, duplicate_candidates, True
 
 
 def notify_new_enquiry(db: Session, booking: Booking, *, flags: list[str], actor: str) -> None:

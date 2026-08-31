@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Enquire — Meantime Hamilton</title>
+{% include "_tracking_head.html" %}
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Playfair+Display:wght@600;700&display=swap" rel="stylesheet">
@@ -187,7 +188,7 @@
   // stored server-side; nothing here decides anything, it only captures.
   var STORAGE_FIRST = "mtc_attribution_first";
   var STORAGE_LAST = "mtc_attribution_last";
-  var UTM_AND_CLICK_ID_FIELDS = ["utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content", "gclid", "fbclid"];
+  var UTM_AND_CLICK_ID_FIELDS = ["utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content", "gclid", "gbraid", "wbraid", "fbclid"];
 
   function readStorage(key) {
     try {

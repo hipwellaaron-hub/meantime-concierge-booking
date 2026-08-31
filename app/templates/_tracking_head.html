@@ -1,0 +1,28 @@
+{# Base web measurement for the public enquiry funnel: GA4 (gtag) and the
+   Meta Pixel, plus a Meta PageView. Rendered ONLY when the matching id is
+   configured, so dev/test load nothing. Both are third-party async scripts
+   loaded on their own -- the enquiry form is a plain server-rendered POST
+   and never depends on either, so a blocked or failed tag can never stop a
+   customer submitting (analytics is strictly subordinate to the enquiry).
+   GA4 uses the same property (G-XM8C86CGM6) as meantime.com.au; the default
+   cookie domain spans the registrable domain, so continuity across
+   meantime.com.au <-> book.meantime.com.au needs no custom linker. #}
+{% if ga4_measurement_id %}
+<script async src="https://www.googletagmanager.com/gtag/js?id={{ ga4_measurement_id }}"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){ dataLayer.push(arguments); }
+  gtag('js', new Date());
+  gtag('config', '{{ ga4_measurement_id }}');
+</script>
+{% endif %}
+{% if meta_pixel_id %}
+<script>
+  !function(f,b,e,v,n,t,s){if(f.fbq)return;n=f.fbq=function(){n.callMethod?
+  n.callMethod.apply(n,arguments):n.queue.push(arguments)};if(!f._fbq)f._fbq=n;
+  n.push=n;n.loaded=!0;n.version='2.0';n.queue=[];t=b.createElement(e);t.async=!0;
+  t.src=v;s=b.getElementsByTagName(e)[0];s.parentNode.insertBefore(t,s)}(window,
+  document,'script','https://connect.facebook.net/en_US/fbevents.js');
+  try { fbq('init', '{{ meta_pixel_id }}'); fbq('track', 'PageView'); } catch (e) {}
+</script>
+{% endif %}

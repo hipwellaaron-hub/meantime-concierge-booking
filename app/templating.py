@@ -204,6 +204,10 @@ templates.env.filters["person_name"] = _format_person_name
 templates.env.filters["aus_date"] = _format_date_dmy
 templates.env.filters["bullets"] = bullets
 templates.env.filters["line_total"] = line_total
+from app.config import settings as _settings  # noqa: E402
+
+templates.env.globals["ga4_measurement_id"] = _settings.ga4_measurement_id
+templates.env.globals["meta_pixel_id"] = _settings.meta_pixel_id
 templates.env.globals["has_venue_logo"] = has_venue_logo
 templates.env.globals["venue_logo_url"] = LOGO_STATIC_PATH
 templates.env.globals["venue_phone"] = policy.VENUE_PHONE

@@ -30,7 +30,11 @@ from app.models import Booking, Space
 from app.models.booking import BookingStatus
 
 UTM_FIELDS = ("utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content")
-CLICK_ID_FIELDS = ("gclid", "fbclid")
+# gbraid/wbraid are Google's newer click identifiers used where gclid can't
+# be set (iOS app/web privacy paths). Captured the same way as gclid so
+# those paid clicks aren't silently unattributable; added to both first-
+# and last-touch bundles by build_touch below.
+CLICK_ID_FIELDS = ("gclid", "gbraid", "wbraid", "fbclid")
 
 # Loose and deliberately conservative -- "referral" is the honest bucket
 # for anything not clearly a search engine or social platform, rather
@@ -142,7 +146,7 @@ def summarize_channel(bundle: dict | None) -> str:
     if not bundle:
         return "Unknown"
 
-    if bundle.get("gclid"):
+    if bundle.get("gclid") or bundle.get("gbraid") or bundle.get("wbraid"):
         return "Google Ads (paid)"
     if bundle.get("fbclid"):
         return "Meta Ads (paid)"

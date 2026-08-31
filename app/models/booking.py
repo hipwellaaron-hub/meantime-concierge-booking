@@ -242,6 +242,16 @@ class Booking(Base):
     # get_enquiry_notification_failures.
     enquiry_notification_sent_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    # Set once, the first time this booking's thank-you page renders the
+    # ad-conversion snippet (GA4 function_enquiry_submitted + Meta Lead).
+    # The authoritative, refresh-safe once-only guard: NULL = not yet
+    # emitted, a timestamp = already fired, so a reload / Back-Forward /
+    # duplicate-reuse never double-counts a conversion. Only ever set for
+    # bookings that came through the public web enquiry (they carry
+    # first_touch_attribution); staff/imported bookings stay NULL and never
+    # fire an ad conversion.
+    conversion_emitted_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
