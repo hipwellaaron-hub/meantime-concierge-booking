@@ -1396,7 +1396,14 @@ def test_record_payment_blank_date_defaults_to_now(admin_client, booking, db):
     )
     assert resp.status_code == 303
     payment = db.scalars(select(Payment).where(Payment.invoice_id == inv.id)).one()
-    assert payment.received_at.date() == dt.datetime.now(dt.timezone.utc).date()
+    # Compare the stored instant in UTC (the code defaults a blank date to
+    # datetime.now(utc)). received_at is TIMESTAMPTZ, so psycopg hands it
+    # back in the DB session's timezone -- Australia/Sydney on a local dev
+    # box, UTC on CI -- and a naive .date() would then read the local
+    # calendar day, which drifts a day ahead of UTC for the 10h the two
+    # zones straddle midnight. Normalising to UTC first makes the assertion
+    # about the actual instant, deterministic on any session timezone.
+    assert payment.received_at.astimezone(dt.timezone.utc).date() == dt.datetime.now(dt.timezone.utc).date()
 
 
 def test_record_payment_rejects_a_bad_date(admin_client, booking, db):

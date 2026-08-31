@@ -270,6 +270,94 @@ def test_dispatch_beacon_unknown_platform_is_noop(client, db, tags_on):
     assert booking.meta_conversion_dispatched_at is None
 
 
+# --- dispatch endpoint security (Check 2) --------------------------------------
+
+
+def _bookings_with_any_dispatch(db) -> int:
+    return (
+        db.query(Booking)
+        .filter(
+            (Booking.ga4_conversion_dispatched_at.isnot(None))
+            | (Booking.meta_conversion_dispatched_at.isnot(None))
+        )
+        .count()
+    )
+
+
+def test_dispatch_beacon_nonexistent_or_guessed_id_makes_no_db_change(client, db, tags_on):
+    """A beacon for an id that doesn't resolve to a real booking -- a random
+    guessed UUID, or one that simply doesn't exist -- must be a silent no-op
+    that writes nothing. booking_id is a random UUIDv4 (122 bits), so it is
+    not enumerable in the first place; this proves the endpoint also refuses
+    to act on one that doesn't map to a genuine enquiry."""
+    # Establish a real public enquiry so the table is non-empty, but never
+    # beacon it -- nothing in the DB should end up marked dispatched.
+    _submit_and_thanks_url(client)
+    assert _bookings_with_any_dispatch(db) == 0
+
+    for guessed in (uuid.uuid4(), uuid.uuid4()):
+        for platform in ("ga4", "meta"):
+            assert client.post(f"/enquiries/{guessed}/conversion/{platform}").status_code == 204
+
+    assert _bookings_with_any_dispatch(db) == 0  # no row created or changed
+
+
+def test_dispatch_beacon_bound_to_public_enquiry_only(client, db, loft):
+    """The only authorisation the endpoint grants is: the id must resolve to
+    a genuine PUBLIC web enquiry (one carrying a first_touch_attribution
+    dict). A staff/imported booking -- even with a correctly known id and a
+    valid platform -- is rejected and left untouched, so a forged beacon
+    cannot fabricate a conversion record against it."""
+    from app.services.booking import create_booking
+
+    contact = Contact(name="Imported Lead", email="imported@example.com")
+    db.add(contact)
+    db.flush()
+    staff_booking = create_booking(
+        db, space_id=loft.id, contact_id=contact.id, event_date=dt.date(2027, 8, 2),
+        start_time=dt.time(18, 0), end_time=dt.time(23, 0), event_name="Imported Booking",
+        event_type="birthday", adult_count=20, child_count=0, notes=None, actor="staff",
+    )  # no attribution -> not a public enquiry
+    for platform in ("ga4", "meta"):
+        assert client.post(f"/enquiries/{staff_booking.id}/conversion/{platform}").status_code == 204
+    db.refresh(staff_booking)
+    assert staff_booking.ga4_conversion_dispatched_at is None
+    assert staff_booking.meta_conversion_dispatched_at is None
+
+
+# --- localStorage / beacon sequencing (Check 3) --------------------------------
+
+
+def test_snippet_marks_localstorage_only_after_the_tag_fires(client, db, tags_on):
+    """The exact sequencing that guarantees a blocked/unavailable tag can
+    never permanently suppress a retry while the DB flag is still NULL: for
+    each platform the block must (1) bail out BEFORE marking if the tag isn't
+    a function, (2) fire the tag, and only THEN (3) set the localStorage
+    guard and (4) beacon the server. If mark() ever moved ahead of the fire,
+    a blocked tag would set the guard, suppress every future retry, and the
+    conversion would be lost with the DB none the wiser -- so we assert the
+    order explicitly to lock it against regression."""
+    html = client.get(_submit_and_thanks_url(client)).text
+
+    # GA4 block: guard(return-if-no-tag) < fire < mark < beacon
+    g_beacon = html.index("confirmDispatch('ga4')")
+    g_guard = html.index('typeof gtag !== "function"')
+    g_fire = html.index("gtag('event', 'function_enquiry_submitted'")
+    g_mark = html.rindex("mark(KEY);", 0, g_beacon)  # the mark() belonging to this block
+    assert g_guard < g_fire < g_mark < g_beacon
+
+    # Meta block: same ordering.
+    m_beacon = html.index("confirmDispatch('meta')")
+    m_guard = html.index('typeof fbq !== "function"')
+    m_fire = html.index("fbq('track', 'Lead'")
+    m_mark = html.rindex("mark(KEY);", 0, m_beacon)
+    assert m_guard < m_fire < m_mark < m_beacon
+
+    # And the guard that skips an already-dispatched platform sits ahead of
+    # the tag-presence check, so a confirmed dispatch short-circuits first.
+    assert html.index("markedAlready(KEY)") < g_guard
+
+
 def test_conversion_snippet_carries_no_pii(client, db, tags_on):
     thanks = _submit_and_thanks_url(client)
     html = client.get(thanks).text

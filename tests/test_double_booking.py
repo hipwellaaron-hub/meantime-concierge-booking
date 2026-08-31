@@ -9,7 +9,7 @@ import datetime as dt
 import threading
 import uuid
 
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 
 from app.models import Space, Venue
 from app.models.booking import Booking, BookingStatus
@@ -56,7 +56,19 @@ def test_concurrent_overlapping_inserts_cannot_both_succeed():
             barrier.wait(timeout=5)  # maximize actual overlap between the two transactions
             session.commit()
             results[key] = "success"
-        except IntegrityError:
+        except (IntegrityError, OperationalError):
+            # Two mechanisms can reject the loser, and BOTH must count as a
+            # failed attempt for the guarantee to hold:
+            #  - IntegrityError (exclusion_violation): the loser saw the
+            #    winner's already-committed overlapping row.
+            #  - OperationalError (deadlock_detected, SQLSTATE 40P01): when
+            #    both inserts reach the GiST exclusion check at the same
+            #    instant, each waits on the other's transaction; Postgres
+            #    breaks the symmetric wait by aborting one. The aborted txn
+            #    inserted nothing.
+            # Either way exactly one transaction commits, so the invariant
+            # "two overlapping bookings can never BOTH succeed" is proven
+            # regardless of which mechanism Postgres uses to settle the race.
             session.rollback()
             results[key] = "failed"
         finally:
