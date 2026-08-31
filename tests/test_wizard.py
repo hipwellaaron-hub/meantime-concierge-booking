@@ -1,5 +1,6 @@
 import datetime as dt
 import uuid
+from decimal import Decimal
 
 import pytest
 from fastapi.testclient import TestClient
@@ -556,3 +557,68 @@ def test_basics_step_via_http_returns_warnings(db, loft):
         assert "saturday_daytime_finish" in codes
     finally:
         app.dependency_overrides.clear()
+
+
+# --- signed / deposit-paid alerts fire from the real flows --------------------
+
+
+def test_signing_agreement_triggers_venue_alert(db, loft, monkeypatch):
+    booking = _make_booking(db, loft)
+    agreement = documents_service.create_new_version(db, booking, DocumentType.agreement, {"terms": "ok"}, actor="test")
+    agreement = documents_service.mark_sent(db, agreement, actor="test")
+
+    calls = []
+    monkeypatch.setattr(
+        "app.services.notifications.notify_agreement_signed",
+        lambda booking, **kw: calls.append(kw),
+    )
+    documents_service.sign(db, agreement, signer_name="Nicole Jones", signer_ip="127.0.0.1")
+    assert len(calls) == 1
+    assert calls[0]["signer_name"] == "Nicole Jones"
+    assert calls[0]["deposit_paid"] is False  # no deposit yet
+
+
+def test_paying_deposit_triggers_venue_alert(db, loft, monkeypatch):
+    booking = _make_booking(db, loft)
+    deposit = invoicing.create_invoice(
+        db, booking, InvoiceType.deposit, [{"description": "Deposit", "quantity": 1, "unit_price": "500.00"}],
+        dt.date.today(), actor="test",
+    )
+    invoicing.mark_sent(db, deposit, actor="test")
+
+    calls = []
+    monkeypatch.setattr(
+        "app.services.notifications.notify_deposit_paid",
+        lambda booking, **kw: calls.append(kw),
+    )
+    invoicing.record_payment(db, deposit, amount=Decimal("500.00"), method=PaymentMethod.card, actor="test")
+    assert len(calls) == 1
+    assert calls[0]["amount"] == Decimal("500.00")
+
+
+def test_partial_deposit_payment_does_not_alert(db, loft, monkeypatch):
+    booking = _make_booking(db, loft)
+    deposit = invoicing.create_invoice(
+        db, booking, InvoiceType.deposit, [{"description": "Deposit", "quantity": 1, "unit_price": "500.00"}],
+        dt.date.today(), actor="test",
+    )
+    invoicing.mark_sent(db, deposit, actor="test")
+
+    calls = []
+    monkeypatch.setattr("app.services.notifications.notify_deposit_paid", lambda booking, **kw: calls.append(kw))
+    invoicing.record_payment(db, deposit, amount=Decimal("200.00"), method=PaymentMethod.card, actor="test")
+    assert calls == []  # deposit not cleared yet
+
+
+def test_final_invoice_payment_does_not_trigger_deposit_alert(db, loft, monkeypatch):
+    booking = _make_booking(db, loft)
+    final = invoicing.create_final_invoice(
+        db, booking, line_items=[{"description": "Catering", "quantity": 1, "unit_price": "800.00"}],
+        due_date=dt.date.today(), actor="test",
+    )
+    invoicing.mark_sent(db, final, actor="test")
+
+    calls = []
+    monkeypatch.setattr("app.services.notifications.notify_deposit_paid", lambda booking, **kw: calls.append(kw))
+    invoicing.record_payment(db, final, amount=Decimal("800.00"), method=PaymentMethod.card, actor="test")
+    assert calls == []  # only the deposit alerts, not a final-invoice payment

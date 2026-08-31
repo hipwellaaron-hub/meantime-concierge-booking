@@ -529,6 +529,20 @@ def record_payment(
         except Exception:  # noqa: BLE001 -- see above; a failure here must not undo a real payment
             logger.exception("Auto-confirm after deposit payment failed for invoice %s", invoice.id)
 
+        # Alert the venue that the deposit is paid. After auto-confirm so
+        # the email can say whether this payment has tipped the booking
+        # into confirmed. Never raises (see notify_deposit_paid).
+        from app.models.booking import BookingStatus
+        from app.services import notifications
+
+        booking = invoice.booking
+        notifications.notify_deposit_paid(
+            booking,
+            amount=get_total_paid(db, invoice.id),
+            agreement_signed=booking_service.has_signed_agreement(db, booking),
+            now_confirmed=booking.status == BookingStatus.confirmed,
+        )
+
     return payment
 
 

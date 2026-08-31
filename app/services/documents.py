@@ -210,6 +210,20 @@ def sign(db: Session, document: Document, *, signer_name: str, signer_ip: str) -
         except Exception:  # noqa: BLE001 -- see above; a failure here must not undo a real signature
             logger.exception("Auto-confirm after signing failed for document %s", document.id)
 
+        # Alert the venue that the agreement is signed. After auto-confirm
+        # so the email can say whether this signature has tipped the
+        # booking into confirmed. Never raises (see notify_agreement_signed).
+        from app.models.booking import BookingStatus
+        from app.services import notifications
+
+        booking = document.booking
+        notifications.notify_agreement_signed(
+            booking,
+            signer_name=signer_name,
+            deposit_paid=booking_service.has_paid_deposit(db, booking),
+            now_confirmed=booking.status == BookingStatus.confirmed,
+        )
+
     return document
 
 

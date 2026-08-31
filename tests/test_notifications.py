@@ -192,3 +192,100 @@ def test_send_enquiry_notification_raises_when_not_configured():
          patch.object(notifications, "DIGEST_GMAIL_APP_PASSWORD", None):
         with pytest.raises(notifications.GmailSendNotConfigured):
             notifications.send_enquiry_notification_email(booking, flags=[], dashboard_base_url="https://example.test")
+
+
+# --- agreement-signed & deposit-paid alerts -----------------------------------
+
+from decimal import Decimal  # noqa: E402
+
+from app.models import Space  # noqa: E402
+
+
+def _booking_with_space(**overrides) -> Booking:
+    b = _booking(**overrides)
+    b.space = Space(name="The Loft")
+    return b
+
+
+def test_agreement_signed_body_confirmed_headline():
+    b = _booking_with_space()
+    body = notifications.build_agreement_signed_body(
+        b, signer_name="nicole jones", deposit_paid=True, now_confirmed=True,
+        dashboard_base_url="https://x",
+    )
+    assert "CONFIRMED" in body
+    assert "Nicole Jones" in body  # recased
+    assert "The Loft" in body
+    assert "HAM-20260912-ABCDE" in body
+    assert "https://x/admin/bookings/" in body
+
+
+def test_agreement_signed_body_waiting_on_deposit():
+    b = _booking_with_space()
+    body = notifications.build_agreement_signed_body(
+        b, signer_name="Nicole Jones", deposit_paid=False, now_confirmed=False,
+        dashboard_base_url="https://x",
+    )
+    assert "waiting on the deposit" in body.lower()
+    assert "CONFIRMED" not in body
+
+
+def test_deposit_paid_body_shows_amount_and_status():
+    b = _booking_with_space()
+    body = notifications.build_deposit_paid_body(
+        b, amount=Decimal("500.00"), agreement_signed=False, now_confirmed=False,
+        dashboard_base_url="https://x",
+    )
+    assert "$500.00" in body
+    assert "waiting on the signed agreement" in body.lower()
+
+
+def test_send_agreement_signed_goes_to_venue_no_reply_to():
+    mock_smtp = MagicMock()
+    mock_smtp.__enter__.return_value = mock_smtp
+    b = _booking_with_space()
+    with patch.object(notifications, "DIGEST_GMAIL_ADDRESS", "meantimehamilton@gmail.com"), \
+         patch.object(notifications, "DIGEST_GMAIL_APP_PASSWORD", "fake-app-password"), \
+         patch.object(notifications.smtplib, "SMTP_SSL", return_value=mock_smtp):
+        notifications.send_agreement_signed_email(
+            b, signer_name="Nicole Jones", deposit_paid=False, now_confirmed=False,
+            dashboard_base_url="https://x",
+        )
+    msg = mock_smtp.send_message.call_args.args[0]
+    assert msg["To"] == notifications.ENQUIRY_NOTIFICATION_RECIPIENT
+    assert "Meantime Concierge" in msg["From"]
+    assert msg["Reply-To"] is None  # an internal alert, not a message to answer
+    assert "Agreement signed" in msg["Subject"]
+
+
+def test_send_deposit_paid_goes_to_venue():
+    mock_smtp = MagicMock()
+    mock_smtp.__enter__.return_value = mock_smtp
+    b = _booking_with_space()
+    with patch.object(notifications, "DIGEST_GMAIL_ADDRESS", "meantimehamilton@gmail.com"), \
+         patch.object(notifications, "DIGEST_GMAIL_APP_PASSWORD", "fake-app-password"), \
+         patch.object(notifications.smtplib, "SMTP_SSL", return_value=mock_smtp):
+        notifications.send_deposit_paid_email(
+            b, amount=Decimal("500.00"), agreement_signed=True, now_confirmed=True,
+            dashboard_base_url="https://x",
+        )
+    msg = mock_smtp.send_message.call_args.args[0]
+    assert msg["To"] == notifications.ENQUIRY_NOTIFICATION_RECIPIENT
+    assert "Deposit paid" in msg["Subject"]
+
+
+def test_notify_agreement_signed_noops_when_not_configured():
+    b = _booking_with_space()
+    with patch.object(notifications, "DIGEST_GMAIL_ADDRESS", None), \
+         patch.object(notifications, "send_agreement_signed_email") as send:
+        notifications.notify_agreement_signed(b, signer_name="X", deposit_paid=False, now_confirmed=False)
+    send.assert_not_called()  # swallowed, no send, no raise
+
+
+def test_notify_deposit_paid_swallows_send_failure():
+    b = _booking_with_space()
+    with patch.object(notifications, "DIGEST_GMAIL_ADDRESS", "meantimehamilton@gmail.com"), \
+         patch.object(notifications, "DIGEST_GMAIL_APP_PASSWORD", "fake-app-password"), \
+         patch.object(notifications, "send_deposit_paid_email", side_effect=RuntimeError("boom")):
+        # Must not raise.
+        notifications.notify_deposit_paid(b, amount=Decimal("500.00"), agreement_signed=False, now_confirmed=False)
