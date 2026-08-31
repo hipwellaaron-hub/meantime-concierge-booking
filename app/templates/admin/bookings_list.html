@@ -14,7 +14,8 @@
   <div style="flex:1;">
     <label for="status">Status</label>
     <select id="status" name="status">
-      <option value="">Any</option>
+      <option value="">Active (default)</option>
+      <option value="all" {% if status_filter == "all" %}selected{% endif %}>All (incl. archived)</option>
       {% for s in statuses %}
       <option value="{{ s.value }}" {% if status == s %}selected{% endif %}>{{ s.value }}</option>
       {% endfor %}

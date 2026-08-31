@@ -103,21 +103,33 @@ def list_bookings(
     db: Session = Depends(get_db),
     staff: StaffUser = Depends(require_staff),
 ):
-    # The "Any" option in the status filter submits status="" -- FastAPI's
-    # Optional[BookingStatus] does not coerce an empty string to None the
-    # way Optional[str] does, so this was parsed as a plain str and
-    # converted by hand instead of declared as BookingStatus directly.
+    # The default option submits status="" -- FastAPI's Optional[BookingStatus]
+    # does not coerce an empty string to None the way Optional[str] does, so
+    # this is parsed as a plain str and converted by hand. status="all" is a
+    # deliberate "show everything including terminal" escape hatch; the empty
+    # default shows the live pipeline only (see search_bookings).
+    include_terminal = status == "all"
     try:
-        parsed_status = BookingStatus(status) if status else None
+        parsed_status = None if (not status or status == "all") else BookingStatus(status)
     except ValueError:
         raise HTTPException(status_code=422, detail=f"Unknown status '{status}'")
 
     venue = _venue(db)
-    bookings = booking_service.search_bookings(db, venue.id, status=parsed_status, query=q)
+    bookings = booking_service.search_bookings(
+        db, venue.id, status=parsed_status, query=q, include_terminal=include_terminal
+    )
     return templates.TemplateResponse(
         request,
         "admin/bookings_list.html",
-        admin_ctx(request, staff, bookings=bookings, status=parsed_status, q=q or "", statuses=list(BookingStatus)),
+        admin_ctx(
+            request,
+            staff,
+            bookings=bookings,
+            status=parsed_status,
+            status_filter=status or "",
+            q=q or "",
+            statuses=list(BookingStatus),
+        ),
     )
 
 

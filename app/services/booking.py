@@ -345,11 +345,24 @@ def auto_confirm_if_ready(db: Session, booking: Booking, *, actor: str) -> bool:
 
 
 def search_bookings(
-    db: Session, venue_id: uuid.UUID, *, status: BookingStatus | None = None, query: str | None = None, limit: int = 100
+    db: Session,
+    venue_id: uuid.UUID,
+    *,
+    status: BookingStatus | None = None,
+    query: str | None = None,
+    limit: int = 100,
+    include_terminal: bool = False,
 ) -> list[Booking]:
     stmt = select(Booking).join(Space, Booking.space_id == Space.id).where(Space.venue_id == venue_id)
     if status is not None:
         stmt = stmt.where(Booking.status == status)
+    elif not include_terminal:
+        # Default working list: the live pipeline only. Completed,
+        # cancelled, dead and archived bookings are done with and just
+        # clutter the day-to-day view -- they stay reachable by picking
+        # that status explicitly (or the "all" view), never shown by
+        # default.
+        stmt = stmt.where(Booking.status.not_in(TERMINAL_STATUSES))
     if query and query.strip():
         like = f"%{query.strip()}%"
         stmt = stmt.outerjoin(Contact, Booking.contact_id == Contact.id).where(

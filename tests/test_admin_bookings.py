@@ -52,14 +52,42 @@ def test_booking_detail_omits_enquiry_details_card_when_nothing_to_show(admin_cl
     assert "Enquiry details" not in resp.text
 
 
-def test_bookings_list_any_status_filter_shows_all(admin_client, booking):
-    """Regression: submitting the "Any" option in the status filter posts
-    status="", which Optional[BookingStatus] does not coerce to None the
-    way Optional[str] does -- this used to 422 instead of showing the
-    unfiltered list."""
+def test_bookings_list_default_shows_active_booking(admin_client, booking):
+    """Regression: submitting the default option posts status="", which
+    Optional[BookingStatus] does not coerce to None the way Optional[str]
+    does -- this used to 422 instead of showing the list. The Wilson
+    Wedding fixture is an enquiry (active), so it shows by default."""
     resp = admin_client.get("/admin/bookings", params={"status": ""})
     assert resp.status_code == 200
     assert "Wilson Wedding" in resp.text
+
+
+def test_bookings_list_default_hides_terminal_bookings(admin_client, db, loft):
+    """The default view is the live pipeline only -- completed, cancelled,
+    dead and archived bookings must not clutter it."""
+    active = create_booking(
+        db, space_id=loft.id, contact_id=None, event_date=dt.date(2027, 9, 1), event_name="Active Enquiry",
+        event_type=None, adult_count=10, child_count=0, notes=None, actor="test",
+    )
+    archived = create_booking(
+        db, space_id=loft.id, contact_id=None, event_date=dt.date(2027, 9, 2), event_name="Archived Party",
+        event_type=None, adult_count=10, child_count=0, notes=None, actor="test",
+    )
+    change_status(db, archived, BookingStatus.archived, actor="test")
+
+    default = admin_client.get("/admin/bookings")
+    assert "Active Enquiry" in default.text
+    assert "Archived Party" not in default.text
+
+    # ...but reachable by picking that status explicitly,
+    explicit = admin_client.get("/admin/bookings", params={"status": "archived"})
+    assert "Archived Party" in explicit.text
+    assert "Active Enquiry" not in explicit.text
+
+    # ...or via the "all" view.
+    all_view = admin_client.get("/admin/bookings", params={"status": "all"})
+    assert "Archived Party" in all_view.text
+    assert "Active Enquiry" in all_view.text
 
 
 def test_bookings_list_unknown_status_returns_422_not_500(admin_client):
