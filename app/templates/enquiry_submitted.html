@@ -42,6 +42,6 @@
   <p>Reference: <span class="reference">{{ booking.reference_code }}</span></p>
   <p>We'll be in touch shortly.</p>
 </div>
-{% if emit_conversion %}{% include "_tracking_conversion.html" %}{% endif %}
+{% if emit_ga4 or emit_meta %}{% include "_tracking_conversion.html" %}{% endif %}
 </body>
 </html>

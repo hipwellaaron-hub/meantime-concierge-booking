@@ -4,7 +4,7 @@ import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from sqlalchemy import update
 from sqlalchemy.orm import Session
 
@@ -84,42 +84,76 @@ def submit_enquiry(request: Request, payload: Annotated[EnquiryCreate, Form()], 
     return RedirectResponse(url=f"/enquiries/{booking.id}/thanks", status_code=303)
 
 
+# The two ad platforms Concierge fires a browser conversion to, mapped to
+# the column that records when the BROWSER confirmed it dispatched each.
+_DISPATCH_COLUMNS = {
+    "ga4": Booking.ga4_conversion_dispatched_at,
+    "meta": Booking.meta_conversion_dispatched_at,
+}
+
+
+def _is_public_enquiry(booking: Booking) -> bool:
+    # A genuine public web enquiry always carries a real attribution bundle
+    # (a dict); staff-entered / imported bookings don't and must never fire
+    # an ad conversion. Checked on the loaded value, not IS NULL: a JSONB
+    # column stores Python None as JSON 'null', which is NOT SQL NULL.
+    return isinstance(booking.first_touch_attribution, dict)
+
+
 @router.get("/enquiries/{booking_id}/thanks", response_class=HTMLResponse)
 def enquiry_thanks(booking_id: uuid.UUID, request: Request, db: Session = Depends(get_db)):
     booking = db.get(Booking, booking_id)
     if booking is None:
         raise HTTPException(status_code=404, detail="Not found")
 
-    # Fire the ad conversion (GA4 function_enquiry_submitted + Meta Lead)
-    # exactly once, and only for a genuine public web enquiry. Those carry a
-    # real attribution bundle (a dict); a staff-entered or imported booking
-    # has none and must never fire an ad conversion. Checked on the loaded
-    # value because a JSONB column stores Python None as JSON 'null', which
-    # is NOT SQL NULL -- so "is a dict" is the reliable signal, not IS NULL.
-    is_public_enquiry = isinstance(booking.first_touch_attribution, dict)
-    emit_conversion = False
-    if is_public_enquiry:
-        # Atomic flip: only the one request that actually moves
-        # conversion_emitted_at off NULL renders the snippet, so a refresh,
-        # Back/Forward, a re-opened confirmation URL, or two simultaneous
-        # loads can never double-count.
-        emitted = db.execute(
-            update(Booking)
-            .where(Booking.id == booking.id, Booking.conversion_emitted_at.is_(None))
-            .values(conversion_emitted_at=dt.datetime.now(dt.timezone.utc))
-        )
-        db.commit()
-        emit_conversion = emitted.rowcount == 1
-    if emit_conversion:
-        logger.info("Ad conversion emitted for enquiry %s", booking.reference_code)
+    # Offer each platform's conversion snippet only while the browser hasn't
+    # yet confirmed dispatching it. Deliberately writes NOTHING here --
+    # rendering the page is not "emitted"; the browser beacons back after it
+    # actually runs gtag/fbq (see the conversion beacon below). So a closed
+    # tab or a blocked tag before dispatch leaves the flag NULL and the
+    # snippet is offered again on a later load, while a refresh after a
+    # confirmed dispatch omits it. Per platform, so one being blocked never
+    # suppresses the other.
+    eligible = _is_public_enquiry(booking)
+    emit_ga4 = eligible and booking.ga4_conversion_dispatched_at is None
+    emit_meta = eligible and booking.meta_conversion_dispatched_at is None
 
     return templates.TemplateResponse(
         request,
         "enquiry_submitted.html",
         {
             "booking": booking,
-            "emit_conversion": emit_conversion,
+            "emit_ga4": emit_ga4,
+            "emit_meta": emit_meta,
             "conversion_lead_id": booking.reference_code,
             "conversion_enquiry_type": booking.event_type,
         },
     )
+
+
+@router.post("/enquiries/{booking_id}/conversion/{platform}", status_code=204)
+def record_conversion_dispatch(
+    booking_id: uuid.UUID, platform: str, request: Request, db: Session = Depends(get_db)
+):
+    """Fire-and-forget beacon the browser sends AFTER it dispatches a
+    platform's conversion (gtag / fbq). Records dispatch so a refresh /
+    Back/Forward, or the same confirmation URL reopened in another browser,
+    won't fire it again -- the app-level dedup that does NOT assume GA4/Meta
+    deduplicate on their own. Only ever accepted for a genuine public
+    enquiry, and only recorded once (atomic flip off NULL). Idempotent and
+    side-effect-light on purpose: a replayed or unknown beacon is a silent
+    no-op, never an error the browser has to handle."""
+    column = _DISPATCH_COLUMNS.get(platform)
+    if column is None:
+        return Response(status_code=204)
+    booking = db.get(Booking, booking_id)
+    if booking is None or not _is_public_enquiry(booking):
+        return Response(status_code=204)
+
+    result = db.execute(
+        update(Booking).where(Booking.id == booking_id, column.is_(None)).values({column: dt.datetime.now(dt.timezone.utc)})
+    )
+    db.commit()
+    if result.rowcount == 1:
+        logger.info("%s conversion dispatched by browser for enquiry %s", platform, booking.reference_code)
+    return Response(status_code=204)

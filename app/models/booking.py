@@ -242,15 +242,19 @@ class Booking(Base):
     # get_enquiry_notification_failures.
     enquiry_notification_sent_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
-    # Set once, the first time this booking's thank-you page renders the
-    # ad-conversion snippet (GA4 function_enquiry_submitted + Meta Lead).
-    # The authoritative, refresh-safe once-only guard: NULL = not yet
-    # emitted, a timestamp = already fired, so a reload / Back-Forward /
-    # duplicate-reuse never double-counts a conversion. Only ever set for
-    # bookings that came through the public web enquiry (they carry
-    # first_touch_attribution); staff/imported bookings stay NULL and never
-    # fire an ad conversion.
-    conversion_emitted_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # When the BROWSER dispatched each ad conversion for this enquiry --
+    # recorded by a beacon AFTER gtag/fbq actually run, never at server
+    # render. NULL = not yet dispatched, so the thank-you page keeps
+    # offering that platform's snippet until the browser confirms it fired:
+    # a closed tab or a blocked tag can't permanently suppress a real
+    # conversion, while a refresh/Back/Forward after a confirmed dispatch
+    # won't re-fire it. Per platform, so one being blocked never suppresses
+    # the other. Only ever set for genuine public web enquiries (they carry
+    # first_touch_attribution); staff/imported bookings never fire one.
+    # "dispatched" not "received": the browser attempted the send -- platform
+    # receipt is verified separately (GA4 DebugView / Meta Test Events).
+    ga4_conversion_dispatched_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    meta_conversion_dispatched_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[dt.datetime] = mapped_column(

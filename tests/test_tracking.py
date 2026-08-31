@@ -159,23 +159,115 @@ def _submit_and_thanks_url(client) -> str:
     return resp.headers["location"]
 
 
-def test_thanks_emits_conversion_once_then_never_again(client, db, tags_on):
+def _booking_id_from_thanks(url: str) -> str:
+    # /enquiries/<uuid>/thanks
+    return url.split("/enquiries/")[1].split("/thanks")[0]
+
+
+def test_thanks_renders_snippet_but_writes_nothing_at_render(client, db, tags_on):
+    """Rendering the thank-you page is NOT "emitted". The snippet is offered,
+    but both dispatch flags stay NULL until the browser confirms it fired --
+    so a closed tab / blocked tag before dispatch cannot suppress a real
+    conversion."""
     thanks = _submit_and_thanks_url(client)
     booking = db.query(Booking).filter_by(event_name="Wilson Enquiry").one()
-    assert booking.conversion_emitted_at is None
+    assert booking.ga4_conversion_dispatched_at is None
+    assert booking.meta_conversion_dispatched_at is None
 
     first = client.get(thanks)
     assert first.status_code == 200
     assert "function_enquiry_submitted" in first.text
     assert "'Lead'" in first.text
     assert booking.reference_code in first.text
-    db.refresh(booking)
-    assert booking.conversion_emitted_at is not None  # server flag set
 
-    # Refresh: snippet must not render again.
+    # No beacon yet -> flags remain NULL. The page rendering did not mark it.
+    db.refresh(booking)
+    assert booking.ga4_conversion_dispatched_at is None
+    assert booking.meta_conversion_dispatched_at is None
+
+    # And because nothing was recorded, a reload STILL offers the snippet:
+    # a conversion is never permanently suppressed before a browser dispatch.
     second = client.get(thanks)
-    assert second.status_code == 200
-    assert "function_enquiry_submitted" not in second.text
+    assert "function_enquiry_submitted" in second.text
+    assert "'Lead'" in second.text
+
+
+def test_browser_dispatch_beacon_records_then_refresh_does_not_refire(client, db, tags_on):
+    """The browser confirms each platform dispatched via a beacon; only then
+    is that platform recorded, and only then does a refresh/Back-Forward stop
+    rendering it. One enquiry = one GA4 event + one Meta Lead."""
+    thanks = _submit_and_thanks_url(client)
+    booking_id = _booking_id_from_thanks(thanks)
+    booking = db.query(Booking).filter_by(event_name="Wilson Enquiry").one()
+
+    assert client.post(f"/enquiries/{booking_id}/conversion/ga4").status_code == 204
+    assert client.post(f"/enquiries/{booking_id}/conversion/meta").status_code == 204
+
+    db.refresh(booking)
+    assert booking.ga4_conversion_dispatched_at is not None
+    assert booking.meta_conversion_dispatched_at is not None
+
+    # Refresh: both dispatched -> snippet no longer rendered for either.
+    refreshed = client.get(thanks)
+    assert refreshed.status_code == 200
+    assert "function_enquiry_submitted" not in refreshed.text
+    assert "'Lead'" not in refreshed.text
+
+
+def test_partial_dispatch_leaves_the_other_platform_free_to_fire(client, db, tags_on):
+    """GA4 blocked while Meta fires (or vice versa): only the platform the
+    browser actually dispatched is recorded, so the blocked one is still
+    offered on the next load rather than being suppressed with it."""
+    thanks = _submit_and_thanks_url(client)
+    booking_id = _booking_id_from_thanks(thanks)
+    booking = db.query(Booking).filter_by(event_name="Wilson Enquiry").one()
+
+    # Only Meta confirmed dispatch this time.
+    assert client.post(f"/enquiries/{booking_id}/conversion/meta").status_code == 204
+    db.refresh(booking)
+    assert booking.meta_conversion_dispatched_at is not None
+    assert booking.ga4_conversion_dispatched_at is None
+
+    # Next load: Meta suppressed, GA4 still offered.
+    html = client.get(thanks).text
+    assert "function_enquiry_submitted" in html   # GA4 still eligible
+    assert "'Lead'" not in html                    # Meta already dispatched
+
+    # GA4 then confirms; now neither is offered.
+    assert client.post(f"/enquiries/{booking_id}/conversion/ga4").status_code == 204
+    db.refresh(booking)
+    assert booking.ga4_conversion_dispatched_at is not None
+    html2 = client.get(thanks).text
+    assert "function_enquiry_submitted" not in html2
+    assert "'Lead'" not in html2
+
+
+def test_dispatch_beacon_is_idempotent(client, db, tags_on):
+    """A replayed beacon (double dispatch, retried sendBeacon) must not move
+    the recorded timestamp -- the record is the FIRST browser dispatch."""
+    thanks = _submit_and_thanks_url(client)
+    booking_id = _booking_id_from_thanks(thanks)
+    booking = db.query(Booking).filter_by(event_name="Wilson Enquiry").one()
+
+    assert client.post(f"/enquiries/{booking_id}/conversion/ga4").status_code == 204
+    db.refresh(booking)
+    first_ts = booking.ga4_conversion_dispatched_at
+    assert first_ts is not None
+
+    assert client.post(f"/enquiries/{booking_id}/conversion/ga4").status_code == 204
+    db.refresh(booking)
+    assert booking.ga4_conversion_dispatched_at == first_ts  # unchanged
+
+
+def test_dispatch_beacon_unknown_platform_is_noop(client, db, tags_on):
+    thanks = _submit_and_thanks_url(client)
+    booking_id = _booking_id_from_thanks(thanks)
+    booking = db.query(Booking).filter_by(event_name="Wilson Enquiry").one()
+
+    assert client.post(f"/enquiries/{booking_id}/conversion/tiktok").status_code == 204
+    db.refresh(booking)
+    assert booking.ga4_conversion_dispatched_at is None
+    assert booking.meta_conversion_dispatched_at is None
 
 
 def test_conversion_snippet_carries_no_pii(client, db, tags_on):
@@ -188,10 +280,10 @@ def test_conversion_snippet_carries_no_pii(client, db, tags_on):
     assert "source_system" in html and "hamilton" in html
 
 
-def test_staff_booking_thanks_does_not_emit(client, db, loft):
+def test_staff_booking_thanks_does_not_emit_and_rejects_beacon(client, db, loft):
     """A booking with no first_touch_attribution (staff-entered / imported)
-    is not a public web enquiry and must never fire an ad conversion, even
-    if its thanks URL is opened."""
+    is not a public web enquiry and must never fire an ad conversion, even if
+    its thanks URL is opened or a forged beacon is sent to it."""
     from app.services.booking import create_booking
 
     contact = Contact(name="Phone Caller", email="phone@example.com")
@@ -207,8 +299,12 @@ def test_staff_booking_thanks_does_not_emit(client, db, loft):
         resp = client.get(f"/enquiries/{booking.id}/thanks")
         assert resp.status_code == 200
         assert "function_enquiry_submitted" not in resp.text
+
+        # A forged beacon must not record a dispatch on a non-public booking.
+        assert client.post(f"/enquiries/{booking.id}/conversion/ga4").status_code == 204
         db.refresh(booking)
-        assert booking.conversion_emitted_at is None
+        assert booking.ga4_conversion_dispatched_at is None
+        assert booking.meta_conversion_dispatched_at is None
     finally:
         templates.env.globals["ga4_measurement_id"] = ""
 

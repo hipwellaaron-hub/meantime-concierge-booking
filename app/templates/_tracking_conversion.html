@@ -1,39 +1,75 @@
-{# The ad-conversion snippet, rendered by the thank-you page ONLY when the
-   server has decided this is a genuine, not-yet-emitted public enquiry (see
-   app.api.enquiries.enquiry_thanks) and set conversion_emitted_at. That
-   server flag is the authoritative once-only guard; the localStorage check
-   below is belt-and-braces against a bfcache re-execution. Both dedup on
-   the same reference_code, so ONE enquiry = ONE function_enquiry_submitted
-   = ONE Meta Lead, regardless of refresh / Back-Forward / re-open.
+{# Ad-conversion snippet for the thank-you page. Rendered per platform ONLY
+   while the server has confirmed this is a genuine public enquiry that has
+   not yet had that platform's conversion dispatched by a browser (see
+   app.api.enquiries.enquiry_thanks -> emit_ga4 / emit_meta).
 
-   Non-PII only: lead_id is the reference_code (event date + random suffix,
-   no personal data); no name, email, phone or free text is ever sent. #}
+   Rendering the page does NOT mark the conversion emitted. Each block fires
+   its tag, and ONLY if the tag was actually present and fired does it (a)
+   set a per-platform localStorage key (same-browser refresh guard) and (b)
+   beacon the server to record the dispatch (cross-browser / durable guard).
+   So a blocked or not-yet-loaded tag marks nothing and can still fire on a
+   later load -- a real conversion is never permanently suppressed just
+   because the page rendered -- while a refresh / Back-Forward after a
+   confirmed dispatch re-checks both guards and does not re-fire.
+
+   Platforms are independent: GA4 blocked while Meta succeeds (or vice
+   versa) leaves the other's flag NULL, so it fires on its own next chance.
+
+   Non-PII only: lead_id is the reference_code (event date + random suffix);
+   no name, email, phone or free text is ever sent. #}
 <script>
 (function () {
   var LEAD_ID = {{ conversion_lead_id | tojson }};
   var ENQUIRY_TYPE = {{ conversion_enquiry_type | tojson }};
-  var KEY = "mtc_conv_" + LEAD_ID;
-  try { if (window.localStorage && localStorage.getItem(KEY)) return; } catch (e) {}
-  try { if (window.localStorage) localStorage.setItem(KEY, "1"); } catch (e) {}
+  var BASE = {{ ("/enquiries/" ~ booking.id ~ "/conversion/") | tojson }};
 
-  try {
-    if (typeof gtag === "function") {
+  function markedAlready(key) {
+    try { return !!(window.localStorage && localStorage.getItem(key)); } catch (e) { return false; }
+  }
+  function mark(key) {
+    try { if (window.localStorage) localStorage.setItem(key, "1"); } catch (e) {}
+  }
+  // Record that THIS browser dispatched the platform's conversion, so a
+  // reopen elsewhere / after localStorage clears still won't double-fire.
+  // Fire-and-forget: the enquiry doesn't depend on it and we ignore failure.
+  function confirmDispatch(platform) {
+    var url = BASE + platform;
+    try { if (navigator.sendBeacon && navigator.sendBeacon(url)) return; } catch (e) {}
+    try { fetch(url, { method: "POST", keepalive: true }); } catch (e) {}
+  }
+
+  {% if emit_ga4 %}
+  (function () {
+    var KEY = "mtc_ga4_" + LEAD_ID;
+    if (markedAlready(KEY)) return;
+    if (typeof gtag !== "function") return;   // tag blocked / not loaded -> mark nothing, allow a later retry
+    try {
       gtag('event', 'function_enquiry_submitted', {
         lead_id: LEAD_ID,
         venue: 'hamilton',
         source_system: 'meantime_concierge',
         enquiry_type: ENQUIRY_TYPE || undefined
       });
-    }
-  } catch (e) {}
+    } catch (e) { return; }                   // firing failed -> don't claim dispatch
+    mark(KEY);
+    confirmDispatch('ga4');
+  })();
+  {% endif %}
 
-  try {
-    if (typeof fbq === "function") {
+  {% if emit_meta %}
+  (function () {
+    var KEY = "mtc_meta_" + LEAD_ID;
+    if (markedAlready(KEY)) return;
+    if (typeof fbq !== "function") return;    // pixel blocked / not loaded -> mark nothing, allow a later retry
+    try {
       fbq('track', 'Lead',
         { content_category: ENQUIRY_TYPE || undefined },
         { eventID: LEAD_ID }
       );
-    }
-  } catch (e) {}
+    } catch (e) { return; }
+    mark(KEY);
+    confirmDispatch('meta');
+  })();
+  {% endif %}
 })();
 </script>

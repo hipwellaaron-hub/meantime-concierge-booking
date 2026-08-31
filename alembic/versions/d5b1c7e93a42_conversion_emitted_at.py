@@ -1,11 +1,18 @@
-"""phase20 tracking: conversion_emitted_at on bookings
+"""phase20 tracking: per-platform conversion dispatch timestamps
 
-The server-side, authoritative once-only guard for the ad-conversion
-snippet: set the first time a booking's thank-you page renders the GA4
-function_enquiry_submitted / Meta Lead snippet, so a refresh, Back/Forward,
-a duplicate-reuse, or a re-opened confirmation URL never fires a second
-conversion. Nullable and defaulting to NULL -- every existing booking is
-correctly "never emitted", and nothing historical needs backfilling.
+The thank-you page is eligible to fire a conversion the moment the enquiry
+is created (backend success), but "eligible" is NOT "emitted". These
+columns record when the BROWSER actually dispatched each platform's event
+(confirmed by a beacon after gtag/fbq run), never when the server merely
+rendered the page -- so a browser that closes, or a blocked tag, before
+dispatch does not permanently suppress a real conversion. Per platform, so
+GA4 being blocked while Meta succeeds (or vice versa) leaves the other free
+to fire on a later load. Named "dispatched" not "received": the browser
+attempted the send; platform receipt is verified separately in GA4
+DebugView / Meta Test Events.
+
+Nullable, default NULL -- every existing booking is correctly "never
+dispatched" and nothing historical needs backfilling.
 
 Revision ID: d5b1c7e93a42
 Revises: c4f1a9d2e6b8
@@ -21,8 +28,10 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column("bookings", sa.Column("conversion_emitted_at", sa.DateTime(timezone=True), nullable=True))
+    op.add_column("bookings", sa.Column("ga4_conversion_dispatched_at", sa.DateTime(timezone=True), nullable=True))
+    op.add_column("bookings", sa.Column("meta_conversion_dispatched_at", sa.DateTime(timezone=True), nullable=True))
 
 
 def downgrade() -> None:
-    op.drop_column("bookings", "conversion_emitted_at")
+    op.drop_column("bookings", "meta_conversion_dispatched_at")
+    op.drop_column("bookings", "ga4_conversion_dispatched_at")
