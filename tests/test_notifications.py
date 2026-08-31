@@ -289,3 +289,48 @@ def test_notify_deposit_paid_swallows_send_failure():
          patch.object(notifications, "send_deposit_paid_email", side_effect=RuntimeError("boom")):
         # Must not raise.
         notifications.notify_deposit_paid(b, amount=Decimal("500.00"), agreement_signed=False, now_confirmed=False)
+
+
+# --- floor welcome email ------------------------------------------------------
+
+
+def test_floor_welcome_body_has_setup_and_usage_no_password():
+    body = notifications.build_floor_welcome_body(
+        name="sally hipwell", email="sally@meantime.com.au",
+        floor_url="https://book.example/floor", help_email="help@meantime.com.au",
+    )
+    assert "Sally Hipwell" in body  # recased
+    assert "https://book.example/floor" in body
+    assert "sally@meantime.com.au" in body
+    assert "Add to Home Screen" in body  # iPhone install step
+    assert "PAID" in body and "OWING" in body  # usage
+    assert "password" in body.lower()  # mentions it -- but only that the manager gives it
+    assert "Your manager will give you your password." in body
+
+
+def test_send_floor_welcome_goes_to_the_new_user():
+    mock_smtp = MagicMock()
+    mock_smtp.__enter__.return_value = mock_smtp
+    with patch.object(notifications, "DIGEST_GMAIL_ADDRESS", "meantimehamilton@gmail.com"), \
+         patch.object(notifications, "DIGEST_GMAIL_APP_PASSWORD", "fake-app-password"), \
+         patch.object(notifications.smtplib, "SMTP_SSL", return_value=mock_smtp):
+        notifications.send_floor_welcome_email(
+            name="Sally", email="sally@meantime.com.au", floor_url="https://x/floor"
+        )
+    msg = mock_smtp.send_message.call_args.args[0]
+    assert msg["To"] == "sally@meantime.com.au"
+    assert msg["Subject"] == "Your Meantime Floor access"
+
+
+def test_notify_floor_welcome_returns_false_when_not_configured():
+    with patch.object(notifications, "DIGEST_GMAIL_ADDRESS", None):
+        assert notifications.notify_floor_welcome(name="Sally", email="sally@meantime.com.au") is False
+
+
+def test_notify_floor_welcome_returns_true_on_send():
+    mock_smtp = MagicMock()
+    mock_smtp.__enter__.return_value = mock_smtp
+    with patch.object(notifications, "DIGEST_GMAIL_ADDRESS", "meantimehamilton@gmail.com"), \
+         patch.object(notifications, "DIGEST_GMAIL_APP_PASSWORD", "fake-app-password"), \
+         patch.object(notifications.smtplib, "SMTP_SSL", return_value=mock_smtp):
+        assert notifications.notify_floor_welcome(name="Sally", email="sally@meantime.com.au") is True

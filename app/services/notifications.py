@@ -405,6 +405,82 @@ def send_deposit_paid_email(
     _send_via_gmail_smtp(message)
 
 
+def build_floor_welcome_subject() -> str:
+    return "Your Meantime Floor access"
+
+
+def build_floor_welcome_body(*, name: str, email: str, floor_url: str, help_email: str) -> str:
+    """Plain text, to a new floor-team member: how to get the app onto
+    their phone and how to read it. Deliberately does NOT carry a password
+    -- the manager who created the account gives that separately, so a
+    forwarded or over-shoulder-read email can't be a login on its own."""
+    return "\n".join(
+        [
+            f"Hi {format_person_name(name)},",
+            "",
+            "You've been set up on Meantime Floor -- the app that shows what's on and who's paid.",
+            "",
+            "1. OPEN IT ON YOUR PHONE",
+            floor_url,
+            "",
+            f"Sign in with your email: {email}",
+            "Your manager will give you your password.",
+            "",
+            "2. ADD IT TO YOUR HOME SCREEN (so it opens like a normal app)",
+            "iPhone (Safari): tap the Share button, then 'Add to Home Screen'.",
+            "Android (Chrome): tap the three-dot menu, then 'Add to Home screen' / 'Install app'.",
+            "",
+            "3. HOW TO READ IT",
+            "- Upcoming: the next functions, each with a green PAID or red OWING pill.",
+            "- Calendar: the month at a glance (Monday and Tuesday are closed).",
+            "- Tap a function for its setup / arrival / food times and to open the BEO run sheet.",
+            "- Green PAID plus a gold BEO chip means good to go. A green pill on a booking",
+            "  months away just means nothing is owing yet.",
+            "",
+            "It's read-only -- you can't change anything, so tap around freely.",
+            "",
+            f"Any questions, email {help_email}.",
+            "",
+            policy.VENUE_TRADING_NAME,
+        ]
+    )
+
+
+def send_floor_welcome_email(*, name: str, email: str, floor_url: str) -> None:
+    if not is_valid_email(email):
+        raise GmailSendNotConfigured(f"cannot send a floor welcome to an invalid address: {email!r}")
+    message = EmailMessage()
+    message["From"] = f"{policy.VENUE_TRADING_NAME} <{DIGEST_GMAIL_ADDRESS}>"
+    message["To"] = email
+    message["Reply-To"] = ENQUIRY_NOTIFICATION_RECIPIENT
+    message["Subject"] = build_floor_welcome_subject()
+    message.set_content(
+        build_floor_welcome_body(
+            name=name, email=email, floor_url=floor_url, help_email=ENQUIRY_NOTIFICATION_RECIPIENT
+        )
+    )
+    _send_via_gmail_smtp(message)
+
+
+def notify_floor_welcome(*, name: str, email: str) -> bool:
+    """Send a new floor-team member their setup-and-usage email. Returns
+    True if it sent, False if it couldn't (Gmail not configured, or the
+    send failed) -- the account is already created either way, so this
+    never raises and the caller can surface 'created, but the email didn't
+    go' rather than failing the whole action."""
+    from app.config import settings
+
+    if not is_gmail_smtp_configured():
+        logger.warning("Floor welcome not sent to %s: Gmail SMTP not configured", email)
+        return False
+    try:
+        send_floor_welcome_email(name=name, email=email, floor_url=f"{settings.dashboard_base_url}/floor")
+        return True
+    except Exception:  # noqa: BLE001 -- account creation must stand even if the welcome email can't send
+        logger.exception("Floor welcome email failed for %s", email)
+        return False
+
+
 def notify_agreement_signed(booking: Booking, *, signer_name: str, deposit_paid: bool, now_confirmed: bool) -> None:
     """Fire-and-forget venue alert that an agreement was signed. Never
     raises -- a mail-provider problem must not break the client's signing.

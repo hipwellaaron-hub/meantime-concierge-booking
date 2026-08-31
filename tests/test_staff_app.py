@@ -436,3 +436,69 @@ def test_floor_shell_and_pwa_assets(client):
     sw = client.get("/floor/sw.js")
     assert sw.status_code == 200
     assert sw.headers["service-worker-allowed"] == "/floor"
+
+
+# ---------------------------------------------------------------- floor welcome email
+
+
+def test_creating_floor_account_sends_welcome_email(db, admin_client, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        "app.services.notifications.notify_floor_welcome",
+        lambda **kw: calls.append(kw) or True,
+    )
+    csrf = _csrf_of(admin_client)
+    resp = admin_client.post(
+        "/admin/staff/create",
+        data={
+            "csrf_token": csrf,
+            "name": "Sally Hipwell",
+            "email": "sally.welcome@meantime.com.au",
+            "password": "sallypass12",
+            "role": "floor",
+        },
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    assert "welcome=sent" in resp.headers["location"]
+    assert len(calls) == 1
+    assert calls[0]["email"] == "sally.welcome@meantime.com.au"
+
+
+def test_creating_admin_account_sends_no_welcome_email(db, admin_client, monkeypatch):
+    calls = []
+    monkeypatch.setattr("app.services.notifications.notify_floor_welcome", lambda **kw: calls.append(kw) or True)
+    csrf = _csrf_of(admin_client)
+    resp = admin_client.post(
+        "/admin/staff/create",
+        data={
+            "csrf_token": csrf,
+            "name": "New Admin",
+            "email": "new.admin@meantime.com.au",
+            "password": "adminpass12",
+            "role": "admin",
+        },
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    assert calls == []  # admins use the dashboard, not /floor
+
+
+def test_floor_welcome_failure_still_creates_account(db, admin_client, monkeypatch):
+    monkeypatch.setattr("app.services.notifications.notify_floor_welcome", lambda **kw: False)
+    csrf = _csrf_of(admin_client)
+    resp = admin_client.post(
+        "/admin/staff/create",
+        data={
+            "csrf_token": csrf,
+            "name": "Karly Floor",
+            "email": "karly.floor@meantime.com.au",
+            "password": "karlypass12",
+            "role": "floor",
+        },
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    assert "welcome=failed" in resp.headers["location"]
+    # account exists regardless
+    assert staff_auth.authenticate(db, "karly.floor@meantime.com.au", "karlypass12") is not None
