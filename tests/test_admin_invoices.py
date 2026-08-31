@@ -56,11 +56,23 @@ def test_invoices_list_rejects_an_unknown_status(admin_client):
     assert admin_client.get("/admin/invoices?status=nonsense").status_code == 422
 
 
-def test_empty_status_means_no_filter(admin_client, db, loft):
-    draft = _invoice(db, _booking(db, loft), amount="100.00")
-    page = admin_client.get("/admin/invoices?status=")
-    assert page.status_code == 200
-    assert f"#{draft.invoice_number}" in page.text
+def test_default_shows_active_hides_paid(admin_client, db, loft):
+    """The default view is the invoices still needing attention. A draft
+    (active) shows; a paid invoice (terminal) is hidden unless asked for."""
+    from app.models.payment import PaymentMethod
+
+    draft = _invoice(db, _booking(db, loft, name="Active"), amount="100.00")
+    paid = _invoice(db, _booking(db, loft, name="Settled"), sent=True, amount="200.00")
+    invoicing.record_payment(db, paid, amount=Decimal("200.00"), method=PaymentMethod.bank_transfer, actor="test")
+
+    default = admin_client.get("/admin/invoices")
+    assert default.status_code == 200
+    assert f"#{draft.invoice_number}" in default.text
+    assert f"#{paid.invoice_number}" not in default.text  # paid is done -- hidden by default
+
+    all_view = admin_client.get("/admin/invoices?status=all")
+    assert f"#{paid.invoice_number}" in all_view.text  # ...but reachable via "All"
+    assert f"#{draft.invoice_number}" in all_view.text
 
 
 def test_unpaid_tile_count_matches_the_list_it_links_to(admin_client, db, loft):

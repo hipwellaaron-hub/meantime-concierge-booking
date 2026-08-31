@@ -7,7 +7,8 @@
   <div style="flex:1;">
     <label for="status">Status</label>
     <select id="status" name="status">
-      <option value="">Any</option>
+      <option value="">Active (default)</option>
+      <option value="all" {% if status_filter == "all" %}selected{% endif %}>All (incl. paid)</option>
       {% for s in statuses %}
       <option value="{{ s.value }}" {% if status == s %}selected{% endif %}>{{ s.value }}</option>
       {% endfor %}
@@ -26,7 +27,7 @@
   {% if invoices %}
   <table>
     <thead>
-      <tr><th>Invoice</th><th>Booking</th><th>Client</th><th>Event date</th><th>Type</th><th>Due</th><th>Total</th><th>Status</th></tr>
+      <tr><th>Invoice</th><th>Booking</th><th>Client</th><th>Event date</th><th>Type</th><th>Due</th><th style="text-align:right;">Total</th><th>Status</th></tr>
     </thead>
     <tbody>
     {% for invoice in invoices %}
@@ -40,11 +41,11 @@
         <td>{{ invoice.booking.event_date | aus_date if invoice.booking.event_date else "Date TBD" }}</td>
         <td class="muted">{{ invoice.type.value }}</td>
         <td class="muted">{{ invoice.due_date | aus_date }}</td>
-        <td>${{ "%.2f"|format(invoice.total) }}</td>
+        <td style="text-align:right;">${{ "%.2f"|format(invoice.total) }}</td>
         <td>
-          <span class="badge">{{ invoice.status.value }}</span>
+          <span class="badge {{ invoice.status.value | status_badge }}">{{ invoice.status.value }}</span>
           {% if invoice.status.value == "sent" and invoice.viewed_at %}
-          <div class="muted" style="font-size:0.72rem;">Opened {{ invoice.viewed_at | sydney_time }}</div>
+          <div class="muted" style="font-size:0.72rem;" title="{{ invoice.viewed_at | sydney_time }}">Opened {{ invoice.viewed_at | time_ago }}</div>
           {% endif %}
         </td>
       </tr>

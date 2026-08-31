@@ -7,7 +7,7 @@
 {% set active_final_invoices = booking.invoices | selectattr('type.value', 'equalto', 'final') | rejectattr('status.value', 'equalto', 'cancelled') | list %}
 
 <p><a href="/admin/bookings">&larr; All bookings</a></p>
-<h1>{{ booking.event_name }} <span class="badge gold">{{ booking.status.value }}</span></h1>
+<h1>{{ booking.event_name }} <span class="badge {{ booking.status.value | status_badge }}">{{ booking.status.value }}</span></h1>
 <p class="muted">{{ booking.reference_code }} &middot; {{ booking.event_date | aus_date if booking.event_date else "Date TBD" }} &middot; {{ booking.space.name }}
   {% if booking.start_time and booking.end_time %} &middot; {{ booking.start_time }}&ndash;{{ booking.end_time }}{% endif %}
   &middot; {{ booking.adult_count }} adults, {{ booking.child_count }} children (min {{ booking.agreed_min_adults }})
@@ -38,6 +38,15 @@
 </div>
 {% endif %}
 
+{% if not booking.parent_booking %}
+<nav class="detail-nav">
+  <a href="#sec-documents">Documents</a>
+  <a href="#sec-invoices">Invoices</a>
+  <a href="#sec-wizard">Wizard</a>
+  <a href="#sec-audit">Audit trail</a>
+</nav>
+{% endif %}
+
 {% if booking.event_type or booking.proposed_time_slot or booking.notes or booking.lead_source %}
 <div class="card">
   <h2>Enquiry details</h2>
@@ -53,8 +62,8 @@
 </div>
 {% endif %}
 
-<div class="card">
-  <h2>Traffic source</h2>
+<details class="card">
+  <summary class="section-summary">Traffic source</summary>
   {% if not booking.first_touch_attribution and not booking.last_touch_attribution %}
   <p class="muted" style="margin:0;">Unknown -- not tracked. This booking was staff-entered, imported, or arrived by phone, so there was never a page load to capture attribution from.</p>
   {% else %}
@@ -96,7 +105,7 @@
   <p class="muted" style="font-size:0.8rem; margin:6px 0 0;">Last touch matches first touch -- a single-session enquiry.</p>
   {% endif %}
   {% endif %}
-</div>
+</details>
 
 {% if booking.parent_booking %}
 <div class="card" style="border-color: var(--gold-dim);">
@@ -223,7 +232,7 @@
     {% for child in booking.linked_bookings %}
       <tr>
         <td>{{ child.space.name }}</td>
-        <td><span class="badge">{{ child.status.value }}</span></td>
+        <td><span class="badge {{ child.status.value | status_badge }}">{{ child.status.value }}</span></td>
         <td><a href="/admin/bookings/{{ child.id }}">View &rarr;</a></td>
       </tr>
     {% endfor %}
@@ -247,7 +256,7 @@
 </div>
 
 <div class="card">
-  <h2>Documents</h2>
+  <h2 id="sec-documents" style="scroll-margin-top:64px;">Documents</h2>
   <table>
     <thead><tr><th>Type</th><th>Version</th><th>Status</th><th>Actions</th></tr></thead>
     <tbody>
@@ -255,7 +264,7 @@
         <td>Agreement</td>
         <td class="muted">{{ current_agreement.version if current_agreement else "—" }}</td>
         <td>
-          {% if current_agreement %}<span class="badge">{{ current_agreement.status.value }}</span>{% else %}<span class="muted">none</span>{% endif %}
+          {% if current_agreement %}<span class="badge {{ current_agreement.status.value | status_badge }}">{{ current_agreement.status.value }}</span>{% else %}<span class="muted">none</span>{% endif %}
           {% if current_agreement and current_agreement.viewed_at %}<div class="muted" style="font-size:0.72rem; margin-top:3px;">Opened {{ current_agreement.viewed_at | sydney_time }}</div>{% endif %}
         </td>
         <td>
@@ -285,7 +294,7 @@
         <td>BEO</td>
         <td class="muted">{{ current_beo.version if current_beo else "—" }}</td>
         <td>
-          {% if current_beo %}<span class="badge">{{ current_beo.status.value }}</span>{% else %}<span class="muted">none</span>{% endif %}
+          {% if current_beo %}<span class="badge {{ current_beo.status.value | status_badge }}">{{ current_beo.status.value }}</span>{% else %}<span class="muted">none</span>{% endif %}
           {% if current_beo and current_beo.viewed_at %}<div class="muted" style="font-size:0.72rem; margin-top:3px;">Opened {{ current_beo.viewed_at | sydney_time }}</div>{% endif %}
         </td>
         <td>
@@ -316,7 +325,7 @@
 </div>
 
 <div class="card">
-  <h2>Invoices
+  <h2 id="sec-invoices" style="scroll-margin-top:64px;">Invoices
     {% if stripe_mode.value == "live" %}<span class="badge green">Stripe live</span>
     {% elif stripe_mode.value == "test" %}<span class="badge ember">Stripe test mode -- no real charges</span>
     {% else %}<span class="badge wine">Stripe not configured</span>{% endif %}
@@ -352,15 +361,15 @@
   {% endif %}
   {% if booking.invoices %}
   <table>
-    <thead><tr><th>Type</th><th>Total</th><th>Status</th><th>Due</th><th>Actions</th></tr></thead>
+    <thead><tr><th>Type</th><th style="text-align:right;">Total</th><th>Status</th><th>Due</th><th>Actions</th></tr></thead>
     <tbody>
     {% for invoice in booking.invoices %}
       <tr>
         <td>{{ invoice.type.value }}</td>
-        <td>${{ invoice.total }}</td>
+        <td style="text-align:right;">${{ invoice.total }}</td>
         <td>
-          <span class="badge {% if invoice.status.value == 'paid' %}green{% endif %}">{{ invoice.status.value }}</span>
-          {% if invoice.viewed_at %}<div class="muted" style="font-size:0.72rem; margin-top:3px;">Opened {{ invoice.viewed_at | sydney_time }}</div>{% endif %}
+          <span class="badge {{ invoice.status.value | status_badge }}">{{ invoice.status.value }}</span>
+          {% if invoice.viewed_at %}<div class="muted" style="font-size:0.72rem; margin-top:3px;" title="{{ invoice.viewed_at | sydney_time }}">Opened {{ invoice.viewed_at | time_ago }}</div>{% endif %}
         </td>
         <td class="muted">{{ invoice.due_date | aus_date }}</td>
         <td>
@@ -421,7 +430,7 @@
 </div>
 
 <div class="card">
-  <h2>Guided Booking Wizard</h2>
+  <h2 id="sec-wizard" style="scroll-margin-top:64px;">Guided Booking Wizard</h2>
   {% if booking.wizard_session %}
   {% set ws = booking.wizard_session %}
   <p>Status: <span class="badge {% if ws.status.value == 'submitted' %}green{% elif ws.status.value == 'revoked' %}wine{% endif %}">{{ ws.status.value }}</span>
@@ -488,28 +497,30 @@
   </form>
 </div>
 
-<div class="card">
-  <h2>Audit trail</h2>
+<details class="card" id="sec-audit">
+  <summary class="section-summary">Audit trail{% if booking.events %} <span class="muted" style="font-weight:400;">({{ booking.events | length }})</span>{% endif %}</summary>
   {% if booking.events %}
-  <table>
-    <thead><tr><th>When</th><th>Event</th><th>Field</th><th>Old</th><th>New</th><th>Actor</th></tr></thead>
-    <tbody>
-    {% for event in booking.events | reverse %}
-      <tr>
-        <td class="muted">{{ event.created_at | sydney_time }}</td>
-        <td>{{ event.event_type }}</td>
-        <td class="muted">{{ event.field_name or "" }}</td>
-        <td class="muted">{{ event.old_value or "" }}</td>
-        <td class="muted">{{ event.new_value or "" }}</td>
-        <td class="muted">{{ event.actor }}</td>
-      </tr>
-    {% endfor %}
-    </tbody>
-  </table>
+  <div style="max-height: 26rem; overflow-y: auto; margin-top:10px;">
+    <table class="activity-table">
+      <thead><tr><th>When</th><th>Event</th><th>Field</th><th>Old</th><th>New</th><th>Actor</th></tr></thead>
+      <tbody>
+      {% for event in booking.events | reverse %}
+        <tr>
+          <td class="muted" style="white-space:nowrap;">{{ event.created_at | sydney_time }}</td>
+          <td>{{ event.event_type }}</td>
+          <td class="muted">{{ event.field_name or "" }}</td>
+          <td class="muted">{{ event.old_value or "" }}</td>
+          <td class="muted">{{ event.new_value or "" }}</td>
+          <td class="muted">{{ event.actor }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
   {% else %}
   <div class="empty-state">No events yet.</div>
   {% endif %}
-</div>
+</details>
 
 <div class="card" style="border-color: var(--wine, #7a2b3a);">
   <h2 style="color: var(--wine, #b5495f);">Danger zone</h2>

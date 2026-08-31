@@ -546,13 +546,25 @@ def record_payment(
     return payment
 
 
+# The invoices a venue is "done with" -- fully settled or voided. Excluded
+# from the default list (which is about what still needs attention), the
+# mirror of TERMINAL_STATUSES for bookings.
+INVOICE_TERMINAL_STATUSES = (InvoiceStatus.paid, InvoiceStatus.cancelled)
+
+
 def search_invoices(
-    db: Session, venue_id: uuid.UUID, *, status: InvoiceStatus | None = None
+    db: Session,
+    venue_id: uuid.UUID,
+    *,
+    status: InvoiceStatus | None = None,
+    include_terminal: bool = False,
 ) -> list[Invoice]:
-    """Every invoice across the venue, newest first, optionally filtered by
-    status. Scoped through Booking -> Space to the venue the same way the
-    dashboard's own counts are, so the list and the count on the tile that
-    links to it can never disagree."""
+    """Invoices across the venue, newest first. By default the ones still
+    needing attention (draft, sent); paid and cancelled are excluded unless
+    a specific status is chosen or include_terminal is set. Scoped through
+    Booking -> Space to the venue the same way the dashboard's own counts
+    are, so the list and the count on the tile that links to it can never
+    disagree."""
     from app.models import Space
 
     query = (
@@ -563,4 +575,6 @@ def search_invoices(
     )
     if status is not None:
         query = query.where(Invoice.status == status)
+    elif not include_terminal:
+        query = query.where(Invoice.status.not_in(INVOICE_TERMINAL_STATUSES))
     return list(db.scalars(query.order_by(Invoice.created_at.desc())))

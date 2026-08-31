@@ -492,7 +492,7 @@ def test_invoices_card_shows_stripe_test_mode_badge(admin_client, booking):
     with patch.object(stripe_integration, "STRIPE_SECRET_KEY", "sk_test_fake"):
         resp = _detail_page(admin_client, booking.id)
 
-    invoices_section = resp.text.split("<h2>Invoices")[1].split("</h2>")[0]
+    invoices_section = resp.text.split('id="sec-invoices"')[1].split("</h2>")[0]
     assert "Stripe test mode -- no real charges" in invoices_section
 
 

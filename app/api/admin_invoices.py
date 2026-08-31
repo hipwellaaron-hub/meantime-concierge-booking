@@ -31,16 +31,17 @@ def list_invoices(
     db: Session = Depends(get_db),
     staff: StaffUser = Depends(require_staff),
 ):
-    # Same empty-string handling as the bookings list: the "Any" option in
-    # the filter submits status="", which must mean "no filter" rather
-    # than raising on an unknown status.
+    # Same handling as the bookings list: the default option submits
+    # status="" (active only), and status="all" is the explicit
+    # show-everything escape hatch; an unknown value 422s.
+    include_terminal = status == "all"
     try:
-        parsed_status = InvoiceStatus(status) if status else None
+        parsed_status = None if (not status or status == "all") else InvoiceStatus(status)
     except ValueError:
         raise HTTPException(status_code=422, detail=f"Unknown status '{status}'")
 
     venue = _venue(db)
-    invoices = invoicing.search_invoices(db, venue.id, status=parsed_status)
+    invoices = invoicing.search_invoices(db, venue.id, status=parsed_status, include_terminal=include_terminal)
     return templates.TemplateResponse(
         request,
         "admin/invoices_list.html",
@@ -49,6 +50,7 @@ def list_invoices(
             staff,
             invoices=invoices,
             status=parsed_status,
+            status_filter=status or "",
             statuses=list(InvoiceStatus),
             total_outstanding=sum(
                 (i.total for i in invoices if i.status == InvoiceStatus.sent), start=0

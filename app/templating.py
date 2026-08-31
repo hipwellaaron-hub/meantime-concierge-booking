@@ -143,8 +143,60 @@ def has_venue_logo() -> bool:
     return os.path.exists(LOGO_FILE_PATH)
 
 
+# One place that decides the colour of a status pill, so every list --
+# bookings, invoices, documents, wizard -- reads the same way: green =
+# done/won/paid, gold = live/in-progress, wine = dead/cancelled, and a
+# plain neutral pill for a brand-new enquiry. Covers the status values of
+# every enum in the app; an unknown value falls back to neutral.
+_STATUS_BADGE_CLASSES = {
+    # good / settled
+    "confirmed": "green", "completed": "green", "paid": "green", "signed": "green", "submitted": "green",
+    # live / in progress
+    "offered": "gold", "tentative": "gold", "sent": "gold", "viewed": "gold", "draft": "gold", "in_progress": "gold",
+    # ended unfavourably
+    "cancelled": "wine", "dead": "wine", "archived": "wine", "revoked": "wine",
+    # brand new -- neutral
+    "enquiry": "",
+}
+
+
+def status_badge(value) -> str:
+    """The badge colour class for a status value (an enum member or its
+    string). Used as `class="badge {{ x.status.value | status_badge }}"`."""
+    if value is None:
+        return ""
+    key = getattr(value, "value", value)
+    return _STATUS_BADGE_CLASSES.get(str(key), "")
+
+
+def time_ago(value: dt.datetime | None) -> str:
+    """A short relative time ('2h ago', '3d ago') for at-a-glance lists.
+    The exact timestamp still belongs in a title attribute alongside it, so
+    hovering gives the precise time -- this is the scannable summary, not a
+    replacement for the real value."""
+    if value is None:
+        return ""
+    now = dt.datetime.now(dt.timezone.utc)
+    moment = value if value.tzinfo else value.replace(tzinfo=dt.timezone.utc)
+    delta = now - moment
+    secs = delta.total_seconds()
+    if secs < 0:
+        return sydney_time(value)  # a future timestamp -- just show it plainly
+    if secs < 60:
+        return "just now"
+    if secs < 3600:
+        return f"{int(secs // 60)}m ago"
+    if secs < 86400:
+        return f"{int(secs // 3600)}h ago"
+    if secs < 7 * 86400:
+        return f"{int(secs // 86400)}d ago"
+    return sydney_time(value, "%d %b %Y")
+
+
 templates = Jinja2Templates(directory="app/templates")
 templates.env.filters["sydney_time"] = sydney_time
+templates.env.filters["status_badge"] = status_badge
+templates.env.filters["time_ago"] = time_ago
 templates.env.filters["nl2br"] = nl2br
 templates.env.filters["balance_columns"] = balance_columns
 templates.env.filters["client_safe"] = client_safe

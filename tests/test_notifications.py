@@ -334,3 +334,26 @@ def test_notify_floor_welcome_returns_true_on_send():
          patch.object(notifications, "DIGEST_GMAIL_APP_PASSWORD", "fake-app-password"), \
          patch.object(notifications.smtplib, "SMTP_SSL", return_value=mock_smtp):
         assert notifications.notify_floor_welcome(name="Sally", email="sally@meantime.com.au") is True
+
+
+# --- UI filters ---------------------------------------------------------------
+
+def test_status_badge_and_time_ago_filters():
+    from app import templating
+
+    assert templating.status_badge("confirmed") == "green"
+    assert templating.status_badge("paid") == "green"
+    assert templating.status_badge("cancelled") == "wine"
+    assert templating.status_badge("tentative") == "gold"
+    assert templating.status_badge("enquiry") == ""
+    assert templating.status_badge("something-unknown") == ""
+    assert templating.status_badge(None) == ""
+
+    import datetime as _dt
+
+    now = _dt.datetime.now(_dt.timezone.utc)
+    assert templating.time_ago(now - _dt.timedelta(minutes=5)) == "5m ago"
+    assert templating.time_ago(now - _dt.timedelta(hours=3)) == "3h ago"
+    assert templating.time_ago(now - _dt.timedelta(days=2)) == "2d ago"
+    assert templating.time_ago(now - _dt.timedelta(seconds=10)) == "just now"
+    assert templating.time_ago(None) == ""

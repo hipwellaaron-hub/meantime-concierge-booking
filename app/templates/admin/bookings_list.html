@@ -27,7 +27,7 @@
 <div class="card" style="padding:0;">
   {% if bookings %}
   <table>
-    <thead><tr><th>Event</th><th>Reference</th><th>Date</th><th>Space</th><th>Status</th><th>Guests</th></tr></thead>
+    <thead><tr><th>Event</th><th>Reference</th><th>Date</th><th>Space</th><th>Status</th><th style="text-align:right;">Guests</th></tr></thead>
     <tbody>
     {% for booking in bookings %}
       <tr onclick="window.location='/admin/bookings/{{ booking.id }}'" style="cursor:pointer;">
@@ -35,8 +35,8 @@
         <td class="muted">{{ booking.reference_code }}</td>
         <td>{{ booking.event_date | aus_date if booking.event_date else "Date TBD" }}</td>
         <td class="muted">{{ booking.space.name }}</td>
-        <td><span class="badge">{{ booking.status.value }}</span></td>
-        <td class="muted">{{ booking.adult_count + booking.child_count }}</td>
+        <td><span class="badge {{ booking.status.value | status_badge }}">{{ booking.status.value }}</span></td>
+        <td class="muted" style="text-align:right;">{{ booking.adult_count + booking.child_count }}</td>
       </tr>
     {% endfor %}
     </tbody>

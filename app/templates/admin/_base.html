@@ -58,6 +58,19 @@
   main { max-width: 1080px; margin: 0 auto; padding: 28px 24px 80px; }
   h1 { font-family: var(--font-head); font-size: 1.6rem; margin: 0 0 20px; color: var(--cream); }
   h2 { font-family: var(--font-head); font-size: 1.15rem; margin: 0 0 12px; color: var(--cream); }
+  /* A collapsible section header styled like an h2, for <details class="card">. */
+  .section-summary { font-family: var(--font-head); font-size: 1.15rem; color: var(--cream); cursor: pointer; list-style: none; }
+  .section-summary::-webkit-details-marker { display: none; }
+  .section-summary::before { content: "\25B8"; color: var(--gold); font-size: 0.85em; margin-right: 8px; display: inline-block; transition: transform 0.12s; }
+  details[open] > .section-summary::before { transform: rotate(90deg); }
+  /* Sticky header for scrolling activity/audit tables. */
+  .activity-table thead th { position: sticky; top: 0; z-index: 1; background: var(--surface); }
+  /* In-page jump nav on the (long) booking detail page. */
+  .detail-nav { position: sticky; top: 0; z-index: 4; display: flex; flex-wrap: wrap; gap: 8px;
+    padding: 8px 0; margin: 0 0 4px; background: var(--bg); border-bottom: 1px solid var(--border); }
+  .detail-nav a { font-size: 0.78rem; color: var(--muted); text-decoration: none; padding: 4px 10px;
+    border: 1px solid var(--border-bright); border-radius: 999px; }
+  .detail-nav a:hover { color: var(--gold); border-color: var(--gold-dim); }
   .card {
     background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
     padding: 20px; margin-bottom: 18px;
@@ -86,6 +99,10 @@
   th { text-align: left; color: var(--muted); font-weight: 600; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.03em; padding: 8px 10px; border-bottom: 1px solid var(--border-bright); }
   td { padding: 10px; border-bottom: 1px solid var(--border); }
   tr:hover td { background: var(--surface-hi); }
+  /* Rows that navigate on click get a pointer and a slightly stronger hover
+     so it's obvious they're clickable, not just a static row. */
+  tr[onclick] { cursor: pointer; }
+  tr[onclick]:hover td { background: var(--surface-hi); box-shadow: inset 2px 0 0 var(--gold-dim); }
 
   .stat { text-align: left; }
   .stat .num { font-family: var(--font-head); font-size: 2rem; color: var(--gold); }
