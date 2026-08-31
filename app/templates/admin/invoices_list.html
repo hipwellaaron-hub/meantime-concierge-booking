@@ -26,7 +26,7 @@
   {% if invoices %}
   <table>
     <thead>
-      <tr><th>Invoice</th><th>Booking</th><th>Type</th><th>Due</th><th>Total</th><th>Status</th></tr>
+      <tr><th>Invoice</th><th>Booking</th><th>Client</th><th>Event date</th><th>Type</th><th>Due</th><th>Total</th><th>Status</th></tr>
     </thead>
     <tbody>
     {% for invoice in invoices %}
@@ -36,6 +36,8 @@
           {{ invoice.booking.event_name }}
           <div class="muted" style="font-size:0.72rem;">{{ invoice.booking.reference_code }}</div>
         </td>
+        <td>{{ invoice.booking.contact.name | person_name if invoice.booking.contact else "—" }}</td>
+        <td>{{ invoice.booking.event_date | aus_date if invoice.booking.event_date else "Date TBD" }}</td>
         <td class="muted">{{ invoice.type.value }}</td>
         <td class="muted">{{ invoice.due_date | aus_date }}</td>
         <td>${{ "%.2f"|format(invoice.total) }}</td>

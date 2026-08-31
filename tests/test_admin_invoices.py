@@ -108,3 +108,13 @@ def test_search_invoices_is_scoped_to_the_venue(db, loft):
     ours = invoicing.search_invoices(db, hamilton.id)
     assert all(i.booking.space.venue_id == hamilton.id for i in ours)
     assert "Theirs" not in {i.booking.event_name for i in ours}
+
+
+def test_invoices_list_shows_client_name_and_event_date(admin_client, db, loft):
+    booking = _booking(db, loft, name="Dated Event")
+    _invoice(db, booking, sent=True)
+
+    page = admin_client.get("/admin/invoices")
+    assert page.status_code == 200
+    assert "Invoice Test Contact" in page.text  # client name column
+    assert "06-03-2027" in page.text            # event date, day-first
