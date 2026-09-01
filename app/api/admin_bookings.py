@@ -2,8 +2,8 @@ import datetime as dt
 import uuid
 from decimal import Decimal, InvalidOperation
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -25,6 +25,7 @@ from app.services.contact_matching import find_or_create_contact
 from app.services import documents as documents_service
 from app.services import enquiry_classification
 from app.services import invoicing
+from app.services import legacy_documents
 from app.services import wizard as wizard_service
 from app.services import wizard_generation
 from app.services.attribution import summarize_channel
@@ -93,6 +94,117 @@ def delete_booking(
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return RedirectResponse(url="/admin/bookings", status_code=303)
+
+
+# --- legacy document uploads (iVvy migration) --------------------------------
+
+
+def _parse_legacy_date(value: str | None) -> dt.datetime | None:
+    value = (value or "").strip()
+    if not value:
+        return None
+    try:
+        d = dt.date.fromisoformat(value)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="Invalid date (use YYYY-MM-DD)") from exc
+    return dt.datetime.combine(d, dt.time(12, 0), tzinfo=dt.timezone.utc)
+
+
+def _read_upload(file: UploadFile) -> bytes:
+    # Bound the read at the cap + 1 byte so an over-size upload can't be
+    # slurped whole into memory; validate_pdf then rejects it cleanly.
+    return file.file.read(legacy_documents.MAX_PDF_BYTES + 1)
+
+
+@router.post("/{booking_id}/legacy-agreement", dependencies=[Depends(require_csrf)])
+def upload_legacy_agreement(
+    booking_id: uuid.UUID,
+    request: Request,
+    file: UploadFile = File(...),
+    source_ref: str | None = Form(None),
+    signed_date: str | None = Form(None),
+    db: Session = Depends(get_db),
+    staff: StaffUser = Depends(require_staff),
+):
+    booking = _get_booking_or_404(db, booking_id)
+    try:
+        legacy_documents.attach_agreement_pdf(
+            db, booking, pdf=_read_upload(file), filename=truncate(file.filename or "agreement.pdf", 255),
+            source_ref=(source_ref or "").strip() or None, signed_at=_parse_legacy_date(signed_date),
+            actor=_actor(staff),
+        )
+    except legacy_documents.LegacyUploadError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return _redirect_to_detail(booking_id)
+
+
+@router.post("/{booking_id}/legacy-deposit", dependencies=[Depends(require_csrf)])
+def upload_legacy_deposit(
+    booking_id: uuid.UUID,
+    request: Request,
+    file: UploadFile = File(...),
+    amount: str = Form(...),
+    source_ref: str | None = Form(None),
+    paid_date: str | None = Form(None),
+    db: Session = Depends(get_db),
+    staff: StaffUser = Depends(require_staff),
+):
+    booking = _get_booking_or_404(db, booking_id)
+    try:
+        parsed_amount = Decimal(amount)
+    except InvalidOperation as exc:
+        raise HTTPException(status_code=422, detail="Invalid deposit amount") from exc
+    if parsed_amount <= 0:
+        raise HTTPException(status_code=422, detail="Deposit amount must be positive")
+    try:
+        legacy_documents.attach_deposit_pdf(
+            db, booking, pdf=_read_upload(file), filename=truncate(file.filename or "deposit.pdf", 255),
+            amount=parsed_amount, paid_at=_parse_legacy_date(paid_date),
+            source_ref=(source_ref or "").strip() or None, actor=_actor(staff),
+        )
+    except legacy_documents.LegacyUploadError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return _redirect_to_detail(booking_id)
+
+
+def _legacy_file_response(filename: str | None, data: bytes) -> Response:
+    # Opaque bytes, forced download, never sniffed into an inline render.
+    return Response(
+        content=data,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename or "legacy.pdf"}"',
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+@router.get("/{booking_id}/documents/{document_id}/legacy-file")
+def serve_legacy_agreement_file(
+    booking_id: uuid.UUID,
+    document_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    staff: StaffUser = Depends(require_staff),
+):
+    booking = _get_booking_or_404(db, booking_id)
+    doc = db.get(Document, document_id)
+    if doc is None or doc.booking_id != booking.id or not doc.is_legacy or doc.legacy_file is None:
+        raise HTTPException(status_code=404, detail="No legacy file on this document")
+    return _legacy_file_response(doc.legacy_filename, doc.legacy_file)
+
+
+@router.get("/{booking_id}/invoices/{invoice_id}/legacy-file")
+def serve_legacy_deposit_file(
+    booking_id: uuid.UUID,
+    invoice_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    staff: StaffUser = Depends(require_staff),
+):
+    booking = _get_booking_or_404(db, booking_id)
+    inv = db.get(Invoice, invoice_id)
+    if inv is None or inv.booking_id != booking.id or not inv.is_legacy or inv.legacy_file is None:
+        raise HTTPException(status_code=404, detail="No legacy file on this invoice")
+    return _legacy_file_response(inv.legacy_filename, inv.legacy_file)
 
 
 @router.get("", response_class=HTMLResponse)
@@ -233,6 +345,7 @@ def booking_detail(
             first_touch_channel=summarize_channel(booking.first_touch_attribution),
             last_touch_channel=summarize_channel(booking.last_touch_attribution),
             touches_differ=booking.first_touch_attribution != booking.last_touch_attribution,
+            legacy_mismatches=legacy_documents.legacy_mismatches(booking),
         ),
     )
 

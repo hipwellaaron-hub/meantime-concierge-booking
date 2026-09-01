@@ -23,7 +23,9 @@ def _get_viewable_invoice_or_404(db: Session, token: str):
     invoice = invoicing.get_by_token(db, token)
     # Same policy as documents: a draft hasn't been human-approved to show
     # a client yet, so treat its link as not existing rather than leaking it.
-    if invoice is None or invoice.status == InvoiceStatus.draft:
+    # A legacy invoice is a migrated record, never client-facing -- the real
+    # invoice is the iVvy PDF, downloaded by staff from the admin.
+    if invoice is None or invoice.status == InvoiceStatus.draft or invoice.is_legacy:
         raise HTTPException(status_code=404, detail="Invoice not found")
     return invoice
 

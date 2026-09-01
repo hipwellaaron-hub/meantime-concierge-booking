@@ -270,6 +270,8 @@ def update_invoice(
     surcharge base; the deposit credit is not.
     """
     db.refresh(invoice, with_for_update=True)
+    if invoice.is_legacy:
+        raise ValueError("cannot edit a legacy invoice -- it is a fixed record of what was invoiced in iVvy")
     if invoice.status != InvoiceStatus.draft:
         raise ValueError(
             f"cannot edit an invoice that is already {invoice.status.value} -- "
@@ -322,6 +324,8 @@ def revise_sent_invoice(db: Session, invoice: Invoice, *, actor: str) -> Invoice
     reflects what's genuinely been paid at reissue time.
     """
     db.refresh(invoice, with_for_update=True)
+    if invoice.is_legacy:
+        raise ValueError("cannot revise a legacy invoice -- it is a fixed record of what was invoiced in iVvy")
     if invoice.status != InvoiceStatus.sent:
         raise ValueError(f"only a sent invoice can be revised -- this one is {invoice.status.value}")
     if get_total_paid(db, invoice.id) > 0:
@@ -462,6 +466,10 @@ def record_payment(
     # would stay stuck as unpaid even though it genuinely isn't anymore.
     db.refresh(invoice, with_for_update=True)
 
+    if invoice.is_legacy:
+        raise ValueError(
+            "cannot record a payment against a legacy invoice -- it is a fixed record of a deposit already paid in iVvy"
+        )
     if invoice.status == InvoiceStatus.cancelled:
         raise ValueError("cannot record a payment against a cancelled invoice")
     if invoice.status == InvoiceStatus.draft:

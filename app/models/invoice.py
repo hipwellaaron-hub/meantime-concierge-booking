@@ -3,7 +3,7 @@ import enum
 import uuid
 from decimal import Decimal
 
-from sqlalchemy import Date, DateTime, ForeignKey, Integer, Numeric, String, func, text
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, LargeBinary, Numeric, String, func, text
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -67,6 +67,17 @@ class Invoice(Base):
     viewed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     access_token: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, default=generate_access_token)
+
+    # Legacy upload (iVvy migration): an inert record of a deposit already
+    # invoiced/paid in a prior system. is_legacy marks it read-only -- never
+    # edited, revised, re-sent, or taking a new payment. legacy_file is the
+    # original PDF as opaque bytes; legacy_snapshot is the booking facts the
+    # PDF represents, for mismatch detection.
+    is_legacy: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"), default=False)
+    legacy_file: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    legacy_filename: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    legacy_source_ref: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    legacy_snapshot: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[dt.datetime] = mapped_column(

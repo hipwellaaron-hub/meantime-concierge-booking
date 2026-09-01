@@ -2,7 +2,7 @@ import datetime as dt
 import enum
 import uuid
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, UniqueConstraint, func, text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, LargeBinary, String, UniqueConstraint, func, text
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -61,6 +61,19 @@ class Document(Base):
     signed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     signer_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     signer_ip: Mapped[str | None] = mapped_column(String(45), nullable=True)  # long enough for IPv6
+
+    # Legacy upload (iVvy migration): an inert record of what was signed in a
+    # prior system. is_legacy marks it read-only -- never regenerated,
+    # edited, sent, revised, or rendered to a client (see the guards in
+    # app.services.documents and the client-route guards in app.api.documents).
+    # legacy_file is the original PDF as opaque bytes; legacy_snapshot is the
+    # booking facts (event_date, space) the PDF represents, for mismatch
+    # detection if the booking is later changed.
+    is_legacy: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"), default=False)
+    legacy_file: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    legacy_filename: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    legacy_source_ref: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    legacy_snapshot: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[dt.datetime] = mapped_column(

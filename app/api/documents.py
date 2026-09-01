@@ -41,7 +41,11 @@ def view_document(token: str, request: Request, db: Session = Depends(get_db)):
     # as if it doesn't exist yet, same as an unknown token, rather than
     # leaking draft content to anyone who happens to have (or guesses at)
     # a link that was never actually sent.
-    if document is None or document.status == DocumentStatus.draft:
+    if document is None or document.status == DocumentStatus.draft or document.is_legacy:
+        # Legacy documents carry placeholder content (the real record is the
+        # uploaded PDF) and must NEVER render to a client -- treat the public
+        # link as if it doesn't exist. Staff download the stored PDF from the
+        # admin instead.
         raise HTTPException(status_code=404, detail="Document not found")
 
     document = documents_service.record_view(db, document)
@@ -57,7 +61,11 @@ def download_document_pdf(token: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Document not found")
 
     document = documents_service.get_by_token(db, token)
-    if document is None or document.status == DocumentStatus.draft:
+    if document is None or document.status == DocumentStatus.draft or document.is_legacy:
+        # Legacy documents carry placeholder content (the real record is the
+        # uploaded PDF) and must NEVER render to a client -- treat the public
+        # link as if it doesn't exist. Staff download the stored PDF from the
+        # admin instead.
         raise HTTPException(status_code=404, detail="Document not found")
 
     html = templates.get_template("document.html").render(document=document, booking=document.booking, is_pdf=True)
@@ -82,7 +90,11 @@ def sign_document(
         raise HTTPException(status_code=404, detail="Document not found")
 
     document = documents_service.get_by_token(db, token)
-    if document is None or document.status == DocumentStatus.draft:
+    if document is None or document.status == DocumentStatus.draft or document.is_legacy:
+        # Legacy documents carry placeholder content (the real record is the
+        # uploaded PDF) and must NEVER render to a client -- treat the public
+        # link as if it doesn't exist. Staff download the stored PDF from the
+        # admin instead.
         raise HTTPException(status_code=404, detail="Document not found")
 
     signer_name = signer_name.strip()

@@ -265,9 +265,17 @@
         <td class="muted">{{ current_agreement.version if current_agreement else "—" }}</td>
         <td>
           {% if current_agreement %}<span class="badge {{ current_agreement.status.value | status_badge }}">{{ current_agreement.status.value }}</span>{% else %}<span class="muted">none</span>{% endif %}
+          {% if current_agreement and current_agreement.is_legacy %}<span class="badge wine" title="Signed in iVvy before the Concierge migration — a fixed record, not a live document">LEGACY · iVvy</span>{% endif %}
           {% if current_agreement and current_agreement.viewed_at %}<div class="muted" style="font-size:0.72rem; margin-top:3px;">Opened {{ current_agreement.viewed_at | sydney_time }}</div>{% endif %}
         </td>
         <td>
+          {% if current_agreement and current_agreement.is_legacy %}
+            {% if current_agreement.legacy_file %}
+            <a href="/admin/bookings/{{ booking.id }}/documents/{{ current_agreement.id }}/legacy-file">Download signed PDF &darr;</a>
+            {% else %}
+            <span class="muted">record only — attach the signed PDF below</span>
+            {% endif %}
+          {% else %}
           <form class="inline" method="post" action="/admin/bookings/{{ booking.id }}/documents/agreement/generate">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <button class="btn secondary" type="submit">{{ "Regenerate" if current_agreement else "Generate" }}</button>
@@ -287,6 +295,7 @@
           <a href="/d/{{ current_agreement.access_token }}" target="_blank">View &rarr;</a>
           <a href="/d/{{ current_agreement.access_token }}/pdf">Download PDF</a>
           <button type="button" class="btn secondary" onclick="copyLink(this, '/d/{{ current_agreement.access_token }}')">Copy link</button>
+          {% endif %}
           {% endif %}
         </td>
       </tr>
@@ -322,6 +331,40 @@
       </tr>
     </tbody>
   </table>
+  {% if legacy_mismatches %}
+  <div style="margin-top:12px; padding:10px 12px; border-radius:8px; background:rgba(150,40,40,0.14); border:1px solid rgba(150,40,40,0.4);">
+    ⚠ A stored legacy PDF no longer matches this booking. The signed PDF is never changed — re-paper deliberately if the terms have moved:
+    <ul style="margin:6px 0 0 18px;">
+      {% for label, msg in legacy_mismatches %}<li>{{ label }}: {{ msg }}</li>{% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+  <details style="margin-top:12px;">
+    <summary class="muted" style="cursor:pointer;">Attach a legacy signed document (iVvy migration)</summary>
+    <div style="margin-top:10px; display:flex; flex-direction:column; gap:16px;">
+      <form method="post" action="/admin/bookings/{{ booking.id }}/legacy-agreement" enctype="multipart/form-data">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <div style="font-weight:600; margin-bottom:6px;">Signed agreement (PDF)</div>
+        <div class="field-row" style="align-items:flex-end; gap:10px; flex-wrap:wrap;">
+          <div><label>PDF file</label><input type="file" name="file" accept="application/pdf" required></div>
+          <div><label>iVvy code</label><input type="text" name="source_ref" placeholder="e.g. KCP3PGRBYD"></div>
+          <div><label>Date signed</label><input type="date" name="signed_date"></div>
+          <div><button class="btn" type="submit">Upload agreement</button></div>
+        </div>
+      </form>
+      <form method="post" action="/admin/bookings/{{ booking.id }}/legacy-deposit" enctype="multipart/form-data">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <div style="font-weight:600; margin-bottom:6px;">Paid deposit invoice (PDF)</div>
+        <div class="field-row" style="align-items:flex-end; gap:10px; flex-wrap:wrap;">
+          <div><label>PDF file</label><input type="file" name="file" accept="application/pdf" required></div>
+          <div><label>Amount</label><input type="text" name="amount" placeholder="500.00" required></div>
+          <div><label>iVvy code</label><input type="text" name="source_ref"></div>
+          <div><label>Date paid</label><input type="date" name="paid_date"></div>
+          <div><button class="btn" type="submit">Upload deposit</button></div>
+        </div>
+      </form>
+    </div>
+  </details>
 </div>
 
 <div class="card">
@@ -369,10 +412,14 @@
         <td style="text-align:right;">${{ invoice.total }}</td>
         <td>
           <span class="badge {{ invoice.status.value | status_badge }}">{{ invoice.status.value }}</span>
+          {% if invoice.is_legacy %}<span class="badge wine" title="Deposit paid in iVvy before the migration — a fixed record">LEGACY · iVvy</span>{% endif %}
           {% if invoice.viewed_at %}<div class="muted" style="font-size:0.72rem; margin-top:3px;" title="{{ invoice.viewed_at | sydney_time }}">Opened {{ invoice.viewed_at | time_ago }}</div>{% endif %}
         </td>
         <td class="muted">{{ invoice.due_date | aus_date }}</td>
         <td>
+          {% if invoice.is_legacy %}
+            {% if invoice.legacy_file %}<a href="/admin/bookings/{{ booking.id }}/invoices/{{ invoice.id }}/legacy-file">Download PDF &darr;</a>{% else %}<span class="muted">record only — attach the PDF above</span>{% endif %}
+          {% else %}
           {% if invoice.status.value == "draft" %}
           <a href="/admin/bookings/{{ booking.id }}/invoices/{{ invoice.id }}/edit" class="btn secondary">Edit</a>
           <form class="inline" method="post" action="/admin/bookings/{{ booking.id }}/invoices/{{ invoice.id }}/send">
@@ -418,6 +465,7 @@
               <button class="btn" type="submit" style="margin-top:10px;">Record payment</button>
             </form>
           </details>
+          {% endif %}
           {% endif %}
         </td>
       </tr>

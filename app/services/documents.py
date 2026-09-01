@@ -43,6 +43,15 @@ def create_new_version(db: Session, booking: Booking, doc_type: DocumentType, co
         # would duplicate the parent's, not describe anything real.
         raise ValueError("cannot create a document on a linked booking -- use the parent booking instead")
     previous = get_current(db, booking.id, doc_type)
+    if previous is not None and previous.is_legacy:
+        # A legacy record is a fixed copy of what was signed in iVvy -- never
+        # regenerated over. If the booking has genuinely changed, the admin
+        # is warned of the mismatch and re-papers deliberately, not by an
+        # automatic regenerate that would bury the signed original.
+        raise ValueError(
+            f"the current {doc_type.value} is a legacy record of what was signed in iVvy -- "
+            "it can't be regenerated over; the signed original stands"
+        )
     next_version = 1
     if previous is not None:
         previous.is_current = False
