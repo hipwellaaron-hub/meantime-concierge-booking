@@ -78,6 +78,34 @@ KNOWN_EMAIL_CORRECTIONS = {"emilyleamarsh@gmail.clm": "emilyleamarsh@gmail.com"}
 
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[A-Za-z]{2,}$")
 
+# The exact column set of the merged export. Every one of these must be
+# present or the file is refused outright -- a wrong file (a different
+# export, a hand-edited sheet) must never be half-imported one row at a
+# time. Extra columns beyond these are tolerated; missing ones are not.
+EXPECTED_HEADERS = frozenset({
+    "booking_code", "event_date", "day", "event_name", "event_type", "space", "start_time", "end_time",
+    "pax", "status", "contact_name", "contact_phone", "contact_email", "company", "opportunity_created",
+    "pricing_locked_at", "pricing_basis", "lead_source", "food_total", "total_revenue", "total_paid",
+    "total_outstanding", "deposit_paid", "beo_number", "coordinator", "layout", "comments",
+    "missing_email", "needs_review",
+})
+
+
+class MigrationInputError(ValueError):
+    """A structurally-wrong input file (missing columns) -- refused before
+    any row is looked at, so a wrong file can't be partially imported."""
+
+
+def validate_headers(csv_path: str) -> None:
+    with open(csv_path, encoding="utf-8-sig", newline="") as f:
+        header = next(csv.reader(f), [])
+    got = {h.strip() for h in header if h and h.strip()}
+    missing = EXPECTED_HEADERS - got
+    if missing:
+        raise MigrationInputError(
+            f"this file is missing expected columns and was refused: {', '.join(sorted(missing))}"
+        )
+
 _SIGNED_RE = re.compile(r"Agreement signed\s+(\d{1,2})/(\d{1,2})/(\d{4})")
 _DUE_RE = re.compile(r"Deposit due\s+(\d{1,2})/(\d{1,2})/(\d{4})")
 
@@ -89,6 +117,7 @@ class BookingResult:
     event_name: str
     spaces: list[str]
     deposit: str  # "paid:$X" | "outstanding:$X" | "none"
+    booking_id: str = ""
     flags: list[str] = field(default_factory=list)
 
 
@@ -423,8 +452,8 @@ def _import_group(db: Session, venue: Venue, rows: list[dict], code: str, actor:
 
     result.created.append(
         BookingResult(
-            booking_code=code, reference_code=booking.reference_code,
-            event_name=booking.event_name, spaces=spaces, deposit=deposit_desc, flags=flags,
+            booking_code=code, reference_code=booking.reference_code, event_name=booking.event_name,
+            spaces=spaces, deposit=deposit_desc, booking_id=str(booking.id), flags=flags,
         )
     )
 
@@ -446,6 +475,7 @@ def report_migration_csv(db: Session, csv_path: str, *, venue: Venue) -> Migrati
     """The same decisions import_migration_csv makes, but with no writes at
     all -- only SELECTs (idempotency + hand-entered-duplicate). Safe to run
     against production to produce a review report before importing."""
+    validate_headers(csv_path)
     report = MigrationReport()
     with open(csv_path, encoding="utf-8-sig", newline="") as f:
         all_rows = [r for r in csv.DictReader(f) if (r.get("booking_code") or "").strip()]
@@ -498,6 +528,7 @@ def report_migration_csv(db: Session, csv_path: str, *, venue: Venue) -> Migrati
 
 
 def import_migration_csv(db: Session, csv_path: str, *, venue: Venue, actor: str = "ivvy_migration") -> MigrationResult:
+    validate_headers(csv_path)
     result = MigrationResult()
 
     with open(csv_path, encoding="utf-8-sig", newline="") as f:

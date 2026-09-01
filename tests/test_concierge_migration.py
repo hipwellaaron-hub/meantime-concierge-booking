@@ -23,10 +23,11 @@ from app.services.concierge_migration import import_migration_csv
 from app.services.invoicing import get_deposit_paid
 
 FIELDS = [
-    "booking_code", "event_date", "event_name", "event_type", "space", "start_time", "end_time",
+    "booking_code", "event_date", "day", "event_name", "event_type", "space", "start_time", "end_time",
     "pax", "status", "contact_name", "contact_phone", "contact_email", "company",
-    "opportunity_created", "pricing_locked_at", "lead_source", "food_total", "total_revenue",
+    "opportunity_created", "pricing_locked_at", "pricing_basis", "lead_source", "food_total", "total_revenue",
     "total_paid", "total_outstanding", "deposit_paid", "beo_number", "coordinator", "layout", "comments",
+    "missing_email", "needs_review",
 ]
 
 
@@ -202,6 +203,19 @@ def test_hand_entered_duplicate_is_skipped_not_duplicated(db, hamilton, tmp_path
     # only the hand-entered one exists for that contact+date; no migrated twin
     assert db.query(Booking).filter_by(migration_external_ref="TWIN1").count() == 0
     assert db.query(Booking).join(Contact).filter(Contact.email == "twin@example.com").count() == 1
+
+
+def test_wrong_file_headers_are_refused(db, hamilton, tmp_path):
+    """A structurally-wrong file is refused outright -- never partially
+    imported one row at a time."""
+    from app.services.concierge_migration import MigrationInputError, import_migration_csv, report_migration_csv
+
+    path = tmp_path / "wrong.csv"
+    path.write_text("name,date,amount\nfoo,2027-01-01,500\n", encoding="utf-8")
+    with pytest.raises(MigrationInputError, match="missing expected columns"):
+        report_migration_csv(db, str(path), venue=hamilton)
+    with pytest.raises(MigrationInputError, match="missing expected columns"):
+        import_migration_csv(db, str(path), venue=hamilton)
 
 
 def test_report_is_read_only_and_flags_hand_entered_duplicate(db, hamilton, loft, tmp_path):

@@ -1,0 +1,125 @@
+{% extends "admin/_base.html" %}
+{% block title %}iVvy migration{% endblock %}
+{% block content %}
+<p><a href="/admin/bookings">&larr; All bookings</a></p>
+<h1>iVvy → Concierge migration</h1>
+<p class="muted">One-time tool. Run the <strong>read-only report</strong> first, eyeball it, take a backup, then import the <em>same</em> file. This page is removed after the changeover.</p>
+
+{% if error %}
+<div class="card" style="border-color:rgba(150,40,40,0.5); background:rgba(150,40,40,0.12);">
+  <strong>File refused:</strong> {{ error }}
+</div>
+{% endif %}
+
+{# ---------- STEP 1: read-only report ---------- #}
+<div class="card">
+  <h2>1 · Read-only report</h2>
+  <p class="muted">Writes nothing. Shows what would be created, and flags any hand-entered duplicates.</p>
+  <form method="post" action="/admin/migration/report" enctype="multipart/form-data">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="field-row" style="align-items:flex-end; gap:10px;">
+      <div><label>Export CSV</label><input type="file" name="file" accept=".csv" required></div>
+      <div><button class="btn" type="submit">Run read-only report</button></div>
+    </div>
+  </form>
+</div>
+
+{% if report is defined %}
+<div class="card">
+  <h2>Report — {{ filename }}</h2>
+  <p><strong>{{ file_rows }} data rows</strong> &middot; file hash <code>{{ file_short }}</code>
+     <span class="muted">(the import must match this exact hash)</span></p>
+  <p>
+    <span class="badge green">would create {{ report.would_create | length }}</span>
+    <span class="badge wine">excluded {{ report.excluded | length }}</span>
+    <span class="badge {{ 'wine' if report.possible_duplicate else '' }}">possible duplicates {{ report.possible_duplicate | length }}</span>
+    <span class="badge">unknown {{ report.unknown | length }}</span>
+    <span class="badge">already imported {{ report.already_imported | length }}</span>
+    <span class="badge {{ 'wine' if report.errors else '' }}">errors {{ report.errors | length }}</span>
+  </p>
+
+  {% if report.possible_duplicate %}
+  <div style="padding:10px 12px; border-radius:8px; background:rgba(150,40,40,0.14); border:1px solid rgba(150,40,40,0.4);">
+    <strong>Possible duplicates — review before importing:</strong>
+    <ul style="margin:6px 0 0 18px;">{% for n in report.possible_duplicate %}<li>{{ n }}</li>{% endfor %}</ul>
+  </div>
+  {% endif %}
+  {% if report.errors %}
+  <p><strong>Not importable:</strong></p>
+  <ul>{% for code, why in report.errors %}<li>{{ code }}: {{ why }}</li>{% endfor %}</ul>
+  {% endif %}
+
+  <details style="margin-top:10px;"><summary style="cursor:pointer; color:var(--gold);">Would create ({{ report.would_create | length }})</summary>
+    <table style="margin-top:8px;">
+      <thead><tr><th>Code</th><th>Event</th><th>Date</th><th>Space(s)</th><th>Deposit</th></tr></thead>
+      <tbody>
+      {% for b in report.would_create %}
+        <tr><td>{{ b.code }}</td><td>{{ b.event_name }}{% for f in b.flags %}<div class="muted" style="font-size:0.72rem;">! {{ f }}</div>{% endfor %}</td>
+            <td class="muted">{{ b.event_date }}</td><td>{{ b.spaces }}{% if ' + ' in b.spaces %} <span class="badge">linked</span>{% endif %}</td>
+            <td>{{ b.deposit }}</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </details>
+  <p class="muted" style="margin-top:8px;">Excluded by code: {{ report.excluded | join(', ') or '—' }}</p>
+</div>
+
+{# ---------- STEP 2: import (bound to the report by hash) ---------- #}
+<div class="card" style="border-color:var(--gold-dim);">
+  <h2>2 · Import <span class="badge ember">writes to the live database</span></h2>
+  <p class="muted">Only enabled after a report. Upload the <strong>same file</strong> (hash <code>{{ file_short }}</code>) — a different file is refused. Take your database backup first.</p>
+  <form method="post" action="/admin/migration/import" enctype="multipart/form-data" onsubmit="return confirm('Import to the LIVE database now? You have taken a backup?');">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="field-row" style="align-items:flex-end; gap:10px; flex-wrap:wrap;">
+      <div><label>Same CSV</label><input type="file" name="file" accept=".csv" required></div>
+      <div><label>Type IMPORT to confirm</label><input type="text" name="confirm" placeholder="IMPORT" autocomplete="off" required></div>
+      <div><button class="btn danger" type="submit">Run import</button></div>
+    </div>
+  </form>
+</div>
+{% endif %}
+
+{# ---------- RESULT ---------- #}
+{% if result is defined %}
+<div class="card">
+  <h2>Import complete — {{ filename }} <span class="muted" style="font-size:0.8rem;">(hash {{ file_short }})</span></h2>
+  <p>
+    <span class="badge green">created {{ result.created | length }}</span>
+    <span class="badge wine">excluded {{ result.skipped_excluded | length }}</span>
+    <span class="badge">possible duplicates {{ result.skipped_possible_duplicate | length }}</span>
+    <span class="badge">unknown {{ result.skipped_unknown | length }}</span>
+    <span class="badge">already imported {{ result.skipped_existing | length }}</span>
+    <span class="badge {{ 'wine' if result.errors else '' }}">errors {{ result.errors | length }}</span>
+  </p>
+  {% if result.skipped_possible_duplicate %}<p><strong>Skipped as possible duplicates:</strong> {{ result.skipped_possible_duplicate | join('; ') }}</p>{% endif %}
+  {% if result.errors %}<p><strong>Errors:</strong></p><ul>{% for c, w in result.errors %}<li>{{ c }}: {{ w }}</li>{% endfor %}</ul>{% endif %}
+
+  <h3>Verify these specifically</h3>
+  {% set verify = [
+    ('KCP3PGRBYD', 'ONE booking across The Loft + The Mezzanine, deposit $1,000.00'),
+    ('PYH8TOFAM8', 'ONE booking across The Loft + The Mezzanine, deposit $500.00 (two rooms, single deposit)'),
+    ('Q4F71LMFK2', 'agreement SIGNED, deposit OUTSTANDING (not paid)'),
+    ('7HB7XPF8RP', 'pre-May booking — open it and confirm pizza pricing holds the old rate (pricing date 2026-01-11, not today)'),
+    ('EGL7R5CAQD', 'Emily Marsh — contact email corrected to emilyleamarsh@gmail.com'),
+  ] %}
+  <ul>
+  {% for code, what in verify %}
+    {% set b = (result.created | selectattr('booking_code', 'equalto', code) | list | first) %}
+    {% if b %}<li><a href="/admin/bookings/{{ b.booking_id }}">{{ b.reference_code }}</a> — {{ b.event_name }}: {{ what }}</li>{% endif %}
+  {% endfor %}
+  </ul>
+
+  <details style="margin-top:10px;"><summary style="cursor:pointer; color:var(--gold);">All created ({{ result.created | length }})</summary>
+    <table style="margin-top:8px;">
+      <thead><tr><th>Ref</th><th>Event</th><th>Space(s)</th><th>Deposit</th></tr></thead>
+      <tbody>
+      {% for b in result.created %}
+        <tr><td><a href="/admin/bookings/{{ b.booking_id }}">{{ b.reference_code }}</a></td><td>{{ b.event_name }}</td>
+            <td>{{ b.spaces | join(' + ') }}{% if b.spaces | length > 1 %} <span class="badge">linked</span>{% endif %}</td><td>{{ b.deposit }}</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </details>
+</div>
+{% endif %}
+{% endblock %}
