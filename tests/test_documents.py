@@ -60,6 +60,23 @@ def test_agreement_and_beo_version_independently(db, booking):
     assert get_current(db, booking.id, DocumentType.agreement).version == 1
 
 
+def test_deposit_clause_matches_invoice_due_on_issue(db, booking):
+    # The deposit invoice is due on issue; the agreement must not tell the
+    # client they have 7 days, or the two documents contradict each other.
+    terms = generate_agreement_content(booking)["terms_text"]
+    assert "payable on issue of the deposit invoice" in terms
+    assert "within 7 days of making your booking" not in terms
+
+
+def test_trading_hours_clause_covers_functions_to_midnight(db, booking):
+    # Restaurant trading hours (12pm-9pm Wed/Thu) must not read as the
+    # client's function curfew -- functions are licensed to midnight.
+    terms = generate_agreement_content(booking)["terms_text"]
+    assert "licensed to run until midnight" in terms
+    assert "music off by 11:30pm" in terms
+    assert "12pm to 9pm" not in terms
+
+
 def test_draft_document_is_not_publicly_viewable(db, booking):
     document = create_new_version(db, booking, DocumentType.agreement, generate_agreement_content(booking), actor="test")
 

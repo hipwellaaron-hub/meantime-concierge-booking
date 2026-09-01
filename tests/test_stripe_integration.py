@@ -275,6 +275,70 @@ def test_webhook_ignores_unrelated_event_types(db, booking):
 # --- invoice page: graceful fallback on Stripe errors -----------------------
 
 
+class _FakeLink:
+    url = "https://checkout.stripe.com/fake-link"
+
+
+def test_invoice_view_names_the_card_surcharge_when_it_applies(db, booking):
+    from app.services.policy import is_card_surcharge_permitted
+
+    invoice = create_invoice(
+        db, booking, InvoiceType.deposit, [{"description": "Deposit", "quantity": 1, "unit_price": "500.00"}],
+        dt.date(2026, 9, 1), actor="test",
+    )
+    mark_sent(db, invoice, actor="test")
+
+    app.dependency_overrides[get_db] = lambda: db
+    try:
+        with patch.object(stripe_integration, "STRIPE_SECRET_KEY", "sk_test_fake"), patch.object(
+            stripe_integration.stripe.PaymentLink, "create", return_value=_FakeLink()
+        ):
+            client = TestClient(app)
+            resp = client.get(f"/i/{invoice.access_token}")
+        assert resp.status_code == 200
+        # the working card link replaces "contact us", on web and PDF alike
+        assert "https://checkout.stripe.com/fake-link" in resp.text
+        assert "Card payment is available on request" not in resp.text
+        # the surcharge is named explicitly while it legally applies, and the
+        # line drops cleanly once the surcharge ban date passes
+        if is_card_surcharge_permitted(dt.date.today()):
+            assert "includes 1.8% card surcharge" in resp.text
+        else:
+            assert "card surcharge" not in resp.text
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_invoice_pdf_carries_the_working_card_link(db, booking):
+    invoice = create_invoice(
+        db, booking, InvoiceType.deposit, [{"description": "Deposit", "quantity": 1, "unit_price": "500.00"}],
+        dt.date(2026, 9, 1), actor="test",
+    )
+    mark_sent(db, invoice, actor="test")
+
+    captured = {}
+
+    def _fake_pdf(html):
+        captured["html"] = html
+        return b"%PDF-1.4 fake"
+
+    app.dependency_overrides[get_db] = lambda: db
+    try:
+        with patch.object(stripe_integration, "STRIPE_SECRET_KEY", "sk_test_fake"), patch.object(
+            stripe_integration.stripe.PaymentLink, "create", return_value=_FakeLink()
+        ), patch("app.api.invoices.render_html_to_pdf", side_effect=_fake_pdf):
+            client = TestClient(app)
+            resp = client.get(f"/i/{invoice.access_token}/pdf")
+        assert resp.status_code == 200
+        assert resp.headers["content-type"] == "application/pdf"
+        # the PDF the client receives carries the same clickable card link as
+        # the web invoice, not "contact us"
+        assert "https://checkout.stripe.com/fake-link" in captured["html"]
+        assert "Card payment is available on request" not in captured["html"]
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_invoice_page_falls_back_gracefully_on_stripe_error(db, booking):
     invoice = create_invoice(
         db, booking, InvoiceType.deposit, [{"description": "Deposit", "quantity": 1, "unit_price": "500.00"}],

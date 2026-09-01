@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models.invoice import InvoiceStatus
-from app.services import invoicing, stripe_integration
+from app.services import invoicing, policy, stripe_integration
 from app.services.pdf import render_html_to_pdf
 from app.templating import templates
 from app.utils import looks_like_a_token
@@ -58,6 +58,13 @@ def _build_invoice_context(db: Session, invoice, *, include_card_payment: bool) 
         if inv.id != invoice.id and inv.status != InvoiceStatus.draft
     ]
 
+    # Only name the surcharge when one is actually built into the card figure
+    # -- a card payment past the legislated surcharge sunset (policy.py) costs
+    # the same as the balance, so there is nothing to disclose.
+    card_surcharge_pct = None
+    if card_payment_amount is not None and card_payment_amount > summary["balance_due"]:
+        card_surcharge_pct = f"{policy.CARD_SURCHARGE_RATE * 100:.1f}"
+
     return {
         "invoice": invoice,
         "booking": invoice.booking,
@@ -68,6 +75,7 @@ def _build_invoice_context(db: Session, invoice, *, include_card_payment: bool) 
         "stripe_configured": card_payment_url is not None,
         "card_payment_url": card_payment_url,
         "card_payment_amount": card_payment_amount,
+        "card_surcharge_pct": card_surcharge_pct,
     }
 
 
@@ -82,11 +90,12 @@ def view_invoice(token: str, request: Request, db: Session = Depends(get_db)):
 @router.get("/i/{token}/pdf")
 def download_invoice_pdf(token: str, db: Session = Depends(get_db)):
     invoice = _get_viewable_invoice_or_404(db, token)
-    # No live Stripe call for a static download -- a PDF isn't the primary
-    # payment flow, and generating a fresh payment link on every download
-    # would be a wasted API call. The PDF falls back to "card payment on
-    # request", same as when Stripe isn't configured at all.
-    context = _build_invoice_context(db, invoice, include_card_payment=False)
+    # The PDF carries the same working card link as the web invoice -- a
+    # client sent the PDF can pay by card straight from it, rather than being
+    # told to "contact us" for something the web version already offers. This
+    # does mean a Stripe payment link is minted per download, matching the
+    # web view's per-view behaviour.
+    context = _build_invoice_context(db, invoice, include_card_payment=True)
     html = templates.get_template("invoice.html").render(**context)
     pdf_bytes = render_html_to_pdf(html)
     invoice_label = "Deposit" if invoice.type.value == "deposit" else "Final"

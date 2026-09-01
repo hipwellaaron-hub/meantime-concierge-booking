@@ -216,7 +216,7 @@
       <tr><td class="label">Reference</td><td>{{ booking.reference_code }}</td></tr>
     </table>
     {% if stripe_configured %}
-    <p>Prefer to pay by card? <a href="{{ card_payment_url }}">Pay ${{ card_payment_amount }} by card</a> (includes card surcharge, where applicable).</p>
+    <p>Prefer to pay by card? <a href="{{ card_payment_url }}">Pay ${{ card_payment_amount }} by card</a>{% if card_surcharge_pct %} (includes {{ card_surcharge_pct }}% card surcharge){% endif %}.</p>
     {% else %}
     <p>Card payment is available on request — please contact us.</p>
     {% endif %}

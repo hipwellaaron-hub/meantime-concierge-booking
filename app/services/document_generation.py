@@ -25,7 +25,7 @@ REVIEW = "[REVIEW]"
 # is exactly the kind of drift that produced the errors in §3.4."
 
 _DEPOSITS_CLAUSE = (
-    f"A non-refundable deposit of ${STANDARD_DEPOSIT:.0f} is payable within 7 days of making your booking. "
+    f"A non-refundable deposit of ${STANDARD_DEPOSIT:.0f} is payable on issue of the deposit invoice. "
     "The deposit will secure your date and event location. Meantime cannot guarantee any booking without a "
     "deposit."
 )
@@ -62,8 +62,7 @@ _PUBLIC_HOLIDAYS_CLAUSE = (
 )
 
 _TRADING_HOURS_CLAUSE = (
-    "Meantime Hamilton operates 12pm to 9pm Wednesday and Thursday, 12pm to 12am Friday, 11am to 12am "
-    "Saturday, and 11am to 9pm Sunday."
+    "Your function is licensed to run until midnight, any night of the week, with music off by 11:30pm."
 )
 
 # Minimum Spend -- deliberately NOT derived from Space.min_food_spend.
