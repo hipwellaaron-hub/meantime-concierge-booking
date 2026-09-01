@@ -1,7 +1,7 @@
 from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
-from starlette.responses import PlainTextResponse, RedirectResponse
+from starlette.responses import FileResponse, PlainTextResponse, RedirectResponse
 
 from app.admin_auth import NotAuthenticated
 from app.api.admin_auth import router as admin_auth_router
@@ -117,6 +117,28 @@ def _redirect_to_login(request: Request, exc: NotAuthenticated) -> RedirectRespo
 
 
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
+
+
+# Root-level icon conventions so every page (and iOS home-screen) gets the
+# brand mark without touching each template's <head>. Browsers request these
+# fixed paths automatically; long-cache since the assets are content-stable.
+_ICON_CACHE = {"Cache-Control": "public, max-age=604800"}
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon():
+    return FileResponse("app/static/icons/favicon.ico", headers=_ICON_CACHE)
+
+
+@app.get("/apple-touch-icon.png", include_in_schema=False)
+@app.get("/apple-touch-icon-precomposed.png", include_in_schema=False)
+def apple_touch_icon():
+    return FileResponse("app/static/icons/apple-touch-icon.png", headers=_ICON_CACHE)
+
+
+@app.get("/site.webmanifest", include_in_schema=False)
+def site_webmanifest():
+    return FileResponse("app/static/site.webmanifest", media_type="application/manifest+json")
 
 app.include_router(availability_router)
 app.include_router(health_router)
