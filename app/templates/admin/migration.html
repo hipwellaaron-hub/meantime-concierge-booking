@@ -122,4 +122,24 @@
   </details>
 </div>
 {% endif %}
+
+{# ---------- restore archived bookings ---------- #}
+<div class="card">
+  <h2>Restore archived bookings <span class="badge ember">changes status to confirmed</span></h2>
+  <p class="muted">The earlier bookings you archived can't be un-archived from the normal dropdown (archiving was one-way by design). Paste the <strong>HAM references</strong> of the ones the changeover now includes, one per line. Each already has its agreement and deposit — this only flips it back to confirmed. A clash with a live booking in the same room and time is refused and reported.</p>
+  <form method="post" action="/admin/migration/unarchive" onsubmit="return confirm('Restore these archived bookings to confirmed?');">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div style="display:flex; flex-direction:column; gap:8px; max-width:460px;">
+      <div><label>HAM references (one per line)</label><textarea name="references" rows="6" placeholder="HAM-20260911-AKPSO&#10;HAM-20260912-2R11Q" style="width:100%; font-family:monospace;"></textarea></div>
+      <div><label>Type RESTORE to confirm</label><input type="text" name="confirm" placeholder="RESTORE" autocomplete="off" required></div>
+      <div><button class="btn" type="submit">Restore</button></div>
+    </div>
+  </form>
+  {% if restored is defined or restore_failed is defined %}
+  <div style="margin-top:12px;">
+    {% if restored %}<p><strong>Restored ({{ restored | length }}):</strong></p><ul>{% for r in restored %}<li>{{ r }}</li>{% endfor %}</ul>{% endif %}
+    {% if restore_failed %}<p><strong>Not restored ({{ restore_failed | length }}):</strong></p><ul>{% for ref, why in restore_failed %}<li>{{ ref }}: {{ why }}</li>{% endfor %}</ul>{% endif %}
+  </div>
+  {% endif %}
+</div>
 {% endblock %}

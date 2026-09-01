@@ -25,12 +25,15 @@ import tempfile
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.admin_auth import admin_ctx, require_csrf, require_staff
 from app.database import get_db
-from app.models import Venue
+from app.models import Booking, Venue
 from app.models.staff_user import StaffUser
+from app.services import booking as booking_service
 from app.services import concierge_migration
 from app.templating import templates
 
@@ -129,4 +132,37 @@ def run_import(
     return templates.TemplateResponse(
         request, "admin/migration.html",
         admin_ctx(request, staff, result=result, filename=file.filename or "upload.csv", file_short=digest[:12]),
+    )
+
+
+@router.post("/unarchive", dependencies=[Depends(require_csrf)], response_class=HTMLResponse)
+def restore_archived(
+    request: Request,
+    references: str = Form(""),
+    confirm: str = Form(""),
+    db: Session = Depends(get_db),
+    staff: StaffUser = Depends(require_staff),
+):
+    """Reverse an archive for specific bookings (the September ones the
+    changeover now includes). Un-archiving isn't a normal admin transition
+    by design, so it's done here, one HAM reference per line. Each is
+    restored to 'confirmed'; a clash with a live booking in the same
+    room/time is refused (the exclusion constraint), reported, and skipped."""
+    if confirm.strip() != "RESTORE":
+        raise HTTPException(status_code=422, detail="Type RESTORE (in capitals) to confirm")
+    refs = [r.strip() for r in references.replace(",", "\n").splitlines() if r.strip()]
+    restored, failed = [], []
+    for ref in refs:
+        booking = db.execute(select(Booking).where(Booking.reference_code == ref)).scalar_one_or_none()
+        if booking is None:
+            failed.append((ref, "no booking with that reference"))
+            continue
+        try:
+            booking_service.restore_from_archive(db, booking, actor=f"staff:{staff.email}")
+            restored.append(f"{ref} — {booking.event_name}")
+        except (ValueError, IntegrityError) as exc:
+            db.rollback()
+            failed.append((ref, str(exc).splitlines()[0][:120]))
+    return templates.TemplateResponse(
+        request, "admin/migration.html", admin_ctx(request, staff, restored=restored, restore_failed=failed)
     )

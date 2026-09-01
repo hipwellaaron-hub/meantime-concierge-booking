@@ -229,6 +229,25 @@ def transition_status(
     return result
 
 
+def restore_from_archive(db: Session, booking: Booking, *, actor: str) -> Booking:
+    """Reverse an archive -- the one move LEGAL_TRANSITIONS deliberately
+    forbids, for when a bulk pre-cutover archive decision is undone. Returns
+    the booking (and any linked child) to 'confirmed', its state before
+    archiving, and logs it. The GIST exclusion constraint still fires on the
+    change, so a restore that would collide with a live booking in the same
+    room and time is refused rather than silently double-booked."""
+    if booking.status != BookingStatus.archived:
+        raise ValueError(f"only an archived booking can be restored -- this one is '{booking.status.value}'")
+    if booking.parent_booking_id is not None:
+        raise ValueError("restore the parent booking, not a linked room")
+    result = change_status(db, booking, BookingStatus.confirmed, actor=actor, reason="restored from archive")
+    children = db.scalars(select(Booking).where(Booking.parent_booking_id == booking.id)).all()
+    for child in children:
+        if child.status == BookingStatus.archived:
+            change_status(db, child, BookingStatus.confirmed, actor=actor, reason="restored from archive")
+    return result
+
+
 # The two things that together mean a booking is genuinely won. Kept as
 # one-booking predicates here; app.services.wizard.get_wizard_eligible_bookings
 # expresses the same rule as bulk IN-subqueries because it answers a

@@ -3,6 +3,7 @@ bound to that exact file by hash, with strict header validation and a typed
 confirmation. A production write path -- these guards are the safety."""
 
 import csv
+import datetime as dt
 import io
 import re
 
@@ -11,7 +12,9 @@ from fastapi.testclient import TestClient
 
 from app.database import get_db
 from app.main import app
-from app.models import Booking
+from app.models import Booking, Contact
+from app.models.booking import BookingStatus
+from app.services.booking import create_booking
 
 HEADERS = [
     "booking_code", "event_date", "day", "event_name", "event_type", "space", "start_time", "end_time",
@@ -128,3 +131,49 @@ def test_import_happy_path_writes_the_reported_file(admin_client, db, hamilton):
     assert "Import complete" in resp.text
     db.expire_all()
     assert db.query(Booking).filter_by(migration_external_ref="AAA111").count() == 1
+
+
+def _archived_booking(db, loft) -> Booking:
+    c = Contact(name="Arch Client", email="arch@example.com", phone=None)
+    db.add(c)
+    db.flush()
+    b = create_booking(
+        db, space_id=loft.id, contact_id=c.id, event_date=dt.date(2026, 9, 12),
+        start_time=dt.time(18, 0), end_time=dt.time(23, 0), event_name="Archived Event",
+        event_type="Birthday", adult_count=50, child_count=0, notes=None, actor="staff",
+    )
+    b.status = BookingStatus.archived
+    db.commit()
+    return b
+
+
+def test_restore_archived_booking(admin_client, db, hamilton, loft):
+    b = _archived_booking(db, loft)
+    resp = admin_client.post(
+        "/admin/migration/unarchive",
+        data={"csrf_token": _csrf(admin_client), "references": b.reference_code, "confirm": "RESTORE"},
+    )
+    assert resp.status_code == 200
+    assert "Restored" in resp.text
+    db.expire_all()
+    assert db.get(Booking, b.id).status == BookingStatus.confirmed
+
+
+def test_restore_needs_confirm_word(admin_client, db, hamilton, loft):
+    b = _archived_booking(db, loft)
+    resp = admin_client.post(
+        "/admin/migration/unarchive",
+        data={"csrf_token": _csrf(admin_client), "references": b.reference_code, "confirm": ""},
+    )
+    assert resp.status_code == 422
+    db.expire_all()
+    assert db.get(Booking, b.id).status == BookingStatus.archived  # unchanged
+
+
+def test_restore_reports_unknown_reference(admin_client, db, hamilton):
+    resp = admin_client.post(
+        "/admin/migration/unarchive",
+        data={"csrf_token": _csrf(admin_client), "references": "HAM-NOPE-00000", "confirm": "RESTORE"},
+    )
+    assert resp.status_code == 200
+    assert "Not restored" in resp.text
