@@ -60,11 +60,16 @@ from app.utils import truncate
 MIGRATION_SOURCE = "ivvy"
 LAURA_STANDARD_DEPOSIT = Decimal("500.00")  # Laura's row carries no figure; the deposit that's now due
 
-# This-weekend events that run on iVvy before the changeover and stay there
-# as history. Excluded by CODE, not just by deposit_paid == UNKNOWN, so a
-# later reissued file that happened to fill their financial columns still
-# can NOT pull them in. Remove a code here only to deliberately import it.
-EXCLUDED_CODES = {"9LNFYZDXY2", "DMEH7CYGAA", "PT28HXDS7R", "BDKHE288A5"}
+# Bookings that must NEVER be imported, excluded by CODE (not just by
+# deposit_paid == UNKNOWN) so a later reissued file with filled financial
+# columns still can't pull them in. Remove a code here only to import it.
+#   - The four this-weekend events: run on iVvy before the changeover, kept
+#     there as history (9LNFYZDXY2, DMEH7CYGAA, PT28HXDS7R, BDKHE288A5).
+#   - NQMBB39MRP "Dr Matthew Holland - Christmas Party": already hand-entered
+#     in Concierge (HAM-20261107-QS8U8, The Loft, 7 Nov 2026, deposit inv
+#     #1011) under a DIFFERENT contact email, so the hand-entered-duplicate
+#     guard can't match it -- exclude by code so it's never even attempted.
+EXCLUDED_CODES = {"9LNFYZDXY2", "DMEH7CYGAA", "PT28HXDS7R", "BDKHE288A5", "NQMBB39MRP"}
 
 # Explicit, auditable source-typo fixes -- applied loudly (a per-booking
 # flag), never silently. `.clm` is never a real TLD, but we still correct
