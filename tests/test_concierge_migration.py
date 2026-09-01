@@ -204,6 +204,30 @@ def test_hand_entered_duplicate_is_skipped_not_duplicated(db, hamilton, tmp_path
     assert db.query(Booking).join(Contact).filter(Contact.email == "twin@example.com").count() == 1
 
 
+def test_report_is_read_only_and_flags_hand_entered_duplicate(db, hamilton, loft, tmp_path):
+    """The pre-import report writes NOTHING and flags exactly what the import
+    would skip as a hand-entered duplicate."""
+    from app.services.concierge_migration import report_migration_csv
+
+    contact = Contact(name="Twin Client", email="twin@example.com", phone=None)
+    db.add(contact)
+    db.flush()
+    create_booking(
+        db, space_id=loft.id, contact_id=contact.id, event_date=dt.date(2026, 11, 14),
+        start_time=dt.time(18, 0), end_time=dt.time(23, 30), event_name="Hand entered",
+        event_type="Birthday", adult_count=60, child_count=0, notes=None, actor="staff",
+        status=BookingStatus.confirmed,
+    )
+    before = db.query(Booking).count()
+
+    row = _row(booking_code="TWIN1", event_date="2026-11-14", contact_email="twin@example.com", space="The Mezzanine")
+    rep = report_migration_csv(db, _write_csv(tmp_path, [row]), venue=hamilton)
+
+    assert any("TWIN1" in n for n in rep.possible_duplicate)
+    assert not any(w["code"] == "TWIN1" for w in rep.would_create)
+    assert db.query(Booking).count() == before  # read-only: nothing written
+
+
 def test_exclusion_constraint_backstops_same_slot_different_contact(db, hamilton, tmp_path):
     """If the twin was entered under a different email (so the email/date
     check misses it) but occupies the same space+time, the Postgres

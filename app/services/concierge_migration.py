@@ -424,6 +424,74 @@ def _import_group(db: Session, venue: Venue, rows: list[dict], code: str, actor:
     )
 
 
+@dataclass
+class MigrationReport:
+    """A READ-ONLY preview of what import_migration_csv would do -- writes
+    nothing. Run this against production before the real import so the
+    decisions (especially possible duplicates) can be eyeballed first."""
+    would_create: list[dict] = field(default_factory=list)  # {code, event_name, spaces, deposit, flags}
+    excluded: list[str] = field(default_factory=list)
+    unknown: list[str] = field(default_factory=list)
+    already_imported: list[str] = field(default_factory=list)
+    possible_duplicate: list[str] = field(default_factory=list)
+    errors: list[tuple[str, str]] = field(default_factory=list)
+
+
+def report_migration_csv(db: Session, csv_path: str, *, venue: Venue) -> MigrationReport:
+    """The same decisions import_migration_csv makes, but with no writes at
+    all -- only SELECTs (idempotency + hand-entered-duplicate). Safe to run
+    against production to produce a review report before importing."""
+    report = MigrationReport()
+    with open(csv_path, encoding="utf-8-sig", newline="") as f:
+        all_rows = [r for r in csv.DictReader(f) if (r.get("booking_code") or "").strip()]
+    groups: dict[str, list[dict]] = {}
+    for row in all_rows:
+        groups.setdefault(row["booking_code"].strip(), []).append(row)
+
+    for code, rows in groups.items():
+        primary = rows[0]
+        if code in EXCLUDED_CODES:
+            report.excluded.append(code)
+            continue
+        already = db.execute(
+            select(Booking.id).where(
+                Booking.migration_source == MIGRATION_SOURCE, Booking.migration_external_ref == code
+            )
+        ).first()
+        if already is not None:
+            report.already_imported.append(code)
+            continue
+        deposit_flag = (primary.get("deposit_paid") or "").strip().upper()
+        if deposit_flag == "UNKNOWN":
+            report.unknown.append(code)
+            continue
+        try:
+            email, email_flag = _resolve_email(primary.get("contact_email"))
+        except _MalformedEmail as exc:
+            report.errors.append((code, str(exc)))
+            continue
+        event_date = _date(primary["event_date"])
+        dup = _hand_entered_duplicate(db, email=email, event_date=event_date)
+        if dup is not None:
+            report.possible_duplicate.append(
+                f"{code} — {primary.get('event_name')} on {event_date} "
+                f"({email}) matches existing {dup.reference_code} ({dup.event_name})"
+            )
+            continue
+        amount = _money(primary.get("total_paid"))
+        deposit = (f"paid ${amount}" if deposit_flag == "YES" and amount else
+                   f"outstanding ${LAURA_STANDARD_DEPOSIT}" if deposit_flag == "DUE" else "none")
+        flags = [email_flag] if email_flag else []
+        if _date(primary.get("pricing_locked_at") or primary.get("opportunity_created")) is None:
+            flags.append("pricing_locked_at will default to import date (set by hand)")
+        report.would_create.append({
+            "code": code, "event_name": primary.get("event_name"), "event_date": str(event_date),
+            "contact": f"{primary.get('contact_name')} <{email}>",
+            "spaces": " + ".join(r["space"] for r in rows), "deposit": deposit, "flags": flags,
+        })
+    return report
+
+
 def import_migration_csv(db: Session, csv_path: str, *, venue: Venue, actor: str = "ivvy_migration") -> MigrationResult:
     result = MigrationResult()
 
