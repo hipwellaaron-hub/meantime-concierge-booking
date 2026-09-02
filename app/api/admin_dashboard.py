@@ -9,6 +9,7 @@ from app.models import Booking, BookingEvent, Invoice, Space, Venue
 from app.models.booking import BookingStatus
 from app.models.invoice import InvoiceStatus
 from app.models.staff_user import StaffUser
+from app.services import booking as booking_service
 from app.services import documents as documents_service
 from app.services import enquiry_classification, ivvy_import, wizard as wizard_service
 from app.templating import templates
@@ -40,6 +41,7 @@ def dashboard(request: Request, db: Session = Depends(get_db), staff: StaffUser 
     )
     notification_failures_count = len(enquiry_classification.get_enquiry_notification_failures(db, venue))
     beos_to_review_count = len(documents_service.get_beos_awaiting_review(db, venue))
+    holds_to_chase = booking_service.get_holds_to_chase(db, venue.id)
 
     recent_events = db.scalars(
         select(BookingEvent)
@@ -65,7 +67,9 @@ def dashboard(request: Request, db: Session = Depends(get_db), staff: StaffUser 
                 "unpaid_invoices": unpaid_invoices,
                 "notification_failures": notification_failures_count,
                 "beos_to_review": beos_to_review_count,
+                "holds_to_chase": len(holds_to_chase),
             },
+            holds_to_chase=holds_to_chase,
             recent_events=recent_events,
         ),
     )

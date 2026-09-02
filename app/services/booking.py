@@ -509,6 +509,38 @@ def auto_hold_on_send(db: Session, booking: Booking, *, actor: str) -> bool:
     return True
 
 
+def get_holds_to_chase(db: Session, venue_id: uuid.UUID, *, today: dt.date | None = None) -> list[Booking]:
+    """Tentative bookings holding a date on a deposit that was issued but
+    never paid, past their hold expiry -- chase the deposit or release the
+    date. Surfaced only: nothing here is ever released automatically.
+
+    Gated on a deposit invoice in 'sent' (issued, unpaid -- a part-payment
+    leaves it there too) rather than on "no paid deposit", so a deliberate
+    staff block (create_hold: no client, no invoice) never appears, and a
+    paid-but-unsigned tentative doesn't either (that's a signature chase,
+    not a payment one). A hold with no expiry at all still surfaces -- the
+    bookings that predate auto-hold have none, and a hold that never lapses
+    isn't a hold. Parents only: the parent owns the deposit."""
+    today = today or dt.date.today()
+    return list(
+        db.scalars(
+            select(Booking)
+            .join(Space, Booking.space_id == Space.id)
+            .join(Invoice, Invoice.booking_id == Booking.id)
+            .where(
+                Space.venue_id == venue_id,
+                Booking.status == BookingStatus.tentative,
+                Booking.parent_booking_id.is_(None),
+                Invoice.type == InvoiceType.deposit,
+                Invoice.status == InvoiceStatus.sent,
+                or_(Booking.hold_expires_at < today, Booking.hold_expires_at.is_(None)),
+            )
+            .distinct()
+            .order_by(Booking.event_date)
+        ).all()
+    )
+
+
 def clear_status_pin(db: Session, booking: Booking, *, actor: str) -> Booking:
     """"Hand back to automation": clears the manual-override pin so the
     automatic transitions may act on this booking again, then lets them

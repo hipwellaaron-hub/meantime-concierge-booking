@@ -28,7 +28,34 @@
     <div class="num">{{ counts.unpaid_invoices }}</div>
     <div class="label">Unpaid invoices</div>
   </a>
+  <a class="card stat" href="#holds-to-chase" style="text-decoration:none; {% if counts.holds_to_chase %}border-color: var(--ember);{% endif %}">
+    <div class="num" style="{% if counts.holds_to_chase %}color: var(--ember);{% endif %}">{{ counts.holds_to_chase }}</div>
+    <div class="label">Holds to chase</div>
+  </a>
 </div>
+
+{% if holds_to_chase %}
+<div class="section-gap" id="holds-to-chase">
+  <h2>Holds to chase</h2>
+  <p class="muted" style="margin-bottom:8px;">Tentative bookings holding a date on a deposit that was issued but never paid, past their hold expiry. Chase the deposit or release the date -- nothing here is released automatically.</p>
+  <div class="card" style="padding:0;">
+    <table class="activity-table">
+      <thead><tr><th>Event</th><th>Date</th><th>Room</th><th>Hold expired</th><th></th></tr></thead>
+      <tbody>
+      {% for b in holds_to_chase %}
+        <tr>
+          <td>{{ b.event_name }}<div class="muted" style="font-size:0.8rem;">{{ b.reference_code }}{% if b.contact %} — {{ b.contact.name }}{% endif %}</div></td>
+          <td class="muted" style="white-space:nowrap;">{{ b.event_date | aus_date }}</td>
+          <td class="muted">{{ b.space.name }}</td>
+          <td class="muted" style="white-space:nowrap;">{% if b.hold_expires_at %}{{ b.hold_expires_at | aus_date }}{% else %}no expiry set{% endif %}</td>
+          <td><a href="/admin/bookings/{{ b.id }}">Open &rarr;</a></td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
 
 <div class="section-gap">
   <h2>Recent activity</h2>
