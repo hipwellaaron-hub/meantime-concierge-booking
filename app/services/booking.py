@@ -17,6 +17,7 @@ from app.models import Booking, BookingEvent, Contact, Document, Invoice, Space
 from app.models.booking import BookingStatus, MinReductionReasonCode
 from app.models.document import DocumentStatus, DocumentType
 from app.models.invoice import InvoiceStatus, InvoiceType
+from app.services import policy
 
 logger = logging.getLogger(__name__)
 
@@ -360,6 +361,122 @@ def auto_confirm_if_ready(db: Session, booking: Booking, *, actor: str) -> bool:
     for child in db.scalars(select(Booking).where(Booking.parent_booking_id == booking.id)).all():
         if child.status not in TERMINAL_STATUSES:
             change_status(db, child, BookingStatus.confirmed, actor=actor, reason=AUTO_CONFIRM_REASON)
+    return True
+
+
+AUTO_HOLD_REASON = "agreement and deposit invoice sent"
+
+# The statuses an automatic hold may lift a booking OUT of: only the two
+# upstream of tentative. It never pulls a tentative/confirmed booking back,
+# and never touches a terminal one -- automation walks a booking forward,
+# only a human moves it back.
+AUTO_HOLDABLE_STATUSES = (BookingStatus.enquiry, BookingStatus.offered)
+
+
+def _has_sent_agreement(db: Session, booking: Booking) -> bool:
+    """The current agreement has at least been sent to the client -- sent,
+    viewed or signed, i.e. anything past draft."""
+    return (
+        db.execute(
+            select(Document.id).where(
+                Document.booking_id == booking.id,
+                Document.type == DocumentType.agreement,
+                Document.is_current.is_(True),
+                Document.status.in_((DocumentStatus.sent, DocumentStatus.viewed, DocumentStatus.signed)),
+            )
+        ).first()
+        is not None
+    )
+
+
+def _has_sent_deposit_invoice(db: Session, booking: Booking) -> bool:
+    """A deposit invoice has been sent to the client -- sent, or already paid
+    (a paid invoice was necessarily sent first)."""
+    return (
+        db.execute(
+            select(Invoice.id).where(
+                Invoice.booking_id == booking.id,
+                Invoice.type == InvoiceType.deposit,
+                Invoice.status.in_((InvoiceStatus.sent, InvoiceStatus.paid)),
+            )
+        ).first()
+        is not None
+    )
+
+
+def auto_hold_on_send(db: Session, booking: Booking, *, actor: str) -> bool:
+    """Move a booking to 'tentative' -- a real, date-holding soft hold --
+    once BOTH its current agreement and a deposit invoice have been sent to
+    the client. Returns whether it did.
+
+    Called after an agreement is marked sent and after a deposit invoice is
+    marked sent, so whichever lands second is the one that holds the date --
+    the mirror image of auto_confirm_if_ready, one step earlier in the
+    pipeline. Forward-only: it only lifts enquiry/offered to tentative (see
+    AUTO_HOLDABLE_STATUSES), never pulling a confirmed booking back or
+    resurrecting a terminal one. Stamps hold_expires_at so an unpaid hold
+    surfaces for chasing rather than taking a date off sale forever.
+    """
+    if booking.parent_booking_id is not None:
+        return False  # a linked child is a second room; the parent owns the documents and invoices
+    if booking.status not in AUTO_HOLDABLE_STATUSES:
+        return False
+    if not (_has_sent_agreement(db, booking) and _has_sent_deposit_invoice(db, booking)):
+        return False
+
+    space = db.get(Space, booking.space_id)
+    if space is None or not space.is_bookable:
+        # Still the "Unassigned (pending triage)" placeholder: a hold on a
+        # non-real room would block placeholder time against every other
+        # unassigned booking and mean nothing. Surface it for a human.
+        flag_for_review(
+            db,
+            booking,
+            note="Agreement and deposit invoice are sent, but no real space is assigned yet -- assign a space to hold the date.",
+            actor=actor,
+        )
+        return False
+
+    expires = dt.date.today() + dt.timedelta(days=policy.HOLD_EXPIRY_DAYS)
+    booking.hold_expires_at = expires
+    db.add(
+        BookingEvent(
+            booking_id=booking.id,
+            event_type="field_changed",
+            field_name="hold_expires_at",
+            new_value=str(expires),
+            actor=actor,
+        )
+    )
+    try:
+        change_status(db, booking, BookingStatus.tentative, actor=actor, reason=AUTO_HOLD_REASON)
+    except IntegrityError:
+        # The exclusion constraint refused the hold: this room and time are
+        # already held by another tentative/confirmed booking. That's the
+        # constraint surfacing real contention (the "four parties chasing
+        # the Loft" case), not a bug -- flag it rather than double-holding.
+        # The send that triggered this was committed before this ran and
+        # survives the rollback.
+        db.rollback()
+        booking = db.get(Booking, booking.id)
+        logger.exception("Auto-hold collided with an existing booking for %s", booking.reference_code)
+        flag_for_review(
+            db,
+            booking,
+            note=(
+                "Agreement and deposit invoice are sent, but this booking's space and time are already held "
+                "by another booking, so the date could not be held automatically. Resolve the clash."
+            ),
+            actor=actor,
+        )
+        return False
+
+    # One event using two rooms holds both, not just the parent's -- same
+    # cascade auto_confirm_if_ready does.
+    for child in db.scalars(select(Booking).where(Booking.parent_booking_id == booking.id)).all():
+        if child.status in AUTO_HOLDABLE_STATUSES:
+            child.hold_expires_at = expires
+            change_status(db, child, BookingStatus.tentative, actor=actor, reason=AUTO_HOLD_REASON)
     return True
 
 

@@ -16,6 +16,12 @@ from decimal import Decimal
 # toward minimum food spend."
 STANDARD_DEPOSIT = Decimal("500.00")
 
+# How long an automatic tentative hold runs before it should be chased or
+# released. Deposits are due on issue, so a hold with no payment after this
+# many days surfaces on the dashboard as "chase or release" -- it is never
+# auto-released, only made visible. Dial to taste; nothing else hardcodes it.
+HOLD_EXPIRY_DAYS = 7
+
 # From the build prompt: "Credit card surcharge 1.8%." See
 # CARD_SURCHARGE_BAN_DATE below -- this rate is going away for most cards.
 CARD_SURCHARGE_RATE = Decimal("0.018")

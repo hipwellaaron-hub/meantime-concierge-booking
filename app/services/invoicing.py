@@ -378,6 +378,16 @@ def mark_sent(db: Session, invoice: Invoice, *, actor: str) -> Invoice:
     )
     db.commit()
     db.refresh(invoice)
+
+    if invoice.type == InvoiceType.deposit:
+        # Sending the deposit invoice is half of what holds the date; the
+        # agreement is the other half (see booking.auto_hold_on_send). After
+        # the commit and never raising -- the send must stand even if the
+        # hold can't proceed, which is surfaced as a review flag instead.
+        try:
+            booking_service.auto_hold_on_send(db, invoice.booking, actor=actor)
+        except Exception:  # noqa: BLE001 -- see above; a failure here must not undo a real send
+            logger.exception("Auto-hold after sending deposit invoice failed for invoice %s", invoice.id)
     return invoice
 
 

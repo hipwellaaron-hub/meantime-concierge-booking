@@ -153,7 +153,19 @@ def mark_sent(db: Session, document: Document, *, actor: str) -> Document:
         raise ValueError(
             "cannot send: this booking has no contact with a valid email address on file"
         )
-    return _transition(db, document, DocumentStatus.sent, actor=actor)
+    document = _transition(db, document, DocumentStatus.sent, actor=actor)
+
+    if document.type == DocumentType.agreement:
+        # Sending the agreement is half of what holds the date; the deposit
+        # invoice is the other half (see booking.auto_hold_on_send). After
+        # the transition is committed and never raising -- the send must
+        # stand even if the hold can't proceed (e.g. a room clash), which is
+        # surfaced as a review flag instead.
+        try:
+            booking_service.auto_hold_on_send(db, document.booking, actor=actor)
+        except Exception:  # noqa: BLE001 -- see above; a failure here must not undo a real send
+            logger.exception("Auto-hold after sending agreement failed for document %s", document.id)
+    return document
 
 
 def record_view(db: Session, document: Document) -> Document:
