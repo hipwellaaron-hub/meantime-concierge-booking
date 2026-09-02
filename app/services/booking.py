@@ -192,6 +192,26 @@ def change_status(
 TERMINAL_STATUSES = (BookingStatus.completed, BookingStatus.cancelled, BookingStatus.dead, BookingStatus.archived)
 
 
+def _pin_status(db: Session, booking: Booking, *, actor: str) -> None:
+    """Mark that a human set this status by hand, so automation defers to
+    it from now on ("manual override always wins"). Only the first pin
+    writes an audit event -- a booking already under manual control moving
+    again is just more manual control. Committed by the change_status call
+    that follows."""
+    if booking.status_pinned_at is not None:
+        return
+    booking.status_pinned_at = dt.datetime.now(dt.timezone.utc)
+    db.add(
+        BookingEvent(
+            booking_id=booking.id,
+            event_type="field_changed",
+            field_name="status_pinned_at",
+            new_value="pinned -- set by hand, automation will not move it",
+            actor=actor,
+        )
+    )
+
+
 def transition_status(
     db: Session, booking: Booking, new_status: BookingStatus, *, actor: str, reason: str | None = None
 ) -> Booking:
@@ -216,6 +236,11 @@ def transition_status(
         if new_status not in legal:
             allowed = ", ".join(s.value for s in legal) or "none -- this is a terminal status"
             raise ValueError(f"Cannot move from '{booking.status.value}' to '{new_status.value}'. Allowed: {allowed}.")
+        # A real move by hand pins the booking: automation defers from here.
+        # (A re-submit of the current status above is a harmless no-op and
+        # deliberately does not pin -- a double-click must not take a
+        # booking out of automation.)
+        _pin_status(db, booking, actor=actor)
         result = change_status(db, booking, new_status, actor=actor, reason=reason)
 
     # Queried directly rather than via booking.linked_bookings: the
@@ -313,6 +338,8 @@ def auto_confirm_if_ready(db: Session, booking: Booking, *, actor: str) -> bool:
     """
     if booking.parent_booking_id is not None:
         return False  # a linked child is only a second room; the parent owns the documents and invoices
+    if booking.status_pinned_at is not None:
+        return False  # set by hand -- manual override always wins (see Booking.status_pinned_at)
     if booking.status not in AUTO_CONFIRMABLE_STATUSES:
         return False  # already confirmed, or terminal -- never resurrect a cancelled/archived booking
     if not (has_signed_agreement(db, booking) and has_paid_deposit(db, booking)):
@@ -419,6 +446,8 @@ def auto_hold_on_send(db: Session, booking: Booking, *, actor: str) -> bool:
     """
     if booking.parent_booking_id is not None:
         return False  # a linked child is a second room; the parent owns the documents and invoices
+    if booking.status_pinned_at is not None:
+        return False  # set by hand -- manual override always wins (see Booking.status_pinned_at)
     if booking.status not in AUTO_HOLDABLE_STATUSES:
         return False
     if not (_has_sent_agreement(db, booking) and _has_sent_deposit_invoice(db, booking)):
@@ -478,6 +507,31 @@ def auto_hold_on_send(db: Session, booking: Booking, *, actor: str) -> bool:
             child.hold_expires_at = expires
             change_status(db, child, BookingStatus.tentative, actor=actor, reason=AUTO_HOLD_REASON)
     return True
+
+
+def clear_status_pin(db: Session, booking: Booking, *, actor: str) -> Booking:
+    """"Hand back to automation": clears the manual-override pin so the
+    automatic transitions may act on this booking again, then lets them
+    catch up immediately -- if the client has already sent/signed/paid
+    enough to hold or confirm, it happens now, not on the next trigger."""
+    if booking.status_pinned_at is None:
+        return booking
+    db.add(
+        BookingEvent(
+            booking_id=booking.id,
+            event_type="field_changed",
+            field_name="status_pinned_at",
+            old_value="pinned",
+            new_value="handed back to automation",
+            actor=actor,
+        )
+    )
+    booking.status_pinned_at = None
+    db.commit()
+    db.refresh(booking)
+    auto_hold_on_send(db, booking, actor=actor)
+    auto_confirm_if_ready(db, booking, actor=actor)
+    return booking
 
 
 def search_bookings(

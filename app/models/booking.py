@@ -232,6 +232,18 @@ class Booking(Base):
     # app.services.calendar).
     hold_expires_at: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
 
+    # Set the moment a human changes status by hand (the staff dropdown, via
+    # transition_status). While set, the automatic transitions
+    # (auto_hold_on_send, auto_confirm_if_ready) leave this booking alone:
+    # "manual override always wins" -- a deliberately confirmed, deposit-
+    # waived booking must never be walked anywhere by automation. Cleared by
+    # clear_status_pin ("hand back to automation"). NULL = automation may act.
+    status_pinned_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    @property
+    def status_pinned(self) -> bool:
+        return self.status_pinned_at is not None
+
     # Set once, the first time the venue's own new-enquiry notification
     # email (app.services.enquiry_classification.notify_new_enquiry)
     # actually sends successfully. NULL means either "never attempted"

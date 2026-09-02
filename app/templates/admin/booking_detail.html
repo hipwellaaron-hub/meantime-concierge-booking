@@ -138,6 +138,18 @@
   <p class="muted">This status is terminal -- no further transition is available.</p>
   {% endif %}
 
+  {% if booking.status_pinned %}
+  <div style="margin-top:12px; padding:10px 12px; border-radius:8px; background:rgba(201,169,110,0.10); border:1px solid var(--gold-dim);">
+    <span class="badge">set by hand</span>
+    <span class="muted" style="font-size:0.85rem;">This status was set manually, so the automatic moves (hold the date on send, confirm on deposit + signature) leave this booking alone.</span>
+    <form class="inline" method="post" action="/admin/bookings/{{ booking.id }}/status/unpin" style="display:inline; margin-left:8px;"
+          onsubmit="return confirm('Hand this booking back to automation? If the client has already sent, signed or paid enough, it may move to tentative or confirmed straight away.');">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button class="btn secondary" type="submit">Hand back to automation</button>
+    </form>
+  </div>
+  {% endif %}
+
   {% if booking.status.value == "tentative" %}
   <h3 style="font-size:0.9rem; color:var(--muted); margin:20px 0 6px;">Hold expiry</h3>
   <p class="muted">

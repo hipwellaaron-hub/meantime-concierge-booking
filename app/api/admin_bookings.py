@@ -369,6 +369,21 @@ def transition_booking_status(
     return _redirect_to_detail(booking_id)
 
 
+@router.post("/{booking_id}/status/unpin", dependencies=[Depends(require_csrf)])
+def hand_status_back_to_automation(
+    booking_id: uuid.UUID,
+    request: Request,
+    db: Session = Depends(get_db),
+    staff: StaffUser = Depends(require_staff),
+):
+    """Clears the manual-override pin a hand-set status leaves behind, so
+    the automatic transitions may act on this booking again (and catch up
+    immediately). See Booking.status_pinned_at."""
+    booking = _get_booking_or_404(db, booking_id)
+    booking_service.clear_status_pin(db, booking, actor=_actor(staff))
+    return _redirect_to_detail(booking_id)
+
+
 @router.post("/{booking_id}/hold-expiry", dependencies=[Depends(require_csrf)])
 def set_hold_expiry(
     booking_id: uuid.UUID,
