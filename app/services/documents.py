@@ -81,6 +81,12 @@ def create_new_version(db: Session, booking: Booking, doc_type: DocumentType, co
     )
     db.commit()
     db.refresh(document)
+
+    if doc_type == DocumentType.agreement and previous is not None and previous.status == DocumentStatus.signed:
+        # Superseding a signed agreement voids the client's signature. If the
+        # booking was confirmed on that signature, a gate is lost: flag it
+        # for a human, never move it (see booking.flag_if_confirmed_gate_lost).
+        booking_service.flag_if_confirmed_gate_lost(db, booking, actor=actor)
     return document
 
 

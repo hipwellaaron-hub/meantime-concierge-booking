@@ -509,6 +509,38 @@ def auto_hold_on_send(db: Session, booking: Booking, *, actor: str) -> bool:
     return True
 
 
+def flag_if_confirmed_gate_lost(db: Session, booking: Booking, *, actor: str) -> bool:
+    """A confirmed booking that no longer has both of what confirmed it -- a
+    signed current agreement and a paid deposit -- is flagged for review,
+    never moved. Returns whether it flagged.
+
+    Deliberately flag-only: automation only walks a booking forward, and a
+    voided agreement or a refunded deposit is usually the leading edge of a
+    cancellation, not a downgrade -- silently re-opening the date to sale
+    would be the worse mistake. A human decides: re-sign, re-collect, or
+    cancel. Called when a signed agreement is superseded; reusable by any
+    future refund/reversal path, which is why it checks both gates."""
+    if booking.status != BookingStatus.confirmed:
+        return False
+    missing = []
+    if not has_signed_agreement(db, booking):
+        missing.append("a signed current agreement")
+    if not has_paid_deposit(db, booking):
+        missing.append("a paid deposit")
+    if not missing:
+        return False
+    flag_for_review(
+        db,
+        booking,
+        note=(
+            f"This confirmed booking no longer has {' or '.join(missing)}. It has NOT been moved -- "
+            "review and decide: have the client sign again / re-collect the deposit, or cancel."
+        ),
+        actor=actor,
+    )
+    return True
+
+
 def get_holds_to_chase(db: Session, venue_id: uuid.UUID, *, today: dt.date | None = None) -> list[Booking]:
     """Tentative bookings holding a date on a deposit that was issued but
     never paid, past their hold expiry -- chase the deposit or release the
