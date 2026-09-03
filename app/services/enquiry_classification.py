@@ -314,14 +314,19 @@ def _create_enquiry_booking_locked(
 ) -> Booking:
     unassigned_space_id = ivvy_import.get_unassigned_space_id(db, venue)
 
+    # The client's own free text goes to enquiry_text, verbatim and on its
+    # own; notes keeps only the structured answers we derive from the form.
+    # "What the client wrote" and "what we recorded" are never the same
+    # field again, which is what makes treating the former as untrusted a
+    # property of the data rather than a rule in a prompt (Phase 2 brief
+    # section 7).
     notes_parts = []
     if company_name:
         notes_parts.append(f"Company: {company_name}")
     if dates_flexible:
         notes_parts.append("Dates flexible: yes")
-    if comments:
-        notes_parts.append(comments)
     notes = "\n".join(notes_parts) or None
+    enquiry_text = (comments or "").strip() or None
 
     # Adult/child split: only known if adult_count was volunteered. Left
     # unknown, every attendee is conservatively treated as an adult for
@@ -349,6 +354,7 @@ def _create_enquiry_booking_locked(
         adult_count=resolved_adult_count,
         child_count=resolved_child_count,
         notes=notes,
+        enquiry_text=enquiry_text,
         actor=actor,
         lead_source=lead_source,
         lead_referrer=lead_referrer,

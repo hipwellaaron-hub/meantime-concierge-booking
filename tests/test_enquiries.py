@@ -94,7 +94,10 @@ def test_company_and_dates_flexible_fold_into_notes(db, unassigned_space):
         booking = db.query(Booking).filter_by(event_name="Wilson Wedding").one()
         assert "Acme Pty Ltd" in booking.notes
         assert "Dates flexible: yes" in booking.notes
-        assert "Weekday ok too" in booking.notes
+        # The client's own words live in enquiry_text now, not notes:
+        # what they wrote and what we recorded are separate fields.
+        assert "Weekday ok too" not in (booking.notes or "")
+        assert booking.enquiry_text == "Weekday ok too"
     finally:
         app.dependency_overrides.clear()
 

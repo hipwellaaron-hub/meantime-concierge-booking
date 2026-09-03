@@ -162,7 +162,9 @@ def _milestone_age(event_name: str) -> int | None:
 
 def _haystack(booking: Booking, extra: str = "") -> str:
     return " ".join(
-        part for part in [booking.event_name, booking.event_type, booking.notes, extra] if part
+        part
+        for part in [booking.event_name, booking.event_type, booking.enquiry_text, booking.notes, extra]
+        if part
     ).lower()
 
 

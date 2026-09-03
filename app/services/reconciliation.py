@@ -290,6 +290,38 @@ def check_imminent_without_beo(bookings, *, today: dt.date) -> list[Finding]:
     return out
 
 
+def check_notes_before_beo(bookings) -> list[Finding]:
+    """Bookings carrying free text whose Event Order has not been made yet.
+
+    Until this build, booking.notes defaulted into the client-facing
+    Special Notes of a generated Event Order, so anything sitting in it
+    published itself the first time a BEO was made. That default is gone,
+    but the text is still there and nobody has read it in months. This
+    surfaces every booking holding some, before its Event Order is
+    generated, because reading 47 of them by hand is not a thing anybody
+    was going to do.
+
+    Clears itself the moment the Event Order exists or the notes are
+    emptied, like every other finding.
+    """
+    out = []
+    for b in bookings:
+        text = ((b.notes or "") + (b.enquiry_text or "")).strip()
+        if not text:
+            continue
+        has_beo = any(d.type == DocumentType.beo for d in b.documents)
+        if has_beo:
+            continue
+        out.append(
+            Finding(
+                b.id, "NOTES_BEFORE_BEO", NEEDS_HUMAN,
+                "Carries enquiry text or internal notes and has no Event Order yet. Worth reading "
+                "before one is generated: this text used to publish itself to the client.",
+            )
+        )
+    return out
+
+
 _DUPLICATED_NAME = re.compile(r"^\s*(.+?)\s+\1\s*$", re.IGNORECASE)
 _PLAUSIBLE_EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[A-Za-z]{2,}$")
 _SUSPICIOUS_TLD = re.compile(r"\.(clm|con|cmo|couk|comm)$", re.IGNORECASE)
@@ -334,6 +366,7 @@ def collect(db: Session, venue: Venue, *, today: dt.date | None = None,
     findings += check_wizard_overdue(bookings, now=now)
     findings += check_imminent_without_beo(bookings, today=today)
     findings += check_contact_hygiene(bookings)
+    findings += check_notes_before_beo(bookings)
     return findings
 
 

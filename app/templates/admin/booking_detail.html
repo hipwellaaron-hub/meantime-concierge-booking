@@ -47,7 +47,7 @@
 </nav>
 {% endif %}
 
-{% if booking.event_type or booking.proposed_time_slot or booking.notes or booking.lead_source %}
+{% if booking.event_type or booking.proposed_time_slot or booking.notes or booking.enquiry_text or booking.lead_source %}
 <div class="card">
   <h2>Enquiry details</h2>
   {% if booking.event_type %}<p style="margin:0 0 6px;"><b>Event type:</b> {{ booking.event_type }}</p>{% endif %}
@@ -55,8 +55,20 @@
   {% if booking.lead_source %}
   <p style="margin:0 0 6px;"><b>Lead source:</b> {{ booking.lead_source.replace('_', ' ') }}{% if booking.lead_referrer %} <span class="muted">({{ booking.lead_referrer }})</span>{% endif %}</p>
   {% endif %}
+
+  {% if booking.enquiry_text %}
+  <p style="margin:12px 0 4px;"><b>What the client wrote</b>
+     <span class="badge">their words, not ours</span></p>
+  <p class="muted" style="white-space: pre-wrap; margin:0;">{{ booking.enquiry_text }}</p>
+  {% endif %}
+
   {% if booking.notes %}
-  <p style="margin:12px 0 4px;"><b>Notes</b></p>
+  {# A field that publishes to a client should say so on screen. This one
+     does not, and now says that too -- it used to default into the Event
+     Order's client-facing Special Notes, which is exactly how that went
+     unnoticed for months. #}
+  <p style="margin:12px 0 4px;"><b>Internal notes</b>
+     <span class="badge green" title="Appears in the INTERNAL section of the Event Order, which the client never sees.">never shown to the client</span></p>
   <p class="muted" style="white-space: pre-wrap; margin:0;">{{ booking.notes }}</p>
   {% endif %}
 </div>

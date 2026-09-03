@@ -131,7 +131,19 @@ class Booking(Base):
     adult_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     child_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     reference_code: Mapped[str] = mapped_column(String(20), nullable=False, unique=True)
+    # STAFF-FACING working notes. Displayed in the admin and carried into
+    # the Event Order's INTERNAL block, never into anything a client reads.
+    # It used to default into the client-facing "Special Notes" section of
+    # a generated Event Order, which meant anything typed here published
+    # itself the moment a BEO was made -- see document_generation.
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # The client's OWN words from the enquiry form, verbatim and separate
+    # from anything staff wrote. Untrusted input by definition (Phase 2
+    # brief section 7): it is the one field a client can write that reaches
+    # the AI, so keeping it in its own column makes "treat this as
+    # untrusted" a property of the data rather than a rule in a prompt.
+    enquiry_text: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Captured at enquiry time so the ivvy.com.au marketplace's actual
     # contribution as a lead source is measurable before deciding whether

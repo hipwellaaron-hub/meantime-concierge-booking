@@ -181,7 +181,10 @@ def test_beo_generation_flags_missing_data_for_review(db, booking):
     assert "[REVIEW]" in content["food_order"]["note"]
     assert "[REVIEW]" in content["event_timeline"]["notes"]
     assert content["total_food_spend"]["total"] is None
-    assert content["special_notes"] == "Bride requests no seafood."
+    # The booking's notes are STAFF text and no longer default into the
+    # client-facing Special Notes -- they go to the internal block instead.
+    assert content["special_notes"] == ""
+    assert content["internal_notes"] == "Bride requests no seafood."
     assert content["status"] == "enquiry"
 
 

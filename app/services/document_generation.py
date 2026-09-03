@@ -456,12 +456,21 @@ def generate_beo_content(
         "accessibility": accessibility,
         "decorations": decorations,
         "status_text": status_text,
-        "special_notes": special_notes_extra if special_notes_extra is not None else (booking.notes or ""),
+        # CLIENT-FACING. Only what staff deliberately typed for this Event
+        # Order. It used to default to booking.notes, which meant every
+        # staff note and every word a client wrote on the enquiry form
+        # published itself to that client the moment a BEO was generated.
+        # Nothing defaults in here now; booking.notes goes to the INTERNAL
+        # block below instead, so the information is kept and the leak is
+        # closed.
+        "special_notes": special_notes_extra if special_notes_extra is not None else "",
         "av": av,
         "vendors": vendors or [],
         # Staff/kitchen only -- the template structurally excludes this
-        # from the client view and the PDF (see document.html).
-        "internal_notes": internal_notes,
+        # from the client view and the PDF (see document.html). The
+        # booking's own working notes land here by default: they are where
+        # a staff note belongs, and the floor team genuinely wants them.
+        "internal_notes": internal_notes if internal_notes is not None else (booking.notes or None),
         "onsite_contact": onsite_contact,
         "status": booking.status.value,
         "_reference": {
