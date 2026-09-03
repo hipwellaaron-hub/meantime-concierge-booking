@@ -50,6 +50,18 @@
     <p class="muted" style="white-space:pre-wrap; margin:6px 0 0;">{{ d.booking.enquiry_text }}</p></details>
   {% endif %}
 
+  {% set check = freshness.get(d.id) if freshness else None %}
+  {% if check %}
+    {% if check.fresh %}
+    <p style="margin:10px 0 0;"><span class="badge green">facts re-checked just now</span> <span class="muted" style="font-size:0.85rem;">Who is on this date has not changed since the draft was written.</span></p>
+    {% else %}
+    <p style="margin:10px 0 0;"><span class="badge wine">stale</span> <b>{{ check.reason }}</b>
+      {% if check.appeared %}<span class="muted">Appeared: {{ check.appeared | join(', ') }}.</span>{% endif %}
+      {% if check.gone %}<span class="muted">Left: {{ check.gone | join(', ') }}.</span>{% endif %}
+      <span class="muted">Do not send as written.</span></p>
+    {% endif %}
+  {% endif %}
+
   {% if d.draft_text %}
   <details {% if d.status == 'generated' and not d.outcome %}open{% endif %} style="margin-top:10px;">
     <summary style="cursor:pointer; color:var(--gold);">Draft {% if d.as_of %}<span class="muted" style="font-size:0.75rem;">(facts read {{ d.as_of | sydney_time("%d %b %H:%M") }}, {{ d.model }}, {{ d.prompt_version }})</span>{% endif %}</summary>

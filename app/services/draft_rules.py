@@ -42,9 +42,15 @@ GLUTEN_FREE = "gluten_free"
 ALLERGEN_CLAIM = "allergen_claim"
 RULES_ERROR = "rules_error"
 
-REQUIRED_SIGNATURE_NAME = "Aaron"
-REQUIRED_SIGNATURE_VENUE = "Meantime Hamilton"
-REQUIRED_SIGNATURE_EMAIL = "meantimehamilton@gmail.com"
+# The sign-off and the venue-specific figures come from the venue profile
+# (app.services.venue_profile), never from literals here -- see
+# validate(profile=...). These module constants remain as Hamilton's
+# values for anything that imported them.
+from app.services import venue_profile as _venue_profile  # noqa: E402
+
+REQUIRED_SIGNATURE_NAME = _venue_profile.default().contact_name
+REQUIRED_SIGNATURE_VENUE = _venue_profile.default().trading_name
+REQUIRED_SIGNATURE_EMAIL = _venue_profile.default().contact_email
 
 # Walkthroughs are Wednesday to Sunday, 3-5pm. A client once arrived on a
 # closed Monday because the closure was left out, so a draft that offers a
@@ -152,7 +158,9 @@ def _excerpt(match: re.Match) -> str:
     return match.group(0).strip()[:120]
 
 
-def validate(draft: str, *, client_asked_for_figures: bool = False) -> RuleResult:
+def validate(
+    draft: str, *, client_asked_for_figures: bool = False, profile: "_venue_profile.VenueProfile | None" = None
+) -> RuleResult:
     """Check a generated draft against the house rules.
 
     client_asked_for_figures relaxes exactly one rule: a client who asked
@@ -161,7 +169,7 @@ def validate(draft: str, *, client_asked_for_figures: bool = False) -> RuleResul
     could licence its own violation.
     """
     try:
-        return _validate(draft, client_asked_for_figures=client_asked_for_figures)
+        return _validate(draft, client_asked_for_figures=client_asked_for_figures, profile=profile)
     except Exception:  # noqa: BLE001 -- fail closed
         logger.exception("Draft rule validation failed")
         return RuleResult(
@@ -171,7 +179,7 @@ def validate(draft: str, *, client_asked_for_figures: bool = False) -> RuleResul
         )
 
 
-def _validate(draft: str, *, client_asked_for_figures: bool) -> RuleResult:
+def _validate(draft: str, *, client_asked_for_figures: bool, profile=None) -> RuleResult:
     result = RuleResult()
     text = draft or ""
 
@@ -180,15 +188,10 @@ def _validate(draft: str, *, client_asked_for_figures: bool) -> RuleResult:
             RuleViolation(EM_DASH, BLOCK, "Contains an em dash. Use commas, full stops or brackets.")
         )
 
+    profile = profile or _venue_profile.default()
     lowered = text.lower()
     missing_signature = [
-        label
-        for label, needle in (
-            (REQUIRED_SIGNATURE_NAME, REQUIRED_SIGNATURE_NAME.lower()),
-            (REQUIRED_SIGNATURE_VENUE, REQUIRED_SIGNATURE_VENUE.lower()),
-            (REQUIRED_SIGNATURE_EMAIL, REQUIRED_SIGNATURE_EMAIL.lower()),
-        )
-        if needle not in lowered
+        label for label in profile.signature_lines if label.lower() not in lowered
     ]
     if missing_signature:
         result.violations.append(
@@ -214,7 +217,7 @@ def _validate(draft: str, *, client_asked_for_figures: bool) -> RuleResult:
         result.violations.append(
             RuleViolation(
                 BEVERAGE_PACKAGE, BLOCK,
-                "Mentions a beverage package. The answer is the bar tab, guide $25 per person.",
+                f"Mentions a beverage package. The answer is the bar tab, guide ${profile.bar_tab_guide_per_person:.0f} per person.",
                 _excerpt(match),
             )
         )
@@ -256,7 +259,7 @@ def _validate(draft: str, *, client_asked_for_figures: bool) -> RuleResult:
         result.violations.append(
             RuleViolation(
                 WALKTHROUGH_HOURS, BLOCK,
-                "Offers a walkthrough without the days. It must say Wednesday through Sunday, 3 to 5pm, "
+                f"Offers a walkthrough without the days. It must say {profile.walkthrough_text}, "
                 "and that we are closed Monday and Tuesday.",
             )
         )

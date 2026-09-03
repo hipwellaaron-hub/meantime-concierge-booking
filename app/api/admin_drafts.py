@@ -28,7 +28,7 @@ from app.models.enquiry_draft import (
     EnquiryDraft,
 )
 from app.models.staff_user import StaffUser
-from app.services import ai_access
+from app.services import ai_access, drafting
 from app.templating import templates
 
 router = APIRouter(prefix="/admin/drafts", tags=["admin-drafts"], dependencies=[Depends(require_staff)])
@@ -50,9 +50,17 @@ def review_drafts(request: Request, db: Session = Depends(get_db), staff: StaffU
         if d.outcome:
             outcomes[d.outcome] = outcomes.get(d.outcome, 0) + 1
     switches = ai_access.get_settings_row(db)
+    # Re-verify on surface (Phase 2 brief): a generated draft still awaiting
+    # review is checked against a live availability read as the page
+    # renders, so a stale draft is flagged before anyone acts on it.
+    freshness = {
+        d.id: drafting.freshness(db, d)
+        for d in drafts
+        if d.status == STATUS_GENERATED and d.outcome is None
+    }
     return templates.TemplateResponse(
         request, "admin/drafts.html",
-        admin_ctx(request, staff, drafts=drafts, counts=counts, outcomes=outcomes,
+        admin_ctx(request, staff, drafts=drafts, counts=counts, outcomes=outcomes, freshness=freshness,
                   drafting_enabled=switches.drafting_enabled, drafts_visible=switches.drafts_visible),
     )
 

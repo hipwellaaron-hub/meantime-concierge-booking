@@ -304,3 +304,105 @@ def test_every_attempt_leaves_exactly_one_row(db, hamilton, loft, unassigned_spa
     rows = db.scalars(select(EnquiryDraft).where(EnquiryDraft.booking_id == booking.id)).all()
     assert len(rows) == 1
     assert drafting.latest_for(db, booking.id).id == rows[0].id
+
+
+# --- venue profile: the prompt and validators speak for the booking's venue ---
+
+
+def test_prompt_and_validators_come_from_the_venue_profile(db, hamilton, loft, unassigned_space, drafting_on, model):
+    from app.services import venue_profile
+
+    booking = _enquiry(db, hamilton)
+    row = drafting.draft_for_booking(db, booking.id)
+    assert row.status == STATUS_GENERATED
+    system, _user = model.calls[0]
+    profile = venue_profile.for_booking(booking)
+    assert profile.trading_name in system and profile.contact_email in system
+    assert profile.walkthrough_text in system
+    assert row.facts["bar_tab_guide_per_person"] == str(profile.bar_tab_guide_per_person)
+
+
+def test_a_venue_with_no_profile_fails_closed_and_leaves_the_enquiry_alone(db, hamilton, loft, unassigned_space, drafting_on, model):
+    """A second venue that nobody has written a profile for must not draft
+    in Hamilton's voice. The attempt is recorded as failed, the model is
+    never called, and the enquiry is untouched."""
+    from app.models import Space, Venue
+
+    entrance = Venue(name="The Entrance", slug="entrance")
+    db.add(entrance)
+    db.flush()
+    holding = Space(venue_id=entrance.id, name="Unassigned (pending triage)", capacity=0,
+                    min_food_spend=0, standard_min_adults=0, is_bookable=False)
+    bar = Space(venue_id=entrance.id, name="Private Bar", capacity=60, min_food_spend=1000, standard_min_adults=40)
+    db.add_all([holding, bar])
+    db.flush()
+
+    booking = _enquiry(db, entrance, adults=50)  # fits the bar, so the gate passes and the profile lookup is reached
+    row = drafting.draft_for_booking(db, booking.id)
+    assert row.status == STATUS_FAILED
+    assert "No AI venue profile" in row.failure_reason
+    assert model.calls == []
+    assert db.get(Booking, booking.id).status.value == "enquiry"
+
+
+def test_validators_check_the_sign_off_of_the_given_venue():
+    """A Ruby-signed draft passes for a Ruby profile and fails for
+    Hamilton's, so the sign-off rule is venue-driven, not a literal."""
+    from decimal import Decimal
+
+    from app.services import venue_profile
+
+    ruby = venue_profile.VenueProfile(
+        slug="entrance", trading_name="Meantime The Entrance", locality="The Entrance, Central Coast",
+        contact_name="Ruby", contact_email="ruby@meantime.com.au",
+        walkthrough_text="Wednesday through Sunday, 3 to 5pm", closed_days_text="closed Monday",
+        bar_tab_guide_per_person=Decimal("25"),
+    )
+    text = GOOD_DRAFT.replace("Aaron\nMeantime Hamilton\nmeantimehamilton@gmail.com",
+                              "Ruby\nMeantime The Entrance\nruby@meantime.com.au")
+    assert not draft_rules.validate(text, profile=ruby).blocked
+    assert draft_rules.SIGNATURE in draft_rules.validate(text).codes  # Hamilton's profile by default
+
+
+# --- re-verify on surface ------------------------------------------------------
+
+
+def test_freshness_flags_a_draft_when_the_date_fills_up(db, hamilton, loft, unassigned_space, drafting_on, model):
+    from app.services.booking import create_booking
+
+    booking = _enquiry(db, hamilton)
+    row = drafting.draft_for_booking(db, booking.id)
+    assert row.status == STATUS_GENERATED
+    assert drafting.freshness(db, row)["fresh"] is True
+
+    # Somebody else takes the Loft that night after the draft was written.
+    rival = create_booking(
+        db, space_id=loft.id, contact_id=None, event_date=booking.event_date,
+        start_time=dt.time(18, 0), end_time=dt.time(23, 0), event_name="Rival Party",
+        event_type="corporate", adult_count=80, child_count=0, notes=None, actor="staff:test",
+    )
+    from app.models import BookingStatus
+    from app.services.booking import change_status
+
+    change_status(db, rival, BookingStatus.tentative, actor="staff:test")
+    db.flush()
+
+    check = drafting.freshness(db, row)
+    assert check["fresh"] is False
+    assert rival.reference_code in check["appeared"]
+
+
+def test_freshness_flags_a_moved_date(db, hamilton, loft, unassigned_space, drafting_on, model):
+    booking = _enquiry(db, hamilton)
+    row = drafting.draft_for_booking(db, booking.id)
+    booking.event_date = booking.event_date + dt.timedelta(days=7)
+    db.flush()
+    check = drafting.freshness(db, row)
+    assert check["fresh"] is False and "date has changed" in check["reason"]
+
+
+def test_review_page_shows_the_freshness_check(admin_client, db, hamilton, loft, unassigned_space, drafting_on, model):
+    booking = _enquiry(db, hamilton)
+    drafting.draft_for_booking(db, booking.id)
+    page = admin_client.get("/admin/drafts").text
+    assert "facts re-checked just now" in page
