@@ -12,7 +12,9 @@ from rapidfuzz import fuzz
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models import Contact
+import uuid
+
+from app.models import BookingEvent, Contact
 
 NAME_SIMILARITY_THRESHOLD = 85  # 0-100, rapidfuzz token_sort_ratio
 
@@ -59,8 +61,13 @@ def find_or_create_contact(db: Session, name: str, email: str, phone: str | None
     contact row every time the same person enquires again. Anything less
     certain (name-only similarity) is only ever surfaced, never merged --
     see find_duplicate_candidates."""
-    existing = db.scalars(select(Contact).where(func.lower(Contact.email) == email.strip().lower())).first()
+    existing = find_contact_by_email(db, email)
     if existing is not None:
+        # Returned UNCHANGED on purpose. This is the lead-intake path,
+        # reachable from the public enquiry form, so a submission
+        # carrying a known email must never be able to rewrite that
+        # person's stored name or phone. Staff correcting a record go
+        # through update_contact_details() instead, which does write.
         return existing, []
 
     contact = Contact(name=name, email=email, phone=phone)
@@ -69,3 +76,61 @@ def find_or_create_contact(db: Session, name: str, email: str, phone: str | None
 
     other_candidates = find_duplicate_candidates(db, name, email, exclude_contact_id=contact.id)
     return contact, other_candidates
+
+
+def find_contact_by_email(db: Session, email: str) -> Contact | None:
+    """Case-insensitive lookup. An exact email match is the one identity
+    signal we treat as certain (see find_or_create_contact)."""
+    if not email:
+        return None
+    return db.scalars(
+        select(Contact).where(func.lower(Contact.email) == email.strip().lower())
+    ).first()
+
+
+def update_contact_details(
+    db: Session,
+    contact: Contact,
+    *,
+    name: str,
+    email: str,
+    phone: str | None,
+    actor: str,
+    booking_id: uuid.UUID,
+) -> list[str]:
+    """Staff correcting a contact's own details, in place and audited.
+
+    Deliberately separate from find_or_create_contact. That function is
+    lead intake and returns an existing contact untouched, which is a
+    protection rather than an oversight: the public enquiry form reaches
+    it, and a stranger submitting a known email must not be able to rename
+    somebody. This is the opposite situation -- a staff member deliberately
+    fixing the record -- so it writes.
+
+    Returns the fields that actually changed, and writes one
+    field_changed event per change against the booking being edited. An
+    edit that changes nothing writes nothing; an edit that changes
+    something can never again be a silent no-op with no audit trail.
+    """
+    changed: list[str] = []
+    for field, new_value in (("name", name), ("email", email), ("phone", phone)):
+        old_value = getattr(contact, field)
+        if (old_value or None) == (new_value or None):
+            continue
+        setattr(contact, field, new_value)
+        db.add(
+            BookingEvent(
+                booking_id=booking_id,
+                event_type="field_changed",
+                field_name=f"contact_{field}",
+                old_value=old_value,
+                new_value=new_value,
+                actor=actor,
+            )
+        )
+        changed.append(field)
+
+    if changed:
+        db.commit()
+        db.refresh(contact)
+    return changed

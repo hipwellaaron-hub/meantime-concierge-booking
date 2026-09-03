@@ -21,7 +21,11 @@ from app.models.staff_user import StaffUser
 from app.models.wizard_session import WizardSessionStatus
 from app.schemas.enquiry import EVENT_TYPES, EnquiryCreate
 from app.services import booking as booking_service
-from app.services.contact_matching import find_or_create_contact
+from app.services.contact_matching import (
+    find_contact_by_email,
+    find_or_create_contact,
+    update_contact_details,
+)
 from app.services import documents as documents_service
 from app.services import enquiry_classification
 from app.services import invoicing
@@ -445,16 +449,47 @@ def set_booking_contact(
     db: Session = Depends(get_db),
     staff: StaffUser = Depends(require_staff),
 ):
-    """Attaches or replaces a booking's contact -- the recurring need
-    app.services.ivvy_calendar_import creates by design: a booking
-    imported with real space/time but no email at all only gets a real
-    contact once staff track one down, often from a live email thread."""
+    """Attaches a contact to a booking, or corrects the one it has.
+
+    The form serves two different intentions and they need different
+    handling, which is what went wrong before: sending everything through
+    find_or_create_contact meant a correction to an existing contact was
+    silently dropped, because that function returns an email match
+    untouched (deliberately -- see update_contact_details).
+
+    - Correcting the booking's own contact (email unchanged, or changed to
+      an address nobody else uses) updates that record IN PLACE and audits
+      each changed field. Fixing a doubled name or a typo'd address must
+      fix the person, not fork a second row and leave the old one behind.
+    - An email belonging to somebody else means "this booking is actually
+      theirs": the booking is repointed to them and their stored details
+      are left alone, so one booking's form can never rewrite another
+      person's record.
+    """
     booking = _get_booking_or_404(db, booking_id)
     name, email = name.strip(), email.strip()
+    phone = (phone or "").strip() or None
     if not name or not email:
         raise HTTPException(status_code=422, detail="Name and email are both required")
-    contact, _duplicates = find_or_create_contact(db, name, email, (phone or "").strip() or None)
-    booking_service.set_contact(db, booking, contact_id=contact.id, actor=_actor(staff))
+    # Length-checked here rather than letting the database raise: these
+    # come from a form with no maxlength on two of the three inputs.
+    if len(name) > 255 or len(email) > 320 or (phone and len(phone) > 50):
+        raise HTTPException(
+            status_code=422,
+            detail="Name (255), email (320) or phone (50) is longer than the field allows",
+        )
+
+    owner_of_email = find_contact_by_email(db, email)
+    current = booking.contact
+
+    if current is not None and (owner_of_email is None or owner_of_email.id == current.id):
+        update_contact_details(
+            db, current, name=name, email=email, phone=phone,
+            actor=_actor(staff), booking_id=booking.id,
+        )
+    else:
+        contact, _duplicates = find_or_create_contact(db, name, email, phone)
+        booking_service.set_contact(db, booking, contact_id=contact.id, actor=_actor(staff))
     return _redirect_to_detail(booking_id)
 
 
