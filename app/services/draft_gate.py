@@ -383,9 +383,11 @@ def _evaluate(
                     "unanswered. Ask before drafting.",
                 )
             )
-        elif milestone < 18:
+        elif milestone <= 18:
+            # 18 itself is the case this rule exists for: "Eva's 18th" with
+            # no "birthday" in the text is still an 18th.
             blocks.append(
-                GateBlock(UNDER_18, f"A {milestone}th birthday, so the guests are under 18.")
+                GateBlock(UNDER_18, f"A {milestone}th birthday, so guests are under 18 or turning 18.")
             )
 
     # --- capacity and minimums ------------------------------------------

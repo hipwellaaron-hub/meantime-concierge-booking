@@ -70,6 +70,17 @@ class AiSettings(Base):
     access_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("true"), default=True)
     writes_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("true"), default=True)
 
+    # Phase 2 drafting. Both OFF by default: nothing drafts until a human
+    # turns it on, and nothing is shown to staff until a human turns THAT
+    # on separately. Stage 1 (shadow) is drafting_enabled without
+    # drafts_visible. The Phase 1 master switch (access_enabled) gates both.
+    drafting_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false"), default=False
+    )
+    drafts_visible: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false"), default=False
+    )
+
     # Set when the rate limiter trips, so the reason survives a restart and
     # a staff member can see why writes went off without reading logs.
     writes_disabled_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

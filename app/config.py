@@ -88,5 +88,15 @@ class Settings(BaseSettings):
     ai_write_rate_per_hour: int = 20
     ai_write_rate_per_day: int = 100
 
+    # --- Phase 2 drafting -----------------------------------------------
+    # Empty by default: with no key, every drafting attempt records
+    # 'skipped' and nothing is called. Never logged, never echoed.
+    anthropic_api_key: str = ""
+    ai_draft_model: str = "claude-sonnet-5"
+    # A slow model must never hold anything up. By the time drafting runs
+    # the enquiry is saved and staff are notified, so a timeout here costs
+    # one missing draft and nothing else.
+    ai_draft_timeout_seconds: float = 30.0
+
 
 settings = Settings()

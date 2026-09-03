@@ -3,7 +3,7 @@ import logging
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from sqlalchemy import update
 from sqlalchemy.orm import Session
@@ -13,6 +13,7 @@ from app.models import Booking, Venue
 from app.rate_limit import InMemoryRateLimiter, rate_limit_dependency
 from app.schemas.enquiry import EVENT_TYPES, EnquiryCreate
 from app.services.attribution import build_touch, parse_attribution_payload
+from app.services import drafting
 from app.services.enquiry_classification import create_enquiry_booking
 from app.services.lead_analytics import classify_lead_source
 from app.templating import templates
@@ -42,7 +43,12 @@ def enquiry_form(request: Request):
 
 
 @router.post("/enquiries", dependencies=[Depends(rate_limit_dependency(_enquiry_rate_limiter))])
-def submit_enquiry(request: Request, payload: Annotated[EnquiryCreate, Form()], db: Session = Depends(get_db)):
+def submit_enquiry(
+    request: Request,
+    payload: Annotated[EnquiryCreate, Form()],
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
     venue = _venue(db)
     full_name = truncate(f"{payload.first_name} {payload.last_name}", 255)
     referrer = request.headers.get("referer")
@@ -80,6 +86,14 @@ def submit_enquiry(request: Request, payload: Annotated[EnquiryCreate, Form()], 
         first_touch_attribution=first_touch,
         last_touch_attribution=last_touch,
     )
+
+    # Drafting runs AFTER this response is sent, in its own session, and
+    # cannot raise into the request. By this line the booking is saved,
+    # flagged, and staff have been notified inside create_enquiry_booking.
+    # A slow or dead model therefore costs one missing draft and nothing
+    # else. Duplicate submissions (a double-click) are not re-drafted.
+    if _is_new:
+        background_tasks.add_task(drafting.run_in_background, booking.id)
 
     return RedirectResponse(url=f"/enquiries/{booking.id}/thanks", status_code=303)
 

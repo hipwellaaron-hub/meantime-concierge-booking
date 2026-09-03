@@ -1,0 +1,88 @@
+{% extends "admin/_base.html" %}
+{% block title %}AI drafts{% endblock %}
+{% block content %}
+<h1>AI drafts <span class="badge">shadow mode</span></h1>
+<p class="muted">Every enquiry that arrives through the form gets one row here, whether or not a draft was written. Nothing on this page is sent to anyone. Compare what the AI would have sent against what you actually sent, and say why they differ. The discard reason is the signal.</p>
+
+<div class="card">
+  <h2>Switches</h2>
+  <form method="post" action="/admin/drafts/switches" class="field-row" style="align-items:center; gap:18px; flex-wrap:wrap;">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label><input type="checkbox" name="drafting_enabled" {% if drafting_enabled %}checked{% endif %}> Drafting on <span class="muted">(generate drafts for new enquiries)</span></label>
+    <label><input type="checkbox" name="drafts_visible" {% if drafts_visible %}checked{% endif %}> Drafts visible <span class="muted">(stage 2, not yet)</span></label>
+    <button class="btn" type="submit">Save</button>
+  </form>
+  <p class="muted" style="font-size:0.85rem; margin:8px 0 0;">The Phase 1 master switch still gates both. If AI access is off, nothing drafts regardless.</p>
+</div>
+
+<div class="card">
+  <h2>Last {{ drafts | length }} attempts</h2>
+  <p>
+    {% for status, n in counts.items() %}<span class="badge {{ 'green' if status == 'generated' else ('wine' if status in ('failed','data_mismatch') else '') }}">{{ status | replace('_',' ') }} {{ n }}</span> {% endfor %}
+    {% if outcomes %}&middot; reviewed: {% for o, n in outcomes.items() %}<span class="badge">{{ o | replace('_',' ') }} {{ n }}</span> {% endfor %}{% endif %}
+  </p>
+</div>
+
+{% for d in drafts %}
+<div class="card" style="{% if d.status == 'generated' %}border-color: var(--gold-dim);{% endif %}">
+  <div style="display:flex; justify-content:space-between; gap:12px; flex-wrap:wrap; align-items:baseline;">
+    <h2 style="margin:0;"><a href="/admin/bookings/{{ d.booking.id }}">{{ d.booking.event_name }}</a>
+      <span class="muted" style="font-size:0.8rem;">{{ d.booking.reference_code }}{% if d.booking.contact %} &middot; {{ d.booking.contact.name }}{% endif %}</span></h2>
+    <span>
+      <span class="badge {{ 'green' if d.status == 'generated' else ('wine' if d.status in ('failed','data_mismatch') else '') }}">{{ d.status | replace('_',' ') }}</span>
+      {% if d.outcome %}<span class="badge">{{ d.outcome | replace('_',' ') }}</span>{% endif %}
+      <span class="muted" style="font-size:0.8rem;">{{ d.created_at | sydney_time("%d %b %H:%M") }}</span>
+    </span>
+  </div>
+
+  {% if d.gate_note %}
+  <p style="margin:10px 0 0;"><b>Gate:</b> {{ d.gate_note }}</p>
+  {% endif %}
+  {% if d.failure_reason %}
+  <p class="muted" style="margin:10px 0 0;">{{ d.failure_reason }}</p>
+  {% endif %}
+  {% if d.rule_codes and d.status == 'rules_blocked' %}
+  <p style="margin:10px 0 0;"><b>House rules failed:</b> {{ d.rule_codes | join(', ') | replace('_',' ') }} <span class="muted">(draft kept for calibration, never surfaced)</span></p>
+  {% endif %}
+
+  {% if d.booking.enquiry_text %}
+  <details style="margin-top:10px;"><summary style="cursor:pointer; color:var(--gold);">What the client wrote</summary>
+    <p class="muted" style="white-space:pre-wrap; margin:6px 0 0;">{{ d.booking.enquiry_text }}</p></details>
+  {% endif %}
+
+  {% if d.draft_text %}
+  <details {% if d.status == 'generated' and not d.outcome %}open{% endif %} style="margin-top:10px;">
+    <summary style="cursor:pointer; color:var(--gold);">Draft {% if d.as_of %}<span class="muted" style="font-size:0.75rem;">(facts read {{ d.as_of | sydney_time("%d %b %H:%M") }}, {{ d.model }}, {{ d.prompt_version }})</span>{% endif %}</summary>
+    <pre style="white-space:pre-wrap; font-family:inherit; background:var(--surface-hi); padding:12px; border-radius:8px; margin:6px 0 0;">{{ d.draft_text }}</pre>
+  </details>
+  {% endif %}
+
+  {% if d.status == 'generated' and not d.outcome %}
+  <form method="post" action="/admin/drafts/{{ d.id }}/review" style="margin-top:12px;">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div style="display:grid; gap:8px; max-width:720px;">
+      <div><label>What you actually sent <span class="muted">(paste it, or leave blank if unchanged)</span></label>
+        <textarea name="sent_version" rows="8" style="width:100%; font-family:inherit;"></textarea></div>
+      <div><label>Why you changed it</label><input type="text" name="edit_reason" style="width:100%;"></div>
+      <div><label>If discarded, why <span class="muted">(required for discard)</span></label><input type="text" name="discard_reason" style="width:100%;"></div>
+      <div style="display:flex; gap:8px; flex-wrap:wrap;">
+        <button class="btn" type="submit" name="outcome" value="sent_unchanged">Sent unchanged</button>
+        <button class="btn secondary" type="submit" name="outcome" value="edited">Edited then sent</button>
+        <button class="btn danger" type="submit" name="outcome" value="discarded">Discarded</button>
+      </div>
+    </div>
+  </form>
+  {% elif d.outcome %}
+  <div style="margin-top:10px;">
+    {% if d.sent_version %}<details><summary style="cursor:pointer; color:var(--gold);">What was sent</summary>
+      <pre style="white-space:pre-wrap; font-family:inherit; background:var(--surface-hi); padding:12px; border-radius:8px; margin:6px 0 0;">{{ d.sent_version }}</pre></details>{% endif %}
+    {% if d.edit_reason %}<p style="margin:6px 0 0;"><b>Changed because:</b> {{ d.edit_reason }}</p>{% endif %}
+    {% if d.discard_reason %}<p style="margin:6px 0 0;"><b>Discarded because:</b> {{ d.discard_reason }}</p>{% endif %}
+    <p class="muted" style="font-size:0.8rem; margin:6px 0 0;">Reviewed {{ d.reviewed_at | sydney_time("%d %b %H:%M") }} by {{ d.reviewed_by }}</p>
+  </div>
+  {% endif %}
+</div>
+{% else %}
+<div class="card"><div class="empty-state">No drafting attempts yet. Turn drafting on above; the next form enquiry will appear here.</div></div>
+{% endfor %}
+{% endblock %}

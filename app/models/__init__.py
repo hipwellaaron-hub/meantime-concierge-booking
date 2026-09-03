@@ -4,6 +4,7 @@ from app.models.booking_event import BookingEvent, BookingEventType  # noqa: F40
 from app.models.booking_vendor import BookingVendor, VendorType  # noqa: F401
 from app.models.contact import Contact  # noqa: F401
 from app.models.document import Document, DocumentStatus, DocumentType  # noqa: F401
+from app.models.enquiry_draft import EnquiryDraft  # noqa: F401
 from app.models.invoice import Invoice, InvoiceStatus, InvoiceType  # noqa: F401
 from app.models.menu_item import MenuItem, MenuItemCategory  # noqa: F401
 from app.models.payment import Payment, PaymentMethod  # noqa: F401
@@ -32,6 +33,7 @@ __all__ = [
     "Document",
     "DocumentStatus",
     "DocumentType",
+    "EnquiryDraft",
     "Invoice",
     "InvoiceStatus",
     "InvoiceType",
