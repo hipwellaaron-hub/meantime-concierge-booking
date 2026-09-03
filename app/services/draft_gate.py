@@ -34,11 +34,11 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models import Booking, Space
-from app.services import availability
+from app.services import availability, policy
 from app.services.ai_availability import TOUCHING_STATUSES
 from app.services.ai_pipeline import times_overlap
 from app.services.enquiry_classification import GENERIC_EVENT_TYPES, looks_like_18th
-from app.services.validation import DAYTIME_CUTOFF
+from app.services.validation import DAYTIME_CUTOFF, SATURDAY
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +53,7 @@ MULTI_SPACE = "multi_space"
 OVER_CAPACITY = "over_capacity"
 DAYTIME = "daytime"
 DATE_TAKEN = "date_taken"
+ROOM_HELD = "room_held"
 NEGOTIATION = "negotiation"
 BEREAVEMENT = "bereavement"
 UNCLEAR = "unclear"
@@ -117,6 +118,27 @@ class GateDecision:
         if self.should_draft:
             return ""
         return " ".join(b.reason for b in self.blocks)
+
+
+def _held_for_restaurant(space: Space, booking: Booking) -> bool:
+    """Is this room held back for restaurant covers at this time?
+
+    The Lounge on a Saturday night earns more as restaurant covers than as
+    a function. Nothing else in the system knows that: the calendar shows
+    the room genuinely empty and an availability check reports it free, so
+    without this the gate would cheerfully offer a room Aaron would not.
+
+    Times are usually absent on a form enquiry, so an unknown time on a
+    Saturday is treated as the evening. A booking that explicitly finishes
+    by the daytime cutoff is not the held slot.
+    """
+    if booking.event_date is None:
+        return False
+    if booking.event_date.weekday() != SATURDAY:
+        return False
+    if booking.end_time is not None and booking.end_time <= DAYTIME_CUTOFF:
+        return False
+    return space.name in policy.RESTAURANT_HELD_SATURDAY_EVENING
 
 
 _MILESTONE = re.compile(r"\b(\d{1,3})\s*(?:st|nd|rd|th)\b")
@@ -185,6 +207,10 @@ def _evaluate_candidate_rooms(db: Session, booking: Booking, guests: int, facts:
         ).all()
     )
     fitting = [r for r in rooms if guests <= r.capacity]
+    held_back = [r for r in fitting if _held_for_restaurant(r, booking)]
+    if held_back:
+        facts["rooms_held_for_restaurant"] = [r.name for r in held_back]
+        fitting = [r for r in fitting if r not in held_back]
     facts["rooms_that_fit"] = [r.name for r in fitting]
 
     if not fitting:
@@ -398,6 +424,16 @@ def _evaluate(
         blocks.append(GateBlock(DAYTIME, "A daytime event, where turnaround and the stay-later caveat are a judgement call."))
     elif booking.start_time is None and _DAYTIME_PATTERN.search(text):
         blocks.append(GateBlock(DAYTIME, "Reads as a daytime event, where turnaround and the stay-later caveat are a judgement call."))
+
+    # --- a room held back for the restaurant ------------------------------
+    if space.is_bookable and _held_for_restaurant(space, booking):
+        blocks.append(
+            GateBlock(
+                ROOM_HELD,
+                f"{space.name} is held for restaurant covers on a Saturday night. Offering it anyway "
+                "is a yield decision, not an automatic one.",
+            )
+        )
 
     # --- the date itself ------------------------------------------------
     rivals = _contention(db, booking)

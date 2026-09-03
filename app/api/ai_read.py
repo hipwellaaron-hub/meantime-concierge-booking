@@ -120,6 +120,12 @@ def pipeline(
         "by_stage": grouped,
         "records": [_pipeline_payload(r) for r in records],
         "notes": {
+            "email_enquiries": (
+                "UNDERSTATES what is live. Concierge only captures enquiries submitted through "
+                "its own form; roughly two thirds arrive by email and have no record here at "
+                "all. Treat this as a floor, not a complete picture, and never conclude from it "
+                "that nobody else is asking about a date."
+            ),
             "replied": (
                 "Never returned yet: it requires a logged staff reply, and staff reply "
                 "from Gmail which Concierge does not see. Until the log-reply action "
@@ -172,7 +178,18 @@ def availability(
         date_to=end,
         space_id=space_row.id if space_row else None,
     )
-    return {"as_of": ctx.as_of_iso, "venue": ctx.venue.slug, "days": days}
+    return {
+        "as_of": ctx.as_of_iso,
+        "venue": ctx.venue.slug,
+        "days": days,
+        "notes": {
+            "email_enquiries": (
+                "open_enquiries UNDERSTATES contention. Only enquiries submitted through the "
+                "Concierge form appear; roughly two thirds arrive by email and are invisible "
+                "here. A slot showing no open enquiries may still have several."
+            ),
+        },
+    }
 
 
 # --- 3.1 booking lookup -------------------------------------------------

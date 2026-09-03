@@ -22,6 +22,13 @@ STANDARD_DEPOSIT = Decimal("500.00")
 # auto-released, only made visible. Dial to taste; nothing else hardcodes it.
 HOLD_EXPIRY_DAYS = 7
 
+# Rooms held back for the restaurant on Saturday nights, where covers earn
+# more than a function would. Not a capacity or availability fact -- the
+# room is genuinely empty in the calendar -- so nothing else in the system
+# knows this, and an availability check will happily report it free. The
+# draft gate consults this before offering a room it should not offer.
+RESTAURANT_HELD_SATURDAY_EVENING = ("The Lounge",)
+
 # From the build prompt: "Credit card surcharge 1.8%." See
 # CARD_SURCHARGE_BAN_DATE below -- this rate is going away for most cards.
 CARD_SURCHARGE_RATE = Decimal("0.018")

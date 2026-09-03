@@ -271,3 +271,62 @@ def test_a_milestone_under_18_blocks(db, hamilton, loft):
     for name in ["Mia's 16th", "Ollie's 13th"]:
         decision = _decide(db, _booking(db, loft, name=name, adults=80))
         assert draft_gate.UNDER_18 in decision.codes, name
+
+
+# --- a room held back for the restaurant --------------------------------
+# The Lounge earns more as Saturday restaurant covers than as a function.
+# Nothing else in the system knows that: the calendar shows it empty and
+# availability reports it free, so without this the gate would offer it.
+
+
+def _saturday(weeks_ahead: int = 10) -> dt.date:
+    d = dt.date.today() + dt.timedelta(weeks=weeks_ahead)
+    return d + dt.timedelta(days=(5 - d.weekday()) % 7)
+
+
+def test_the_lounge_is_not_offered_on_a_saturday_night(
+    db, hamilton, loft, mezzanine, lounge, unassigned_space
+):
+    """30 guests would fit the Lounge, but not on a Saturday evening."""
+    sat = _saturday()
+    for room in (loft, mezzanine):
+        held = _booking(db, room, name="Already Booked", when=sat, adults=60)
+        change_status(db, held, BookingStatus.confirmed, actor="staff:test")
+
+    b = _unassigned(db, unassigned_space, name="Rachel's 30th", when=sat, adults=30)
+    decision = draft_gate.evaluate(db, b, adult_count=30, attendee_count=30)
+
+    assert decision.should_draft is False
+    assert draft_gate.DATE_TAKEN in decision.codes
+    assert "The Lounge" in decision.facts["rooms_held_for_restaurant"]
+    assert "The Lounge" not in decision.facts["rooms_that_fit"]
+
+
+def test_the_lounge_is_offered_on_a_friday_night(
+    db, hamilton, loft, mezzanine, lounge, unassigned_space
+):
+    """The hold is Saturday-specific, not a permanent exclusion."""
+    friday = _saturday() - dt.timedelta(days=1)
+    for room in (loft, mezzanine):
+        held = _booking(db, room, name="Already Booked", when=friday, adults=60)
+        change_status(db, held, BookingStatus.confirmed, actor="staff:test")
+
+    b = _unassigned(db, unassigned_space, name="Rachel's 30th", when=friday, adults=30)
+    decision = draft_gate.evaluate(db, b, adult_count=30, attendee_count=30)
+    assert "The Lounge" in decision.facts["rooms_that_fit"]
+
+
+def test_choosing_the_lounge_for_a_saturday_night_blocks(db, hamilton, lounge):
+    b = _booking(db, lounge, name="Priya's 30th", when=_saturday(), adults=30)
+    decision = _decide(db, b, guests=30)
+    assert draft_gate.ROOM_HELD in decision.codes
+    assert "restaurant covers" in decision.as_note()
+
+
+def test_a_saturday_daytime_booking_in_the_lounge_is_not_the_held_slot(db, hamilton, lounge):
+    """The hold is the evening. A Saturday lunch is a different question
+    (and blocks as daytime instead, which is a human call either way)."""
+    b = _booking(db, lounge, name="Priya's 30th", when=_saturday(),
+                 start=dt.time(11, 30), end=dt.time(15, 0), adults=30)
+    decision = _decide(db, b, guests=30)
+    assert draft_gate.ROOM_HELD not in decision.codes
