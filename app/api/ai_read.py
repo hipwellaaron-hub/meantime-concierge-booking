@@ -20,10 +20,11 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.api.ai_auth import AiContext, require_ai
 from app.database import get_db
-from app.models import Booking, Contact, Space
+from app.models import Booking, Contact, MenuItem, Space
 from app.models.document import DocumentStatus, DocumentType
 from app.models.invoice import InvoiceStatus, InvoiceType
 from app.services import ai_availability, ai_pipeline, policy
+from app.services import catalogue as catalogue_service
 
 router = APIRouter(prefix="/api/ai", tags=["ai-read"])
 
@@ -326,4 +327,194 @@ def bookings(
         "venue": ctx.venue.slug,
         "count": len(loaded),
         "bookings": [_booking_payload(db, b) for b in loaded],
+    }
+
+
+# --- 3.3 catalogue ------------------------------------------------------
+
+
+@router.get("/catalogue")
+def catalogue(
+    as_of: dt.date | None = Query(default=None),
+    ctx: AiContext = Depends(require_ai),
+    db: Session = Depends(get_db),
+):
+    """Menu items with the price that actually applies.
+
+    Without `as_of` this is today's catalogue. With it, prices resolve as
+    they would for a booking whose pricing was locked on that date -- which
+    for pizzas before the May 2026 cutover means the legacy price.
+
+    A null price is meaningful, not missing data: the item is legacy-priced
+    but no legacy price was ever defined for it (Vegetarian Pizza is the
+    real case). It must be surfaced as unknown, never guessed.
+    """
+    items = list(db.scalars(select(MenuItem).order_by(MenuItem.category, MenuItem.name)).all())
+
+    payload = []
+    for item in items:
+        price = (
+            catalogue_service.resolve_price_as_of(item, as_of)
+            if as_of is not None
+            else item.current_price
+        )
+        payload.append(
+            {
+                "id": str(item.id),
+                "name": item.name,
+                "category": item.category.value,
+                "price": str(price) if price is not None else None,
+                "price_unknown_reason": (
+                    "legacy-priced booking, but no legacy price was ever defined for this item"
+                    if price is None
+                    else None
+                ),
+                "current_price": str(item.current_price),
+                "legacy_price": str(item.legacy_price) if item.legacy_price is not None else None,
+                "is_active": item.is_active,
+                # NULL means "not yet confirmed against the website", which is
+                # different from [] meaning "confirmed to carry no marker".
+                # The AI must not read null as "no dietary markers".
+                "dietary_markers": item.dietary_markers,
+                "contains_peanuts": item.contains_peanuts,
+            }
+        )
+
+    return {
+        "as_of": ctx.as_of_iso,
+        "pricing_as_of": as_of.isoformat() if as_of else None,
+        "venue": ctx.venue.slug,
+        "count": len(payload),
+        "items": payload,
+        "notes": {
+            "serving_sizes": (
+                "Not stored. No item carries a guest count, so a platter cannot be "
+                "described as feeding a fixed number of people from this data."
+            ),
+            "dietary_markers": (
+                "null means unconfirmed against the website, not 'none'. Only an "
+                "empty list means confirmed to carry no marker."
+            ),
+        },
+    }
+
+
+# --- 3.4 / 3.5 per-booking detail ---------------------------------------
+
+
+def _ai_booking_or_404(db: Session, ctx: AiContext, booking_id: uuid.UUID) -> Booking:
+    """Venue-scoped lookup. A booking outside this credential's venue is
+    reported as absent rather than forbidden -- the credential should not
+    be able to confirm that it exists (brief section 7)."""
+    booking = db.scalar(
+        select(Booking)
+        .join(Space, Booking.space_id == Space.id)
+        .where(Booking.id == booking_id, Space.venue_id == ctx.venue.id)
+    )
+    if booking is None:
+        raise HTTPException(status_code=404, detail="Booking not found")
+    return booking
+
+
+@router.get("/bookings/{booking_id}/documents")
+def booking_documents(
+    booking_id: uuid.UUID,
+    ctx: AiContext = Depends(require_ai),
+    db: Session = Depends(get_db),
+):
+    """Whether documents exist and what state they are in -- deliberately
+    NOT their content and never the PDF (brief sections 3.4 and 6). The AI
+    does not need to read a contract to check that one is signed."""
+    booking = _ai_booking_or_404(db, ctx, booking_id)
+    return {
+        "as_of": ctx.as_of_iso,
+        "reference": booking.reference_code,
+        "documents": [
+            {
+                "id": str(d.id),
+                "type": d.type.value,
+                "version": d.version,
+                "is_current": d.is_current,
+                "status": d.status.value,
+                "viewed_at": d.viewed_at.isoformat() if d.viewed_at else None,
+                "signed_at": d.signed_at.isoformat() if d.signed_at else None,
+                "signer_name": d.signer_name,
+                "is_legacy": d.is_legacy,
+                "legacy_source_ref": d.legacy_source_ref,
+            }
+            for d in sorted(booking.documents, key=lambda d: (d.type.value, d.version))
+        ],
+    }
+
+
+@router.get("/bookings/{booking_id}/invoices")
+def booking_invoices(
+    booking_id: uuid.UUID,
+    ctx: AiContext = Depends(require_ai),
+    db: Session = Depends(get_db),
+):
+    """Invoice state and amounts.
+
+    Payment rows carry amount, method and payer, but NEVER Payment.reference
+    -- for a card payment that field holds the Stripe payment_intent id, and
+    no AI endpoint returns a Stripe identifier (brief section 3.6). Bank and
+    card details are likewise absent because they are not stored on these
+    rows at all.
+    """
+    booking = _ai_booking_or_404(db, ctx, booking_id)
+    return {
+        "as_of": ctx.as_of_iso,
+        "reference": booking.reference_code,
+        "invoices": [
+            {
+                "id": str(i.id),
+                "invoice_number": i.invoice_number,
+                "type": i.type.value,
+                "status": i.status.value,
+                "total": str(i.total),
+                "due_date": i.due_date.isoformat() if i.due_date else None,
+                "paid_at": i.paid_at.isoformat() if i.paid_at else None,
+                "viewed_at": i.viewed_at.isoformat() if i.viewed_at else None,
+                "is_legacy": i.is_legacy,
+                "payments": [
+                    {
+                        "amount": str(p.amount),
+                        "method": p.method.value,
+                        "payer_name": p.payer_name,
+                        "received_at": p.received_at.isoformat() if p.received_at else None,
+                    }
+                    for p in sorted(i.payments, key=lambda p: p.received_at)
+                ],
+            }
+            for i in sorted(booking.invoices, key=lambda i: i.created_at)
+        ],
+    }
+
+
+@router.get("/bookings/{booking_id}/events")
+def booking_events(
+    booking_id: uuid.UUID,
+    limit: int = Query(default=200, le=1000),
+    ctx: AiContext = Depends(require_ai),
+    db: Session = Depends(get_db),
+):
+    """The existing BookingEvent history, so "when did this change and who
+    changed it" is answered from the record rather than guessed."""
+    booking = _ai_booking_or_404(db, ctx, booking_id)
+    events = sorted(booking.events, key=lambda e: e.created_at)[-limit:]
+    return {
+        "as_of": ctx.as_of_iso,
+        "reference": booking.reference_code,
+        "count": len(events),
+        "events": [
+            {
+                "at": e.created_at.isoformat() if e.created_at else None,
+                "event_type": e.event_type,
+                "field_name": e.field_name,
+                "old_value": e.old_value,
+                "new_value": e.new_value,
+                "actor": e.actor,
+            }
+            for e in events
+        ],
     }

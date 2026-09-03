@@ -187,10 +187,21 @@ CONSEQUENTIAL_ATTEMPTS = [
 
 @pytest.mark.parametrize("method,path", CONSEQUENTIAL_ATTEMPTS)
 def test_tier_three_actions_do_not_exist(ai_client, method, path):
-    """404, not 403: the endpoint is physically absent, so it cannot be
-    re-enabled by changing a policy or talking the model into it."""
+    """Never 403, never success: the handler is physically absent, so a
+    Tier 3 action cannot be re-enabled by changing a policy or by talking
+    the model into it.
+
+    The brief says 404. Three of these paths answer 405 instead, and that
+    is the same fact stated more precisely: the path exists as a *read*
+    (GET /catalogue, GET /bookings/{id}/documents and /invoices), so a
+    POST to it is method-not-allowed rather than no-such-path. Either way
+    no write handler exists to reach. What must never appear is 403 -- a
+    refusal implies something is there to refuse.
+    """
     resp = ai_client.request(method, path)
-    assert resp.status_code == 404, f"{method} {path} returned {resp.status_code}"
+    assert resp.status_code in (404, 405), f"{method} {path} returned {resp.status_code}"
+    assert resp.status_code != 403, "must be absent, not forbidden"
+    assert not resp.is_success, f"{method} {path} succeeded -- a Tier 3 action exists"
 
 
 def test_credential_cannot_reach_admin_routes(ai_client):

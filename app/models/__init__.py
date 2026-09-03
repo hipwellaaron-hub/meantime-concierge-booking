@@ -8,6 +8,7 @@ from app.models.invoice import Invoice, InvoiceStatus, InvoiceType  # noqa: F401
 from app.models.menu_item import MenuItem, MenuItemCategory  # noqa: F401
 from app.models.payment import Payment, PaymentMethod  # noqa: F401
 from app.models.public_holiday import PublicHoliday  # noqa: F401
+from app.models.reconciliation import ReconciliationFinding  # noqa: F401
 from app.models.space import Space  # noqa: F401
 from app.models.staff_app_token import StaffAppToken  # noqa: F401
 from app.models.staff_user import StaffUser  # noqa: F401
@@ -39,6 +40,7 @@ __all__ = [
     "Payment",
     "PaymentMethod",
     "PublicHoliday",
+    "ReconciliationFinding",
     "Space",
     "StaffAppToken",
     "StaffUser",

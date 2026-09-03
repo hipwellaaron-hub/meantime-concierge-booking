@@ -250,6 +250,10 @@ def load_pipeline_bookings(db: Session, venue) -> list[Booking]:
                 selectinload(Booking.wizard_session),
                 selectinload(Booking.linked_bookings).selectinload(Booking.space),
             )
+            # Brief section 3: reads must always be live. Without this a
+            # booking already in the session's identity map would keep its
+            # previously loaded documents/invoices collections.
+            .execution_options(populate_existing=True)
             .order_by(Booking.event_date)
         ).all()
     )

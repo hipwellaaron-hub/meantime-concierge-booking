@@ -92,6 +92,7 @@ def load_touching(
             selectinload(Booking.contact),
             selectinload(Booking.space),
         )
+        .execution_options(populate_existing=True)  # live, never cached
         .order_by(Booking.event_date, Booking.start_time)
     )
     if space_id is not None:

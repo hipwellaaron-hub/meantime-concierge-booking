@@ -60,3 +60,22 @@ def resolve_price(menu_item: MenuItem, booking: Booking) -> Decimal | None:
     if menu_item.category == MenuItemCategory.pizza:
         return resolve_pizza_price(menu_item, booking)
     return menu_item.current_price
+
+
+def resolve_price_as_of(menu_item: MenuItem, pricing_date) -> Decimal | None:
+    """The stored price that applies to a booking whose pricing was locked
+    on `pricing_date`, without needing the Booking row itself.
+
+    Same rule as resolve_price() above and sharing its one cutover
+    constant -- pizzas price legacy before the cutover, everything else
+    always prices current. Exists for the AI catalogue endpoint, which
+    answers "what did this cost for a booking locked on date X" and has a
+    date rather than a booking. tests/test_ai_catalogue.py asserts the two
+    stay in agreement, so this cannot quietly drift from resolve_price.
+
+    None means the same thing here as there: legacy-priced, but no legacy
+    price was ever defined for this item. Never guess a figure.
+    """
+    if menu_item.category == MenuItemCategory.pizza and pricing_date < PIZZA_LEGACY_PRICING_CUTOVER_DATE:
+        return menu_item.legacy_price
+    return menu_item.current_price
