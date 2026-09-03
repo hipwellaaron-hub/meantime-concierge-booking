@@ -1,3 +1,4 @@
+from app.models.ai_access import AI_ACTOR, AiRequestKind, AiRequestLog, AiSettings, AiTrigger  # noqa: F401
 from app.models.booking import Booking, BookingStatus, MinReductionReasonCode  # noqa: F401
 from app.models.booking_event import BookingEvent, BookingEventType  # noqa: F401
 from app.models.booking_vendor import BookingVendor, VendorType  # noqa: F401
@@ -14,6 +15,11 @@ from app.models.venue import Venue  # noqa: F401
 from app.models.wizard_session import WizardSession, WizardSessionStatus, WizardStep  # noqa: F401
 
 __all__ = [
+    "AI_ACTOR",
+    "AiRequestKind",
+    "AiRequestLog",
+    "AiSettings",
+    "AiTrigger",
     "Booking",
     "BookingStatus",
     "MinReductionReasonCode",

@@ -64,5 +64,29 @@ class Settings(BaseSettings):
     ga4_measurement_id: str = ""
     meta_pixel_id: str = ""
 
+    # --- AI integration (Phase 1 brief) ---------------------------------
+    # Bearer token for /api/ai/*. Empty by default so a deployment that
+    # hasn't deliberately set one refuses every AI request rather than
+    # running open. Never in code, rotatable without a code change (section 7).
+    ai_api_token: str = ""
+
+    # Env-level backstop for the kill switches. The real switch is the
+    # ai_settings row (instant, no rebuild); these are the second lock, and
+    # either source saying False wins -- so a switch can't be re-enabled by
+    # editing only one of them.
+    ai_access_enabled: bool = True
+    ai_writes_enabled: bool = True
+
+    # The AI credential is venue-scoped from day one even though Hamilton
+    # is the only venue -- the Entrance gets its own credential later (section 7).
+    ai_venue_slug: str = "hamilton"
+
+    # Runaway guards, not operational ceilings (section 4.4, section 7). Reads are
+    # in-memory (a restart resetting a read guard is harmless); writes are
+    # counted in the database so an auto-disable survives a restart.
+    ai_read_rate_per_min: int = 300
+    ai_write_rate_per_hour: int = 20
+    ai_write_rate_per_day: int = 100
+
 
 settings = Settings()
