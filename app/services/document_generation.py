@@ -33,8 +33,8 @@ _DEPOSITS_CLAUSE = (
 _CREDIT_CARD_CLAUSE = "A valid credit card is required to secure your booking."
 
 _BOOKING_AGREEMENT_CLAUSE = (
-    "A signed completed Event Order is required no less than 7 days out from the event to ensure all details "
-    "of your event are correct prior to commencement."
+    f"A signed completed Event Order is required no less than {policy.EVENT_ORDER_LEAD_DAYS} days out from the "
+    "event to ensure all details of your event are correct prior to commencement."
 )
 
 _DECORATIONS_CLAUSE = (
@@ -65,16 +65,18 @@ _TRADING_HOURS_CLAUSE = (
     "Your function is licensed to run until midnight, any night of the week, with music off by 11:30pm."
 )
 
-# Minimum Spend -- deliberately NOT derived from Space.min_food_spend.
-# Update these by hand if the Master Policy doc's figures ever change.
-_LOFT_MINIMUM_SPEND_CLAUSE = (
-    "There is a $1,000 minimum spend required for your event across food. Your deposit will make up part of "
-    "this total, and be deducted from your final invoice."
-)
-_MEZZANINE_MINIMUM_SPEND_CLAUSE = (
-    "There is a $500 minimum spend required for your event across food. Your deposit will make up this "
-    "total, and be deducted from your final invoice."
-)
+def _minimum_spend_clause(min_food_spend) -> str:
+    """Minimum Spend, stated ONCE, from the same value the agreement's fact
+    table shows. Until 2026-09-03 this was two hand-maintained literals
+    ($1,000 Loft / $500 Mezzanine) selected by space name, alongside the
+    live column in the fact table, with nothing checking they agreed.
+    Aaron: "minimum spend stated once from the resolved value". Today the
+    resolved value is the space's figure; when the per-day minimum
+    resolver lands this is the one call site to change."""
+    return (
+        f"There is a ${min_food_spend:,.0f} minimum spend required for your event across food. Your deposit "
+        "will be credited toward this total and deducted from your final invoice."
+    )
 
 # 18th birthday appendix (§3.3) -- appended as its own final clause
 # whenever the booking looks like an 18th (see looks_like_18th, the same
@@ -111,7 +113,7 @@ def _guest_numbers_clause(space_name: str, agreed_min_adults: int) -> str:
         )
     return (
         f"{space_name} has a minimum requirement of {agreed_min_adults} guests. Final numbers must be "
-        f"locked in 2 weeks prior to the event. On the night, if the guest count falls below "
+        f"locked in {policy.EVENT_ORDER_LEAD_DAYS} days prior to the event. On the night, if the guest count falls below "
         f"{agreed_min_adults}, a charge of ${policy.SHORTFALL_RATE_PER_ADULT:.0f} per person will apply for "
         f"the difference.{example} Kids are welcome but do not count toward minimum guest numbers."
     )
@@ -128,30 +130,24 @@ def rebuild_terms_text(terms_sections: list[dict]) -> str:
 
 
 def _terms_sections(booking: Booking) -> list[dict]:
-    space_name = booking.space.name
-    if space_name == "The Loft":
-        minimum_spend_clause = _LOFT_MINIMUM_SPEND_CLAUSE
-    elif space_name == "The Mezzanine":
-        minimum_spend_clause = _MEZZANINE_MINIMUM_SPEND_CLAUSE
-    else:
-        # The Lounge (and anything else) has no Master Policy clause block
-        # yet -- Aaron's own words: "flag and stop with a [REVIEW]... do
-        # not invent terms." No guest minimum and no shortfall charge at
-        # all for the Lounge, so a Guest Numbers clause here would be
-        # actively wrong, not just unconfirmed. Still a one-item section
-        # list (not a bare string) so the template and the editor can
-        # treat every space the same way -- and so Aaron can type the
-        # Lounge's real terms in directly via the editor once they exist.
-        return [{
-            "heading": "Terms",
-            "body": f"{REVIEW} no Master Policy contract clause exists yet for {space_name} -- confirm with Aaron before sending",
-        }]
+    space = booking.space
+    space_name = space.name
 
+    # The standard clauses apply to every space. What varies is data: a
+    # space with no guest minimum (the Lounge, agreed_min_adults 0) gets no
+    # Guest Numbers clause and no shortfall wording, and a space with no
+    # food minimum gets no Minimum Spend clause. Space NAMES decide nothing
+    # here any more -- a new room at a new venue gets correct terms from
+    # its figures, not a [REVIEW] placeholder in a client document.
     sections = [
         {"heading": "Deposits", "body": _DEPOSITS_CLAUSE},
         {"heading": "Credit Card", "body": _CREDIT_CARD_CLAUSE},
-        {"heading": "Guest Numbers", "body": _guest_numbers_clause(space_name, booking.agreed_min_adults)},
-        {"heading": "Minimum Spend", "body": minimum_spend_clause},
+    ]
+    if booking.agreed_min_adults > 0:
+        sections.append({"heading": "Guest Numbers", "body": _guest_numbers_clause(space_name, booking.agreed_min_adults)})
+    if space.min_food_spend and space.min_food_spend > 0:
+        sections.append({"heading": "Minimum Spend", "body": _minimum_spend_clause(space.min_food_spend)})
+    sections += [
         {"heading": "Booking Agreement", "body": _BOOKING_AGREEMENT_CLAUSE},
         {"heading": "Decorations", "body": _DECORATIONS_CLAUSE},
         {"heading": "Credit Card Surcharges", "body": _CREDIT_CARD_SURCHARGE_CLAUSE},
@@ -218,7 +214,7 @@ def build_event_timeline(booking: Booking, vendors: list[dict] | None = None) ->
 
     Two bullets are appended automatically from operational policy, never
     hand-entered: "Music off by 11:30pm" on every evening booking, and the
-    Saturday-daytime 5:00pm hard stop on any Saturday booking starting
+    Saturday-daytime hard stop (validation.DAYTIME_CUTOFF) on any Saturday booking starting
     before the cutoff -- both sourced from app.services.validation's
     constants, so the document can't drift from what booking-time
     validation enforces.

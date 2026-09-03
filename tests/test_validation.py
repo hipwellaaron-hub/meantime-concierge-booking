@@ -14,7 +14,7 @@ def test_saturday_daytime_running_late_warns():
 
 
 def test_saturday_daytime_finishing_on_time_is_clean():
-    warnings = validate_booking_time(dt.date(2026, 8, 8), dt.time(11, 0), dt.time(17, 0))
+    warnings = validate_booking_time(dt.date(2026, 8, 8), dt.time(11, 0), dt.time(16, 30))
     assert codes(warnings) == set()
 
 

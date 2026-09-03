@@ -435,7 +435,7 @@ def test_loft_terms_use_loft_guest_numbers_and_minimum_spend(db, loft):
     content = generate_agreement_content(booking)
     assert "The Loft has a minimum requirement of 60 guests" in content["terms_text"]
     assert "$1,000 minimum spend" in content["terms_text"]
-    assert "make up part of this total" in content["terms_text"]
+    assert "credited toward this total" in content["terms_text"]
 
 
 def test_mezzanine_terms_use_mezzanine_guest_numbers_and_minimum_spend(db, mezzanine):
@@ -443,7 +443,7 @@ def test_mezzanine_terms_use_mezzanine_guest_numbers_and_minimum_spend(db, mezza
     content = generate_agreement_content(booking)
     assert "The Mezzanine has a minimum requirement of 40 guests" in content["terms_text"]
     assert "$500 minimum spend" in content["terms_text"]
-    assert "make up this total" in content["terms_text"]
+    assert "credited toward this total" in content["terms_text"]
 
 
 def test_guest_numbers_clause_reflects_agreed_minimum_not_space_standard(db, loft):
@@ -470,14 +470,21 @@ def test_guest_numbers_clause_omits_worked_example_when_minimum_too_low_for_it(d
     assert "For example" not in content["terms_text"]  # would otherwise say "-5 guests"
 
 
-def test_lounge_has_no_fabricated_terms(db, lounge):
+def test_lounge_gets_standard_terms_without_a_guest_minimum(db, lounge):
+    """The Lounge has no guest minimum (agreed_min_adults 0) so it gets no
+    Guest Numbers clause and no shortfall wording -- but it does get every
+    standard clause, and its Minimum Spend from its own figure. Until
+    2026-09-03 it got a [REVIEW] placeholder in a client document."""
     booking = _booking_in(db, lounge)
     content = generate_agreement_content(booking)
-    # One section, whose body is the REVIEW marker -- same shape as every
-    # other space so the template and the staff editor need no special case.
-    assert len(content["terms_sections"]) == 1
-    assert content["terms_sections"][0]["body"].startswith("[REVIEW]")
-    assert "minimum requirement" not in content["terms_text"]  # Lounge has no guest minimum at all
+    headings = [s["heading"] for s in content["terms_sections"]]
+    assert "Guest Numbers" not in headings
+    assert "minimum requirement" not in content["terms_text"]
+    assert "per person will apply" not in content["terms_text"]
+    assert "[REVIEW]" not in content["terms_text"]
+    for expected in ("Deposits", "Minimum Spend", "Booking Agreement", "Cancellation Policy", "Trading Hours"):
+        assert expected in headings
+    assert f"${lounge.min_food_spend:,.0f} minimum spend" in content["terms_text"]
 
 
 def test_agreement_terms_are_structured_sections_not_one_blob(db, loft):
@@ -789,3 +796,30 @@ def test_agreement_pdf_uses_the_wordmark_when_no_logo_file_is_present(db, loft, 
     )
     assert "doc-wordmark" in html
     assert "<img" not in html
+
+
+def test_minimum_spend_is_stated_once_from_the_space_value(db, loft):
+    """No more hand-maintained $1,000 / $500 literals selected by space
+    name: the clause and the fact table read the same figure."""
+    from decimal import Decimal
+
+    loft.min_food_spend = Decimal("1234.00")
+    db.flush()
+    content = generate_agreement_content(_booking_in(db, loft))
+    assert "$1,234 minimum spend" in content["terms_text"]
+    assert content["terms_text"].count("minimum spend required") == 1
+    assert content["min_food_spend"] == "1234.00"
+
+
+def test_event_order_lead_time_is_fourteen_days_everywhere(db, loft):
+    """One figure (policy.EVENT_ORDER_LEAD_DAYS) in the Booking Agreement
+    clause and the Guest Numbers clause. There used to be 7, 14 and
+    "2 weeks" in four places."""
+    from app.services import policy
+
+    assert policy.EVENT_ORDER_LEAD_DAYS == 14
+    assert policy.WIZARD_TRIGGER_DAYS_BEFORE_EVENT == policy.EVENT_ORDER_LEAD_DAYS
+    terms = generate_agreement_content(_booking_in(db, loft))["terms_text"]
+    assert "no less than 14 days out" in terms
+    assert "locked in 14 days prior" in terms
+    assert "7 days out" not in terms and "2 weeks" not in terms

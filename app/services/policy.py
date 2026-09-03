@@ -93,9 +93,14 @@ PIZZA_LEGACY_PRICING_CUTOVER_DATE = dt.date(2026, 5, 1)
 CANCELLATION_SHORT_NOTICE_THRESHOLD = dt.timedelta(days=30)
 CANCELLATION_SHORT_NOTICE_FEE_PER_HEAD = Decimal("20.00")  # in addition to the (always non-refundable) deposit
 
-# Master Policy v1.3 §2.2: "Final numbers must be confirmed 14 days prior
-# to the event." This is the Guided Booking Wizard's own trigger timing.
-WIZARD_TRIGGER_DAYS_BEFORE_EVENT = 14
+# The Event Order lead time. Master Policy v1.3 §2.2: "Final numbers must
+# be confirmed 14 days prior to the event." Confirmed by Aaron 2026-09-03 as
+# THE figure: the agreement's Booking Agreement clause, the Guest Numbers
+# clause, the wizard trigger and the reconciliation "imminent, no Event
+# Order" check all read this one constant. Before this there were three
+# different figures (7, 14 and "2 weeks") in four places.
+EVENT_ORDER_LEAD_DAYS = 14
+WIZARD_TRIGGER_DAYS_BEFORE_EVENT = EVENT_ORDER_LEAD_DAYS
 
 # Master Policy doc says wizard links must "expire after the event" but
 # gives no exact duration -- 21 days confirmed by Aaron.

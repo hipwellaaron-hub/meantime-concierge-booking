@@ -12,10 +12,17 @@ them, nothing here blocks a booking from being made.
 import datetime as dt
 from dataclasses import dataclass
 
+
+def _clock(value: dt.time) -> str:
+    return value.strftime('%I:%M%p').lstrip('0').lower()
+
 SATURDAY = 5  # datetime.date.weekday(): Monday=0 ... Sunday=6
 WEDNESDAY = 2
 THURSDAY = 3
-DAYTIME_CUTOFF = dt.time(17, 0)
+# Saturday daytime functions finish at 4:30pm (Aaron, 2026-09-03; the code
+# said 5:00pm in three places before this). Messages format this constant
+# rather than repeating the time as text.
+DAYTIME_CUTOFF = dt.time(16, 30)
 MUSIC_OFF_TIME = dt.time(23, 30)
 # Master Policy v1.3 §1.8: "From 2:00pm standard. Earlier is often
 # possible but must be confirmed, never promised."
@@ -42,7 +49,7 @@ def validate_booking_time(event_date: dt.date, start_time: dt.time, end_time: dt
         warnings.append(
             ValidationWarning(
                 code="saturday_daytime_finish",
-                message=f"Saturday daytime functions must finish by 5:00pm — this booking ends at {end_time.strftime('%I:%M%p').lstrip('0').lower()}.",
+                message=f"Saturday daytime functions must finish by {_clock(DAYTIME_CUTOFF)} — this booking ends at {_clock(end_time)}.",
             )
         )
 

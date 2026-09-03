@@ -330,3 +330,22 @@ def test_a_saturday_daytime_booking_in_the_lounge_is_not_the_held_slot(db, hamil
                  start=dt.time(11, 30), end=dt.time(15, 0), adults=30)
     decision = _decide(db, b, guests=30)
     assert draft_gate.ROOM_HELD not in decision.codes
+
+
+def test_a_flexed_minimum_is_honoured_not_the_space_default(db, hamilton, loft):
+    """A booking Aaron has already flexed to 40 must not be blocked as
+    below the Loft's standard 60. The gate reads the agreed minimum."""
+    from app.models import MinReductionReasonCode
+    from app.services.booking import set_agreed_minimum
+
+    b = _booking(db, loft, name="Flexed Party", adults=45)
+    set_agreed_minimum(db, b, agreed_min_adults=40, reason=MinReductionReasonCode.aaron_discretion, actor="staff:test")
+    db.flush()
+
+    decision = _decide(db, b, guests=45)
+    assert draft_gate.BELOW_MINIMUM not in decision.codes
+
+    decision = _decide(db, b, guests=30)
+    assert draft_gate.BELOW_MINIMUM in decision.codes
+    assert decision.facts["agreed_minimum"] == 40
+    assert "agreed minimum of 40" in decision.as_note()

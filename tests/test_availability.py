@@ -121,7 +121,7 @@ def test_spaces_endpoint_returns_warnings_for_saturday_daytime_overrun(db, hamil
         )
         assert resp.status_code == 200
         body = resp.json()
-        assert any("5:00pm" in w for w in body["warnings"])
+        assert any("4:30pm" in w for w in body["warnings"])
         assert len(body["spaces"]) == 3
     finally:
         app.dependency_overrides.clear()

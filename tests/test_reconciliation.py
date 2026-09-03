@@ -400,3 +400,32 @@ def test_a_retained_tbd_reference_is_not_nagged_about_nightly(db, hamilton, loft
     codes = _codes([f for f in reconciliation.collect(db, hamilton) if f.booking_id == b.id])
     assert "REFERENCE_TBD" not in codes
     assert "DATE_TOO_FAR_OUT" in codes, "the real error must stay visible"
+
+
+def test_run_resolves_only_this_venues_findings(db, hamilton, loft):
+    """A second venue's open finding must survive a Hamilton run. Loading
+    every finding into the resolve loop would have closed it."""
+    from sqlalchemy import select
+
+    from app.models import ReconciliationFinding, Space, Venue
+
+    entrance = Venue(name="The Entrance", slug="entrance")
+    db.add(entrance)
+    db.flush()
+    private_bar = Space(venue_id=entrance.id, name="Private Bar", capacity=60,
+                        min_food_spend=1000, standard_min_adults=40)
+    db.add(private_bar)
+    db.flush()
+
+    theirs = _booking(db, private_bar, name="Entrance No Email")
+    theirs.contact.email = ""
+    change_status(db, theirs, BookingStatus.confirmed, actor="staff:test")
+    reconciliation.run(db, entrance)
+    row = db.scalar(select(ReconciliationFinding).where(
+        ReconciliationFinding.booking_id == theirs.id,
+        ReconciliationFinding.check_code == "CONFIRMED_NO_EMAIL"))
+    assert row is not None and row.resolved_at is None
+
+    reconciliation.run(db, hamilton)  # sees none of the Entrance's bookings
+    db.refresh(row)
+    assert row.resolved_at is None, "Hamilton's run closed the Entrance's finding"

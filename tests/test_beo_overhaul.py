@@ -246,7 +246,7 @@ def test_saturday_daytime_hard_stop_surfaces_on_the_timeline(db, loft):
     # 2027-05-15 is a Saturday.
     saturday = _booking(db, loft, name="Saturday Daytime", event_date=dt.date(2027, 5, 15),
                         start_time=dt.time(11, 0), end_time=dt.time(16, 0))
-    assert any("concludes by 5:00pm (Saturday daytime)" in b for b in build_event_timeline(saturday)["bullets"])
+    assert any("concludes by 4:30pm (Saturday daytime)" in b for b in build_event_timeline(saturday)["bullets"])
 
     saturday_evening = _booking(db, loft, name="Saturday Evening", event_date=dt.date(2027, 5, 22),
                                 start_time=dt.time(18, 0), end_time=dt.time(23, 0))

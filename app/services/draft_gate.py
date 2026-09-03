@@ -403,12 +403,20 @@ def _evaluate(
                 blocks.append(
                     GateBlock(OVER_CAPACITY, f"{guests} guests is beyond every space (largest holds {largest}), so this needs declining well.")
                 )
-            elif guests < space.standard_min_adults:
+            elif guests < booking.agreed_min_adults:
+                # The AGREED minimum, never the space default: a booking
+                # Aaron has already flexed must not be blocked as "below
+                # minimum" against a figure that no longer applies to it
+                # (agreed_min_adults defaults to the space standard on
+                # creation, so an unflexed booking compares the same way).
                 facts["space_minimum"] = space.standard_min_adults
+                facts["agreed_minimum"] = booking.agreed_min_adults
+                flexed = booking.agreed_min_adults != space.standard_min_adults
                 blocks.append(
                     GateBlock(
                         BELOW_MINIMUM,
-                        f"{guests} guests against {space.name}'s {space.standard_min_adults} minimum. "
+                        f"{guests} guests against {space.name}'s "
+                        f"{'agreed' if flexed else 'standard'} minimum of {booking.agreed_min_adults}. "
                         "Whether to flex is commercial, and a reduced figure has to go into the agreement.",
                     )
                 )

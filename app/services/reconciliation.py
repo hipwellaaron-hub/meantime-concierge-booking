@@ -35,6 +35,8 @@ from dataclasses import dataclass
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session, selectinload
 
+from app.services import policy
+
 from app.models import (
     Booking,
     Contact,
@@ -55,8 +57,9 @@ logger = logging.getLogger(__name__)
 
 # Event date this far out is implausible rather than merely distant.
 FAR_FUTURE_MONTHS = 18
-# "Event within 7 days and no BEO" -- the weekend check done by hand.
-BEO_LEAD_DAYS = 7
+# "Event within the Event Order lead time and no BEO" -- the weekend check
+# done by hand. One figure with the agreement clause and the wizard.
+BEO_LEAD_DAYS = policy.EVENT_ORDER_LEAD_DAYS
 
 # Categories from brief section 4.3, so a job finding and an AI flag are
 # the same kind of thing on the Triage page.
@@ -396,9 +399,18 @@ def run(db: Session, venue: Venue, *, today: dt.date | None = None,
     findings = collect(db, venue, today=today, now=now)
     seen = {(f.booking_id, f.check_code): f for f in findings}
 
+    # THIS venue's rows only. Loading every finding here would make the
+    # resolve loop below close another venue's open findings every time
+    # this venue runs -- a bug the day there are two venues, so fixed
+    # while there is one (Aaron's rule, 2026-09-03: jobs loop venues).
     existing = {
         (r.booking_id, r.check_code): r
-        for r in db.scalars(select(ReconciliationFinding)).all()
+        for r in db.scalars(
+            select(ReconciliationFinding)
+            .join(Booking, Booking.id == ReconciliationFinding.booking_id)
+            .join(Space, Space.id == Booking.space_id)
+            .where(Space.venue_id == venue.id)
+        ).all()
     }
 
     result = RunResult()
