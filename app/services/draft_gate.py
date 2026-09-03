@@ -34,6 +34,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models import Booking, Space
+from app.services import availability
 from app.services.ai_availability import TOUCHING_STATUSES
 from app.services.ai_pipeline import times_overlap
 from app.services.enquiry_classification import GENERIC_EVENT_TYPES, looks_like_18th
@@ -118,6 +119,25 @@ class GateDecision:
         return " ".join(b.reason for b in self.blocks)
 
 
+_MILESTONE = re.compile(r"\b(\d{1,3})\s*(?:st|nd|rd|th)\b")
+
+
+def _milestone_age(event_name: str) -> int | None:
+    """The birthday milestone if the name gives one ("Kyle's 30th" -> 30).
+
+    None means the name does not say, which is the case the gate treats as
+    unanswered rather than assuming adults.
+    """
+    match = _MILESTONE.search(event_name.lower())
+    if match is None:
+        return None
+    try:
+        age = int(match.group(1))
+    except ValueError:
+        return None
+    return age if 1 <= age <= 120 else None
+
+
 def _haystack(booking: Booking, extra: str = "") -> str:
     return " ".join(
         part for part in [booking.event_name, booking.event_type, booking.notes, extra] if part
@@ -145,6 +165,81 @@ def _contention(db: Session, booking: Booking) -> list[Booking]:
         .execution_options(populate_existing=True)
     ).all()
     return [o for o in others if times_overlap(booking, o)]
+
+
+def _evaluate_candidate_rooms(db: Session, booking: Booking, guests: int, facts: dict) -> list[GateBlock]:
+    """Which real rooms could take this enquiry, and is any of them free.
+
+    Used only when no room has been chosen yet. A form enquiry arrives with
+    no times either, just a date, so freeness is assessed for the whole day
+    when times are absent. That is deliberately conservative -- a lunch
+    booking will make the evening read as taken -- because over-blocking
+    costs a human ten minutes and under-blocking offers a date that is
+    gone.
+    """
+    rooms = list(
+        db.scalars(
+            select(Space)
+            .where(Space.venue_id == booking.space.venue_id, Space.is_bookable.is_(True))
+            .order_by(Space.capacity)
+        ).all()
+    )
+    fitting = [r for r in rooms if guests <= r.capacity]
+    facts["rooms_that_fit"] = [r.name for r in fitting]
+
+    if not fitting:
+        largest = max((r.capacity for r in rooms), default=0)
+        return [
+            GateBlock(
+                OVER_CAPACITY,
+                f"{guests} guests is beyond every room (largest holds {largest}), so this needs declining well.",
+            )
+        ]
+
+    free = []
+    for room in fitting:
+        if booking.event_date is None:
+            continue
+        if booking.start_time is not None and booking.end_time is not None:
+            clash = db.scalars(
+                select(Booking)
+                .where(
+                    Booking.space_id == room.id,
+                    Booking.event_date == booking.event_date,
+                    Booking.id != booking.id,
+                    Booking.status.in_(TOUCHING_STATUSES),
+                )
+                .execution_options(populate_existing=True)
+            ).all()
+            if not any(times_overlap(booking, o) for o in clash):
+                free.append(room)
+        else:
+            is_free, _ = availability.is_space_free(db, room.id, booking.event_date)
+            if is_free:
+                free.append(room)
+
+    facts["rooms_free"] = [r.name for r in free]
+
+    if not free:
+        return [
+            GateBlock(
+                DATE_TAKEN,
+                f"Every room that fits {guests} ({', '.join(r.name for r in fitting)}) is already booked "
+                "that day. Which alternative to lead with, and whether to incentivise, is a sales call.",
+            )
+        ]
+
+    if all(guests < r.standard_min_adults for r in free):
+        smallest_minimum = min(r.standard_min_adults for r in free)
+        return [
+            GateBlock(
+                BELOW_MINIMUM,
+                f"{guests} guests is under the minimum of every free room (lowest is {smallest_minimum}). "
+                "Whether to flex is commercial, and a reduced figure has to go into the agreement.",
+            )
+        ]
+
+    return []
 
 
 def evaluate(
@@ -238,27 +333,63 @@ def _evaluate(
     if _NEGOTIATION_PATTERN.search(text):
         blocks.append(GateBlock(NEGOTIATION, "Budget, a discount or a not-for-profit is mentioned, which is a discretionary call."))
 
-    # --- capacity and minimums ------------------------------------------
-    if guests is not None and guests > 0:
-        largest = db.scalar(
-            select(func.max(Space.capacity)).where(
-                Space.venue_id == space.venue_id, Space.is_bookable.is_(True)
-            )
-        )
-        facts["largest_capacity"] = largest
-        if largest is not None and guests > largest:
-            blocks.append(
-                GateBlock(OVER_CAPACITY, f"{guests} guests is beyond every space (largest holds {largest}), so this needs declining well.")
-            )
-        elif guests < space.standard_min_adults:
-            facts["space_minimum"] = space.standard_min_adults
+    # --- a birthday whose milestone is unknown ---------------------------
+    # enquiry_classification already flags exactly this at intake: a
+    # generic "Birthday" with no milestone means the guest ages are
+    # unknown, so the under-18 question is open and cannot be answered
+    # from the form. Honouring that flag is the point of building on
+    # enquiry_classification rather than beside it.
+    #
+    # Scoped to birthdays where no milestone is discernible. "Kyle's 30th"
+    # answers the question; a bare "Birthday" does not. Blocking every
+    # birthday would block most enquiries and make the gate useless.
+    if (booking.event_type or "").strip().lower() == "birthday" and not any(
+        b.code == UNDER_18 for b in blocks
+    ):
+        milestone = _milestone_age(booking.event_name or "")
+        if milestone is None:
             blocks.append(
                 GateBlock(
-                    BELOW_MINIMUM,
-                    f"{guests} guests against {space.name}'s {space.standard_min_adults} minimum. "
-                    "Whether to flex is commercial, and a reduced figure has to go into the agreement.",
+                    UNDER_18,
+                    "A birthday with no milestone given, so whether any guests are under 18 is "
+                    "unanswered. Ask before drafting.",
                 )
             )
+        elif milestone < 18:
+            blocks.append(
+                GateBlock(UNDER_18, f"A {milestone}th birthday, so the guests are under 18.")
+            )
+
+    # --- capacity and minimums ------------------------------------------
+    if guests is not None and guests > 0:
+        if space.is_bookable:
+            largest = db.scalar(
+                select(func.max(Space.capacity)).where(
+                    Space.venue_id == space.venue_id, Space.is_bookable.is_(True)
+                )
+            )
+            facts["largest_capacity"] = largest
+            if largest is not None and guests > largest:
+                blocks.append(
+                    GateBlock(OVER_CAPACITY, f"{guests} guests is beyond every space (largest holds {largest}), so this needs declining well.")
+                )
+            elif guests < space.standard_min_adults:
+                facts["space_minimum"] = space.standard_min_adults
+                blocks.append(
+                    GateBlock(
+                        BELOW_MINIMUM,
+                        f"{guests} guests against {space.name}'s {space.standard_min_adults} minimum. "
+                        "Whether to flex is commercial, and a reduced figure has to go into the agreement.",
+                    )
+                )
+        else:
+            # No room chosen yet -- every form enquiry starts here, on the
+            # "Unassigned (pending triage)" placeholder. Its capacity and
+            # minimum are both 0, so checking against IT would silently pass
+            # everything, and checking contention against it would compare
+            # one unassigned enquiry with another instead of with the real
+            # rooms. Evaluate against the rooms that could actually take it.
+            blocks.extend(_evaluate_candidate_rooms(db, booking, guests, facts))
 
     # --- daytime --------------------------------------------------------
     # Turnaround rules and the "stay later if nothing's booked" caveat are

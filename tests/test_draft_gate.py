@@ -51,8 +51,8 @@ def test_a_corporate_christmas_party_is_drafted(db, hamilton, loft):
 def test_a_contested_but_free_slot_is_still_drafted_and_flagged_in_facts(db, hamilton, loft):
     """Other open enquiries do not block. The draft must disclose them,
     which is a drafting rule, not a gate rule."""
-    first = _booking(db, loft, name="First Interest", adults=80)
-    second = _booking(db, loft, name="Second Interest", adults=80)
+    first = _booking(db, loft, name="Kim's 40th", adults=80)
+    second = _booking(db, loft, name="Dave's 50th", adults=80)
     decision = _decide(db, second, guests=80)
     assert decision.should_draft is True
     assert decision.facts["open_enquiry_count"] >= 1
@@ -175,3 +175,99 @@ def test_a_blocked_decision_produces_a_usable_note(db, hamilton, loft):
     b = _booking(db, loft, name="Small Party", adults=40)
     note = _decide(db, b, guests=40).as_note()
     assert note and "minimum" in note.lower()
+
+
+# --- calibration findings: enquiries with no room chosen yet -------------
+# Every form enquiry lands on the "Unassigned (pending triage)" placeholder,
+# whose capacity and minimum are both 0. Checking against IT silently passes
+# everything, and checking contention against it compares one unassigned
+# enquiry with another instead of with the real rooms. These are the cases
+# that found that.
+
+
+def _unassigned(db, unassigned_space, *, name, when, adults, event_type="birthday"):
+    contact = Contact(name=f"{name} Client", email=f"{name.replace(' ', '.').replace(chr(39), '').lower()}@example.com")
+    db.add(contact)
+    db.flush()
+    return create_booking(
+        db, space_id=unassigned_space.id, contact_id=contact.id, event_date=when,
+        start_time=None, end_time=None, event_name=name, event_type=event_type,
+        adult_count=adults, child_count=0, notes=None, actor="staff:test",
+    )
+
+
+def test_an_unassigned_enquiry_blocks_when_every_fitting_room_is_taken(
+    db, hamilton, loft, mezzanine, lounge, unassigned_space
+):
+    """The Kyle Clark case: 70 guests on a night where both the Loft and
+    the Mezzanine are already confirmed. Only the Lounge is free and it
+    holds 35, so nothing fits. Before this, the gate compared him against
+    the placeholder space and happily drafted."""
+    when = dt.date.today() + dt.timedelta(days=65)
+    for room in (loft, mezzanine):
+        held = _booking(db, room, name="Already Booked", when=when, adults=60)
+        change_status(db, held, BookingStatus.confirmed, actor="staff:test")
+
+    kyle = _unassigned(db, unassigned_space, name="Kyle's 30th", when=when, adults=70)
+    decision = draft_gate.evaluate(db, kyle, adult_count=70, attendee_count=70)
+
+    assert decision.should_draft is False
+    assert draft_gate.DATE_TAKEN in decision.codes
+    assert decision.facts["rooms_free"] == []
+
+
+def test_an_unassigned_enquiry_is_drafted_when_a_fitting_room_is_free(
+    db, hamilton, loft, mezzanine, lounge, unassigned_space
+):
+    when = dt.date.today() + dt.timedelta(days=66)
+    b = _unassigned(db, unassigned_space, name="Priya's 40th", when=when, adults=70)
+    decision = draft_gate.evaluate(db, b, adult_count=70, attendee_count=70)
+    assert decision.should_draft is True, decision.codes
+    assert "The Loft" in decision.facts["rooms_free"]
+
+
+def test_an_unassigned_enquiry_over_every_capacity_blocks(
+    db, hamilton, loft, mezzanine, lounge, unassigned_space
+):
+    when = dt.date.today() + dt.timedelta(days=67)
+    b = _unassigned(db, unassigned_space, name="Huge 40th", when=when, adults=400)
+    decision = draft_gate.evaluate(db, b, adult_count=400, attendee_count=400)
+    assert draft_gate.OVER_CAPACITY in decision.codes
+    assert decision.facts["rooms_that_fit"] == []
+
+
+def test_the_placeholder_minimum_of_zero_no_longer_passes_everything(
+    db, hamilton, loft, mezzanine, lounge, unassigned_space
+):
+    """The placeholder's standard_min_adults is 0, so a below-minimum
+    enquiry used to sail through. It must be judged against the real
+    rooms' minimums instead."""
+    when = dt.date.today() + dt.timedelta(days=68)
+    # 5 guests clears nothing: Loft 60, Mezzanine 40, Lounge 0 but holds 35.
+    b = _unassigned(db, unassigned_space, name="Tiny 40th", when=when, adults=5)
+    decision = draft_gate.evaluate(db, b, adult_count=5, attendee_count=5)
+    # The Lounge has no enforced minimum, so this is draftable rather than
+    # blocked -- but it must have been judged against real rooms.
+    assert "The Lounge" in decision.facts["rooms_that_fit"]
+
+
+# --- the birthday milestone ---------------------------------------------
+
+
+def test_a_birthday_with_no_milestone_blocks(db, hamilton, loft):
+    """The Rachel Morrison case: event name is literally 'Birthday'. The
+    guest ages are unknown, which is the under-18 question unanswered."""
+    b = _booking(db, loft, name="Birthday", adults=80)
+    decision = _decide(db, b)
+    assert decision.should_draft is False
+    assert draft_gate.UNDER_18 in decision.codes
+
+
+def test_a_birthday_with_an_adult_milestone_is_drafted(db, hamilton, loft):
+    assert _decide(db, _booking(db, loft, name="Kyle's 30th", adults=80)).should_draft is True
+
+
+def test_a_milestone_under_18_blocks(db, hamilton, loft):
+    for name in ["Mia's 16th", "Ollie's 13th"]:
+        decision = _decide(db, _booking(db, loft, name=name, adults=80))
+        assert draft_gate.UNDER_18 in decision.codes, name
