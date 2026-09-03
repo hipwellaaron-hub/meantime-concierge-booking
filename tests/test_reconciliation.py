@@ -246,3 +246,95 @@ def test_a_clean_venue_produces_no_findings(db, hamilton, loft):
     )
 
     assert reconciliation.collect(db, hamilton) == []
+
+
+# --- linked children are the parent's problem, not their own -------------
+
+
+def test_a_linked_child_room_does_not_get_its_own_gate_findings(db, hamilton, loft, mezzanine):
+    """The Adrienne Mckinney case: one engagement party across the Loft and
+    the Mezzanine. The child never owns an agreement or a deposit -- the
+    parent does -- so flagging it "confirmed without gates" is a phantom
+    that would appear on Triage twice and never clear."""
+    from app.services.booking import add_linked_space
+
+    parent = _booking(db, loft, name="Engagement Party", when=TODAY + dt.timedelta(days=75))
+    child = add_linked_space(db, parent, space_id=mezzanine.id, actor="staff:test")
+    change_status(db, parent, BookingStatus.confirmed, actor="staff:test")
+    change_status(db, child, BookingStatus.confirmed, actor="staff:test")
+
+    findings = reconciliation.collect(db, hamilton)
+    child_findings = [f for f in findings if f.booking_id == child.id]
+    assert child_findings == [], [f.check_code for f in child_findings]
+
+    # The parent is still checked -- it genuinely has no gates yet.
+    assert any(
+        f.booking_id == parent.id and f.check_code == "CONFIRMED_WITHOUT_GATES" for f in findings
+    )
+
+
+def test_a_linked_child_is_not_flagged_for_a_missing_event_order_either(db, hamilton, loft, mezzanine):
+    from app.services.booking import add_linked_space
+
+    parent = _booking(db, loft, name="Imminent Two Rooms", when=TODAY + dt.timedelta(days=3))
+    child = add_linked_space(db, parent, space_id=mezzanine.id, actor="staff:test")
+    change_status(db, parent, BookingStatus.confirmed, actor="staff:test")
+    change_status(db, child, BookingStatus.confirmed, actor="staff:test")
+
+    findings = reconciliation.collect(db, hamilton)
+    assert not any(f.booking_id == child.id and f.check_code == "IMMINENT_NO_BEO" for f in findings)
+
+
+# --- a TBD reference resolves itself once the date is known ---------------
+
+
+def test_setting_a_date_on_a_tbd_booking_regenerates_its_reference(db, hamilton, loft, unassigned_space):
+    """Nicole Jones: HAM-TBD-VXW04, confirmed and paid, date wrong. Until
+    now a reference was generated once at creation and never touched, so
+    correcting the date left the TBD in place and the nightly flag firing
+    forever."""
+    from app.services.booking import assign_space_and_time
+
+    # Built directly: the _booking helper defaults a missing date to a real
+    # one, which would give this a real reference and prove nothing.
+    b = create_booking(
+        db, space_id=unassigned_space.id, contact_id=_contact(db, email="nicole.xmas@example.com").id,
+        event_date=None, start_time=None, end_time=None, event_name="Nicole Xmas",
+        event_type="christmas party", adult_count=50, child_count=0, notes=None, actor="staff:test",
+    )
+    assert "TBD" in b.reference_code
+    old_ref = b.reference_code
+
+    assign_space_and_time(
+        db, b, space_id=loft.id, start_time=dt.time(18, 0), end_time=dt.time(23, 0),
+        event_date=dt.date(2026, 11, 28), actor="staff:test",
+    )
+    db.refresh(b)
+
+    assert "TBD" not in b.reference_code
+    assert b.reference_code.startswith("HAM-20261128-")
+    assert any(
+        e.event_type == "field_changed" and e.field_name == "reference_code"
+        and e.old_value == old_ref and e.new_value == b.reference_code
+        for e in b.events
+    ), "the rewrite must leave an audit trail"
+    # And the nightly flag now clears on its own.
+    assert not any(f.booking_id == b.id and f.check_code == "REFERENCE_TBD"
+                   for f in reconciliation.collect(db, hamilton))
+
+
+def test_a_real_reference_is_never_regenerated(db, hamilton, loft, mezzanine):
+    """It is on sent documents and emails. Changing the date must not
+    change the reference a client already holds."""
+    from app.services.booking import assign_space_and_time
+
+    b = _booking(db, loft, name="Stable Ref", when=TODAY + dt.timedelta(days=60))
+    original = b.reference_code
+    assert "TBD" not in original
+
+    assign_space_and_time(
+        db, b, space_id=mezzanine.id, start_time=dt.time(18, 0), end_time=dt.time(23, 0),
+        event_date=TODAY + dt.timedelta(days=61), actor="staff:test",
+    )
+    db.refresh(b)
+    assert b.reference_code == original

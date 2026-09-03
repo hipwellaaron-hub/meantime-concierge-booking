@@ -100,6 +100,14 @@ def _active(db: Session, venue: Venue) -> list[Booking]:
             .where(
                 Space.venue_id == venue.id,
                 Booking.status.notin_(booking_service.TERMINAL_STATUSES),
+                # Parents only. A linked child is a second room on the same
+                # event: it never owns an agreement, a deposit or an Event
+                # Order (the parent does), so checking it would flag every
+                # two-room booking twice and never clear -- Adrienne
+                # Mckinney's Mezzanine appeared on Triage as a phantom
+                # "confirmed without gates". The pipeline excludes children
+                # for the same reason.
+                Booking.parent_booking_id.is_(None),
             )
             .options(
                 selectinload(Booking.documents),

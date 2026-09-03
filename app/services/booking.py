@@ -696,6 +696,38 @@ def set_agreed_minimum(
     return booking
 
 
+def _regenerate_reference_if_tbd(db: Session, booking: Booking, *, actor: str) -> bool:
+    """Give a "HAM-TBD-..." booking its real reference once it has a date.
+
+    A reference is generated at creation and never touched again, so a
+    booking whose date was unknown at the time keeps "TBD" in its
+    reference forever -- however many times the date is corrected
+    afterwards. Nicole Jones (HAM-TBD-VXW04, confirmed and paid, event
+    actually in November) is the live case, and the nightly REFERENCE_TBD
+    finding would have flagged her every night for the rest of her life.
+
+    Deliberately narrow: ONLY a reference still carrying TBD is rewritten,
+    and only once a real date exists. A real reference is never regenerated
+    -- it is on sent documents, invoices and emails, and changing it would
+    break every link the client already has.
+    """
+    if booking.event_date is None or "TBD" not in (booking.reference_code or ""):
+        return False
+    old = booking.reference_code
+    booking.reference_code = generate_reference_code(db, booking.event_date)
+    db.add(
+        BookingEvent(
+            booking_id=booking.id,
+            event_type="field_changed",
+            field_name="reference_code",
+            old_value=old,
+            new_value=booking.reference_code,
+            actor=actor,
+        )
+    )
+    return True
+
+
 def assign_space_and_time(
     db: Session,
     booking: Booking,
@@ -770,6 +802,7 @@ def assign_space_and_time(
                 actor=actor,
             )
         )
+        _regenerate_reference_if_tbd(db, booking, actor=actor)
     db.add(
         BookingEvent(
             booking_id=booking.id,
