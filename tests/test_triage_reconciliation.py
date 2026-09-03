@@ -70,7 +70,8 @@ def test_notes_are_readable_on_the_page_not_just_counted(admin_client, db, hamil
     reconciliation.run(db, hamilton)
 
     page = admin_client.get("/admin/triage").text
-    assert "Notes to read before an Event Order" in page
+    assert "Reading before an Event Order goes out" in page
+    assert "Not a list of things to fix" in page
     assert PRIVATE in page
     assert CLIENT in page
     # And the two kinds of text are labelled as what they are.
@@ -120,3 +121,23 @@ def test_the_dry_run_prints_the_notes(db, hamilton, loft, monkeypatch, capsys):
     assert "client wrote:" in out and CLIENT in out
     assert "internal:" in out and PRIVATE in out
     assert "nothing written" in out
+
+
+def test_import_note_is_shown_as_history_beside_live_state(admin_client, db, hamilton, booking, contact):
+    """An importer's "no email captured" line describes import time, not
+    now. It must not be counted as a finding, must be marked as history,
+    and the live contact email must sit beside it so nobody re-checks a
+    condition that has already been fixed."""
+    contact.email = "fixed-since@example.com"
+    booking.notes = (
+        "Contact: Pat Wilson\n"
+        "Imported from iVvy calendar export -- no email captured; add a real contact before sending anything to this client."
+    )
+    db.flush()
+    reconciliation.run(db, hamilton)
+
+    page = admin_client.get("/admin/triage").text
+    assert "Reconciliation findings (0)" in page
+    assert "import note, history" in page
+    assert "fixed-since@example.com" in page
+    assert "no email captured" in page  # still readable, just not a finding

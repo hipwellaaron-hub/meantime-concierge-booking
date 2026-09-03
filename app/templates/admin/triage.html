@@ -6,49 +6,16 @@
 {# ---------- Reconciliation: the nightly checks, runnable now ---------- #}
 <div class="card" style="border-color: var(--gold-dim);">
   <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
-    <h2 style="margin:0;">Reconciliation findings ({{ findings | length + notes_review | length }})</h2>
+    <h2 style="margin:0;">Reconciliation findings ({{ findings | length }})</h2>
     <form method="post" action="/admin/triage/reconcile" style="margin:0;">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <button class="btn" type="submit" title="Reads everything, fixes nothing. Opens new findings and clears any that have resolved.">Run reconciliation now</button>
     </form>
   </div>
-  <p class="muted" style="font-size:0.85rem; margin:6px 0 0;">Reads everything and fixes nothing. A finding stays open until the underlying problem goes away, then clears itself; nothing here is ever re-raised night after night.</p>
-
-  {% if notes_review %}
-  <h3 style="margin:16px 0 4px;">Notes to read before an Event Order goes out ({{ notes_review | length }})</h3>
-  <p class="muted" style="font-size:0.85rem; margin:0 0 8px;">
-    These bookings carry free text and have no Event Order yet. Until this week that text
-    <b>published itself to the client</b> the moment an Event Order was generated. It no longer does,
-    but nobody has read it in months, so here it is.
-  </p>
-  <table>
-    <thead><tr><th>Event</th><th>Reference</th><th>Date</th><th>What is in there</th></tr></thead>
-    <tbody>
-    {% for booking in notes_review %}
-      <tr>
-        <td><a href="/admin/bookings/{{ booking.id }}">{{ booking.event_name }}</a>
-            {% if booking.contact %}<div class="muted" style="font-size:0.8rem;">{{ booking.contact.name }}</div>{% endif %}</td>
-        <td class="muted">{{ booking.reference_code }}</td>
-        <td>{{ booking.event_date | aus_date if booking.event_date else "Date TBD" }}</td>
-        <td style="max-width:520px;">
-          {% if booking.enquiry_text %}
-          <div style="margin-bottom:6px;"><span class="badge">client wrote</span>
-            <div style="white-space:pre-wrap; margin-top:4px;">{{ booking.enquiry_text }}</div></div>
-          {% endif %}
-          {% if booking.notes %}
-          <div><span class="badge green">internal</span>
-            <div style="white-space:pre-wrap; margin-top:4px;" class="muted">{{ booking.notes }}</div></div>
-          {% endif %}
-        </td>
-      </tr>
-    {% endfor %}
-    </tbody>
-  </table>
-  {% endif %}
+  <p class="muted" style="font-size:0.85rem; margin:6px 0 0;">Every finding here is a live query against the record, never a phrase in a note. It stays open until the underlying problem goes away, then clears itself.</p>
 
   {% if findings %}
-  <h3 style="margin:16px 0 4px;">Other open findings ({{ findings | length }})</h3>
-  <table>
+  <table style="margin-top:12px;">
     <thead><tr><th>Check</th><th>Event</th><th>Reference</th><th>Detail</th><th>Open since</th></tr></thead>
     <tbody>
     {% for f in findings %}
@@ -62,12 +29,55 @@
     {% endfor %}
     </tbody>
   </table>
-  {% endif %}
-
-  {% if not findings and not notes_review %}
+  {% else %}
   <div class="empty-state">No open findings. Run it to check now, or wait for tonight.</div>
   {% endif %}
 </div>
+
+{# ---------- Reading, not findings: free text on bookings with no Event Order yet ---------- #}
+{% if notes_review %}
+<div class="card">
+  <h2 style="margin:0;">Reading before an Event Order goes out ({{ notes_review | length }})</h2>
+  <p class="muted" style="font-size:0.85rem; margin:6px 0 8px;">
+    Not a list of things to fix. These bookings carry free text and have no Event Order yet, so read it
+    before one goes out. A note says what somebody wrote at the time; the live state of the booking is in
+    the other columns. Lines an importer wrote are marked as history.
+  </p>
+  <table>
+    <thead><tr><th>Event</th><th>Reference</th><th>Date</th><th>Contact email (live)</th><th>What is in there</th></tr></thead>
+    <tbody>
+    {% for booking in notes_review %}
+      <tr>
+        <td><a href="/admin/bookings/{{ booking.id }}">{{ booking.event_name }}</a>
+            {% if booking.contact %}<div class="muted" style="font-size:0.8rem;">{{ booking.contact.name }}</div>{% endif %}</td>
+        <td class="muted">{{ booking.reference_code }}</td>
+        <td>{{ booking.event_date | aus_date if booking.event_date else "Date TBD" }}</td>
+        <td>{% if booking.contact and booking.contact.email %}{{ booking.contact.email }}{% else %}<span class="badge wine">none</span>{% endif %}</td>
+        <td style="max-width:520px;">
+          {% if booking.enquiry_text %}
+          <div style="margin-bottom:6px;"><span class="badge">client wrote</span>
+            <div style="white-space:pre-wrap; margin-top:4px;">{{ booking.enquiry_text }}</div></div>
+          {% endif %}
+          {% if booking.notes %}
+          <div><span class="badge green">internal</span>
+            <div style="margin-top:4px;" class="muted">
+            {% for line in booking.notes.split('
+') %}
+              {% if line.startswith('Imported from') %}
+              <div style="opacity:0.55; font-style:italic;">{{ line }} <span class="badge" title="Written by the importer at import time. Describes then, not now.">import note, history</span></div>
+              {% else %}
+              <div style="white-space:pre-wrap;">{{ line }}</div>
+              {% endif %}
+            {% endfor %}
+            </div></div>
+          {% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
 
 <div class="card" style="border-color: var(--ember);">
   <h2 style="color: var(--ember);">Enquiries needing clarification ({{ needs_clarification | length }})</h2>
