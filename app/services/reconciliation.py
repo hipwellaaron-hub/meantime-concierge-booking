@@ -148,10 +148,17 @@ def check_date_anomalies(bookings, *, today: dt.date) -> list[Finding]:
     horizon = today + dt.timedelta(days=FAR_FUTURE_MONTHS * 30)
     out = []
     for b in bookings:
-        if "TBD" in (b.reference_code or ""):
+        # A TBD reference is only worth raising while it can still be fixed.
+        # Once anything has been sent, the client holds that reference and
+        # the booking service will deliberately keep it (see
+        # booking.has_sent_anything) -- flagging it nightly would nag about
+        # a decision, not a defect. A wrong DATE on such a booking is still
+        # caught by DATE_TOO_FAR_OUT below, which is the actual error.
+        if "TBD" in (b.reference_code or "") and not booking_service.has_sent_anything(b):
             out.append(
                 Finding(b.id, "REFERENCE_TBD", DATE_ANOMALY,
-                        f"Reference {b.reference_code} contains TBD -- the event date was never set.")
+                        f"Reference {b.reference_code} contains TBD -- the event date was never set. "
+                        "Setting a date will regenerate it.")
             )
         if b.event_date is not None and b.event_date > horizon:
             out.append(

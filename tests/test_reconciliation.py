@@ -338,3 +338,65 @@ def test_a_real_reference_is_never_regenerated(db, hamilton, loft, mezzanine):
     )
     db.refresh(b)
     assert b.reference_code == original
+
+
+# --- never change a reference the client already holds -------------------
+
+
+def test_a_tbd_booking_with_a_sent_invoice_keeps_its_reference(db, hamilton, loft, unassigned_space):
+    """The Nicole Jones case in full: TBD reference, but an invoice went
+    out with it printed on and was paid. Correcting the date must NOT
+    regenerate the reference -- Stripe's description of that payment
+    carries the old one, and a reference Concierge no longer knows is a
+    month-end search, not a tidy-up."""
+    from decimal import Decimal
+
+    from app.models.invoice import InvoiceType
+    from app.models.payment import PaymentMethod
+    from app.services import invoicing
+    from app.services.booking import assign_space_and_time
+
+    nicole = create_booking(
+        db, space_id=unassigned_space.id, contact_id=_contact(db, email="nicole.paid@example.com").id,
+        event_date=None, start_time=None, end_time=None, event_name="Xmas Party",
+        event_type="christmas party", adult_count=50, child_count=0, notes=None, actor="staff:test",
+    )
+    tbd_ref = nicole.reference_code
+    assert "TBD" in tbd_ref
+
+    inv = invoicing.create_invoice(
+        db, nicole, InvoiceType.deposit,
+        [{"description": "Deposit", "quantity": 1, "unit_price": "500.00"}], TODAY, actor="staff:test",
+    )
+    invoicing.mark_sent(db, inv, actor="staff:test")
+    invoicing.record_payment(db, inv, amount=Decimal("509.00"), method=PaymentMethod.card, actor="stripe_webhook")
+
+    assign_space_and_time(
+        db, nicole, space_id=loft.id, start_time=dt.time(18, 0), end_time=dt.time(23, 0),
+        event_date=dt.date(2026, 11, 28), actor="staff:test",
+    )
+    db.refresh(nicole)
+
+    assert nicole.reference_code == tbd_ref, "a reference the client holds must never change"
+    assert nicole.event_date == dt.date(2026, 11, 28)  # the date itself is still corrected
+    assert not any(e.field_name == "reference_code" for e in nicole.events)
+
+
+def test_a_retained_tbd_reference_is_not_nagged_about_nightly(db, hamilton, loft):
+    """Once something has been sent the reference is a decision, not a
+    defect. A wrong date on the same booking is still caught."""
+    from app.models.invoice import InvoiceType
+    from app.services import invoicing
+
+    b = _booking(db, loft, name="Retained TBD", when=TODAY + dt.timedelta(days=800))
+    b.reference_code = "HAM-TBD-KEEPS"
+    db.commit()
+    inv = invoicing.create_invoice(
+        db, b, InvoiceType.deposit,
+        [{"description": "Deposit", "quantity": 1, "unit_price": "500.00"}], TODAY, actor="staff:test",
+    )
+    invoicing.mark_sent(db, inv, actor="staff:test")
+
+    codes = _codes([f for f in reconciliation.collect(db, hamilton) if f.booking_id == b.id])
+    assert "REFERENCE_TBD" not in codes
+    assert "DATE_TOO_FAR_OUT" in codes, "the real error must stay visible"

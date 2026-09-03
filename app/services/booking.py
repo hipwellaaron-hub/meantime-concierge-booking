@@ -696,22 +696,45 @@ def set_agreed_minimum(
     return booking
 
 
+def has_sent_anything(booking: Booking) -> bool:
+    """Has any document or invoice for this booking gone past draft?
+
+    The line that decides whether a reference may still change. Once
+    something has been sent, the client holds the reference: it is printed
+    on their invoice, it is the Stripe checkout description frozen at link
+    creation, it is what they would quote in a bank transfer. Changing it
+    after that point turns a month-end match into an afternoon's search.
+    """
+    if any(d.status != DocumentStatus.draft for d in booking.documents):
+        return True
+    return any(
+        i.status not in (InvoiceStatus.draft, InvoiceStatus.cancelled) for i in booking.invoices
+    )
+
+
 def _regenerate_reference_if_tbd(db: Session, booking: Booking, *, actor: str) -> bool:
-    """Give a "HAM-TBD-..." booking its real reference once it has a date.
+    """Give a "HAM-TBD-..." booking its real reference once it has a date --
+    but only while nobody outside the venue has seen the old one.
 
     A reference is generated at creation and never touched again, so a
     booking whose date was unknown at the time keeps "TBD" in its
-    reference forever -- however many times the date is corrected
-    afterwards. Nicole Jones (HAM-TBD-VXW04, confirmed and paid, event
-    actually in November) is the live case, and the nightly REFERENCE_TBD
-    finding would have flagged her every night for the rest of her life.
+    reference forever, however many times the date is corrected. For a
+    fresh enquiry that has had nothing sent, regenerating is pure gain.
 
-    Deliberately narrow: ONLY a reference still carrying TBD is rewritten,
-    and only once a real date exists. A real reference is never regenerated
-    -- it is on sent documents, invoices and emails, and changing it would
-    break every link the client already has.
+    The rule is NOT "TBD references are fair game". It is "never change a
+    reference the client already holds". Nicole Jones (HAM-TBD-VXW04) is
+    the case: confirmed, paid $509 by card against an invoice printed with
+    that reference, and Stripe's own description of that payment carries
+    it. Regenerating would leave her paid invoice and her Stripe record
+    pointing at a reference Concierge no longer knows -- a reconciliation
+    problem, not a cosmetic one. So she keeps the ugly reference, and
+    everything already sent stays consistent. An ugly reference on one
+    booking costs nothing; a payment that cannot be matched costs an
+    afternoon.
     """
     if booking.event_date is None or "TBD" not in (booking.reference_code or ""):
+        return False
+    if has_sent_anything(booking):
         return False
     old = booking.reference_code
     booking.reference_code = generate_reference_code(db, booking.event_date)
