@@ -17,6 +17,7 @@ client-route guards in app.api.documents).
 import datetime as dt
 from decimal import Decimal
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import Booking
@@ -152,16 +153,46 @@ def attach_deposit_pdf(
     db: Session, booking: Booking, *, pdf: bytes, filename: str, amount: Decimal,
     paid_at: dt.datetime | None = None, source_ref: str | None = None, actor: str,
 ) -> Invoice:
-    """Attach a paid-deposit PDF. Attaches to the existing legacy deposit
-    Invoice if present; otherwise creates an inert paid deposit Invoice +
-    Payment (so the deposit gate is satisfied and a later final invoice
-    credits it exactly once via get_deposit_paid). Refuses if a LIVE deposit
-    invoice already exists."""
+    """Attach a paid-deposit PDF and record that the deposit is paid.
+
+    Uploading a PAID deposit PDF asserts one thing: this deposit has been
+    paid. Both paths below therefore end with a paid invoice carrying a
+    Payment, so the deposit gate is satisfied and a later final invoice
+    credits it exactly once via get_deposit_paid.
+
+    - No deposit invoice yet: create an inert paid one.
+    - An existing LEGACY deposit invoice (what the migration created for a
+      booking that was signed with the deposit still outstanding -- Laura
+      Solway's case): attach the file AND settle it. This branch used to
+      attach the file only, leaving the invoice 'sent', so the booking went
+      on reading as outstanding with nothing to explain why.
+    - An existing PAID one: attach the newer file, record no second
+      payment.
+
+    Refuses if a LIVE deposit invoice exists (that one is a real client
+    invoice and must be paid through the normal path), and refuses if the
+    amount would not cover the invoice -- leaving it outstanding silently
+    is the failure this exists to prevent.
+    """
     if booking.parent_booking_id is not None:
         raise LegacyUploadError("attach the deposit to the parent booking, not a linked room")
     validate_pdf(pdf)
 
-    existing = [i for i in booking.invoices if i.type == InvoiceType.deposit and i.status != InvoiceStatus.cancelled]
+    # Queried, not read off booking.invoices: a relationship collection
+    # already loaded on this booking is not refreshed by a later write, so
+    # a stale one would make this look like "no deposit invoice yet" and
+    # create a SECOND one instead of attaching to the first.
+    existing = list(
+        db.scalars(
+            select(Invoice)
+            .where(
+                Invoice.booking_id == booking.id,
+                Invoice.type == InvoiceType.deposit,
+                Invoice.status != InvoiceStatus.cancelled,
+            )
+            .execution_options(populate_existing=True)
+        ).all()
+    )
     live = [i for i in existing if not i.is_legacy]
     if live:
         raise LegacyUploadError("a live deposit invoice already exists for this booking")
@@ -185,6 +216,33 @@ def attach_deposit_pdf(
             if source_ref else "Legacy migrated deposit",
             received_at=paid_at,
         ))
+    elif legacy.status != InvoiceStatus.paid:
+        # The invoice exists but was never settled -- the migration created
+        # it as 'sent' for a booking whose deposit was still outstanding.
+        # Uploading a paid deposit PDF says it has since been paid, so
+        # settle it here rather than attaching the file and silently
+        # leaving the gate unsatisfied.
+        already_paid = sum((p.amount for p in legacy.payments), Decimal("0.00"))
+        if already_paid + amount < legacy.total:
+            raise LegacyUploadError(
+                f"${amount} plus ${already_paid} already recorded does not cover the "
+                f"${legacy.total} deposit invoice -- it would stay outstanding. "
+                "Upload the full deposit amount, or record a part payment on the invoice instead."
+            )
+        db.add(Payment(
+            invoice_id=legacy.id, amount=amount, method=PaymentMethod.bank_transfer,
+            reference=f"Legacy deposit PDF uploaded ({source_ref})" if source_ref
+            else "Legacy deposit PDF uploaded",
+            received_at=paid_at,
+        ))
+        old_status = legacy.status
+        legacy.status = InvoiceStatus.paid
+        legacy.paid_at = paid_at
+        db.add(BookingEvent(
+            booking_id=booking.id, event_type="invoice_status_changed", field_name="status",
+            old_value=old_status.value, new_value=InvoiceStatus.paid.value, actor=actor,
+        ))
+
     legacy.legacy_file = pdf
     legacy.legacy_filename = filename
     if source_ref:

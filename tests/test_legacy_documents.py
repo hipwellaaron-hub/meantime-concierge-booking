@@ -193,3 +193,86 @@ def test_admin_upload_and_serve_legacy_agreement(admin_client, db, loft):
     assert detail2.status_code == 200
     assert "LEGACY" in detail2.text
     assert f"/admin/bookings/{b.id}/documents/{doc.id}/legacy-file" in detail2.text
+
+
+# --- attaching to an existing unpaid legacy deposit ----------------------
+
+
+def _unpaid_legacy_deposit(db, booking, amount=Decimal("500.00")):
+    """What the iVvy migration created for a booking that was signed but
+    whose deposit was still outstanding -- Laura Solway's real case."""
+    from app.models import Invoice
+
+    invoice = Invoice(
+        booking_id=booking.id, type=InvoiceType.deposit,
+        line_items=[{"description": "Booking deposit", "quantity": 1, "unit_price": str(amount)}],
+        subtotal=amount, surcharge=Decimal("0.00"), total=amount,
+        status=InvoiceStatus.sent, due_date=dt.date.today(),
+        is_legacy=True, legacy_source_ref="Q4F71LMFK2",
+    )
+    db.add(invoice)
+    db.commit()
+    db.refresh(invoice)
+    return invoice
+
+
+def test_uploading_a_paid_pdf_against_an_unpaid_legacy_deposit_marks_it_paid(db, loft):
+    """Uploading a PAID deposit PDF means it has been paid. Previously this
+    attached the file and left the invoice 'sent', so the booking still
+    read as outstanding with nothing explaining why."""
+    b = _booking(db, loft)
+    invoice = _unpaid_legacy_deposit(db, b)
+    assert has_paid_deposit(db, b) is False
+
+    legacy_documents.attach_deposit_pdf(
+        db, b, pdf=PDF, filename="laura-deposit.pdf", amount=Decimal("500.00"),
+        source_ref="Q4F71LMFK2", actor="staff:test",
+    )
+
+    db.refresh(invoice)
+    assert invoice.status == InvoiceStatus.paid
+    assert invoice.paid_at is not None
+    assert sum(p.amount for p in invoice.payments) == Decimal("500.00")
+    assert invoice.legacy_file == PDF
+    assert has_paid_deposit(db, b) is True
+
+
+def test_marking_an_existing_legacy_deposit_paid_is_audited(db, loft):
+    from app.models import BookingEvent
+
+    b = _booking(db, loft)
+    _unpaid_legacy_deposit(db, b)
+    legacy_documents.attach_deposit_pdf(
+        db, b, pdf=PDF, filename="d.pdf", amount=Decimal("500.00"), actor="staff:test",
+    )
+    db.expire_all()
+
+    events = db.query(BookingEvent).filter_by(booking_id=b.id).all()
+    assert any(
+        e.event_type == "invoice_status_changed" and e.new_value == "paid" for e in events
+    ), "a state change must leave a trace"
+
+
+def test_an_amount_that_does_not_cover_the_invoice_is_refused_not_silently_left_open(db, loft):
+    """The failure mode to avoid is another silent no-op: if the upload
+    cannot satisfy the deposit, say so rather than leaving it outstanding."""
+    b = _booking(db, loft)
+    _unpaid_legacy_deposit(db, b, amount=Decimal("500.00"))
+
+    with pytest.raises(legacy_documents.LegacyUploadError, match="outstanding"):
+        legacy_documents.attach_deposit_pdf(
+            db, b, pdf=PDF, filename="d.pdf", amount=Decimal("200.00"), actor="staff:test",
+        )
+
+
+def test_an_already_paid_legacy_deposit_is_not_double_paid(db, loft):
+    b = _booking(db, loft)
+    first = legacy_documents.attach_deposit_pdf(
+        db, b, pdf=PDF, filename="d.pdf", amount=Decimal("500.00"), actor="staff:test",
+    )
+    legacy_documents.attach_deposit_pdf(
+        db, b, pdf=PDF, filename="d2.pdf", amount=Decimal("500.00"), actor="staff:test",
+    )
+    db.refresh(first)
+    assert sum(p.amount for p in first.payments) == Decimal("500.00"), "re-upload must not add a second payment"
+    assert first.legacy_filename == "d2.pdf"
