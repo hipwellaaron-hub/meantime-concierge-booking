@@ -43,8 +43,22 @@ def main() -> int:
                 by_check[f.check_code] = by_check.get(f.check_code, 0) + 1
             for code, count in sorted(by_check.items()):
                 print(f"  {code:<28} {count}")
+            from app.models import Booking
+
+            by_id = {}
             for f in findings:
-                print(f"  - [{f.check_code}] {f.detail}")
+                if f.booking_id not in by_id:
+                    by_id[f.booking_id] = db.get(Booking, f.booking_id)
+            for f in findings:
+                b = by_id.get(f.booking_id)
+                who = f"{b.reference_code} {b.event_name}" if b else str(f.booking_id)
+                print(f"  - [{f.check_code}] {who}: {f.detail}")
+                if f.check_code == "NOTES_BEFORE_BEO" and b is not None:
+                    # The whole point of this check is reading the text.
+                    if b.enquiry_text:
+                        print("      client wrote: " + b.enquiry_text.replace("\n", "\n                    "))
+                    if b.notes:
+                        print("      internal:     " + b.notes.replace("\n", "\n                    "))
             return 0
 
         result = reconciliation.run(db, venue)

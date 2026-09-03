@@ -3,6 +3,72 @@
 {% block content %}
 <h1>Triage</h1>
 
+{# ---------- Reconciliation: the nightly checks, runnable now ---------- #}
+<div class="card" style="border-color: var(--gold-dim);">
+  <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
+    <h2 style="margin:0;">Reconciliation findings ({{ findings | length + notes_review | length }})</h2>
+    <form method="post" action="/admin/triage/reconcile" style="margin:0;">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button class="btn" type="submit" title="Reads everything, fixes nothing. Opens new findings and clears any that have resolved.">Run reconciliation now</button>
+    </form>
+  </div>
+  <p class="muted" style="font-size:0.85rem; margin:6px 0 0;">Reads everything and fixes nothing. A finding stays open until the underlying problem goes away, then clears itself; nothing here is ever re-raised night after night.</p>
+
+  {% if notes_review %}
+  <h3 style="margin:16px 0 4px;">Notes to read before an Event Order goes out ({{ notes_review | length }})</h3>
+  <p class="muted" style="font-size:0.85rem; margin:0 0 8px;">
+    These bookings carry free text and have no Event Order yet. Until this week that text
+    <b>published itself to the client</b> the moment an Event Order was generated. It no longer does,
+    but nobody has read it in months, so here it is.
+  </p>
+  <table>
+    <thead><tr><th>Event</th><th>Reference</th><th>Date</th><th>What is in there</th></tr></thead>
+    <tbody>
+    {% for booking in notes_review %}
+      <tr>
+        <td><a href="/admin/bookings/{{ booking.id }}">{{ booking.event_name }}</a>
+            {% if booking.contact %}<div class="muted" style="font-size:0.8rem;">{{ booking.contact.name }}</div>{% endif %}</td>
+        <td class="muted">{{ booking.reference_code }}</td>
+        <td>{{ booking.event_date | aus_date if booking.event_date else "Date TBD" }}</td>
+        <td style="max-width:520px;">
+          {% if booking.enquiry_text %}
+          <div style="margin-bottom:6px;"><span class="badge">client wrote</span>
+            <div style="white-space:pre-wrap; margin-top:4px;">{{ booking.enquiry_text }}</div></div>
+          {% endif %}
+          {% if booking.notes %}
+          <div><span class="badge green">internal</span>
+            <div style="white-space:pre-wrap; margin-top:4px;" class="muted">{{ booking.notes }}</div></div>
+          {% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+
+  {% if findings %}
+  <h3 style="margin:16px 0 4px;">Other open findings ({{ findings | length }})</h3>
+  <table>
+    <thead><tr><th>Check</th><th>Event</th><th>Reference</th><th>Detail</th><th>Open since</th></tr></thead>
+    <tbody>
+    {% for f in findings %}
+      <tr>
+        <td><span class="badge {{ 'wine' if f.category in ('data_mismatch', 'date_anomaly') else '' }}">{{ f.check_code | lower | replace('_', ' ') }}</span></td>
+        <td><a href="/admin/bookings/{{ f.booking.id }}">{{ f.booking.event_name }}</a></td>
+        <td class="muted">{{ f.booking.reference_code }}</td>
+        <td style="max-width:460px;">{{ f.detail }}</td>
+        <td class="muted">{{ f.first_seen_at | sydney_time("%d %b") }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+
+  {% if not findings and not notes_review %}
+  <div class="empty-state">No open findings. Run it to check now, or wait for tonight.</div>
+  {% endif %}
+</div>
+
 <div class="card" style="border-color: var(--ember);">
   <h2 style="color: var(--ember);">Enquiries needing clarification ({{ needs_clarification | length }})</h2>
   {% if needs_clarification %}
