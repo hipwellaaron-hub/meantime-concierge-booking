@@ -171,3 +171,39 @@ def test_several_violations_are_all_reported():
     text = _clean_with("Each platter feeds 10 people — and your balance owing is $2,400.")
     codes = draft_rules.validate(text).codes
     assert {draft_rules.EM_DASH, draft_rules.PLATTER_SERVES, draft_rules.AMOUNT_OWING} <= set(codes)
+
+
+# --- the allergen safety claim (blocking) -------------------------------
+
+
+def test_claiming_the_kitchen_is_nut_free_blocks():
+    """The kitchen is 100% gluten free and is NOT nut free. A wrong claim
+    here is a safety issue, not an embarrassment."""
+    for phrasing in [
+        "Our kitchen is nut free so that will be fine.",
+        "The platters are allergen free.",
+        "That platter is safe for a nut allergy.",
+        "Everything is free of nuts.",
+        "There is no risk of cross contamination.",
+        "I can guarantee it is nut free.",
+        "The menu is dairy free throughout.",
+    ]:
+        result = draft_rules.validate(_clean_with(phrasing))
+        assert draft_rules.ALLERGEN_CLAIM in result.codes, phrasing
+        assert result.blocked, phrasing
+
+
+def test_honestly_denying_nut_free_status_passes():
+    """Saying we are NOT nut free is exactly right and must not block."""
+    for phrasing in [
+        "Our kitchen is 100% gluten free, but we are not a nut free kitchen.",
+        "We cannot guarantee nut free, so please let me know about allergies.",
+        "The kitchen is not nut free.",
+    ]:
+        result = draft_rules.validate(_clean_with(phrasing))
+        assert draft_rules.ALLERGEN_CLAIM not in result.codes, phrasing
+
+
+def test_the_gluten_free_claim_itself_still_passes():
+    """100% gluten free is true and is the differentiator worth stating."""
+    assert draft_rules.ALLERGEN_CLAIM not in draft_rules.validate(CLEAN).codes

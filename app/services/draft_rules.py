@@ -39,6 +39,7 @@ RSA_PROCEDURE = "rsa_procedure"
 PROMISED_ACCESS = "promised_access"
 WALKTHROUGH_HOURS = "walkthrough_hours"
 GLUTEN_FREE = "gluten_free"
+ALLERGEN_CLAIM = "allergen_claim"
 RULES_ERROR = "rules_error"
 
 REQUIRED_SIGNATURE_NAME = "Aaron"
@@ -87,6 +88,35 @@ _PROMISED_ACCESS = re.compile(
 )
 
 _GLUTEN_FREE = re.compile(r"gluten\s*-?\s*free", re.IGNORECASE)
+
+# The kitchen is 100% gluten free. It is NOT nut free, and no item is
+# certified safe for any other allergy. A wrong claim here is a safety
+# issue rather than an embarrassment, and it has already gone wrong twice
+# in a fortnight in both directions: an item flagged as a nut risk that
+# is not one, and a client declining the vegan platter believing two
+# others were vegan friendly when none were. Two vegan guests would have
+# arrived to nothing.
+#
+# Deliberately matches the CLAIM, not the topic: "we are not a nut free
+# kitchen" must pass, because saying so is exactly right.
+_ALLERGEN_CLAIM = re.compile(
+    r"(?<!not\s)(?<!isn't\s)(?<!is\snot\s)"
+    r"(?:nut|peanut|allergen|dairy|lactose|egg|soy|shellfish|sesame)\s*-?\s*free\b|"
+    r"\b(?:safe|suitable|fine|ok(?:ay)?)\s+for\s+(?:\w+\s+){0,2}(?:allerg|anaphyla|coeliac|celiac)|"
+    r"\ballergen\s+free\b|\bfree\s+of\s+(?:all\s+)?(?:nuts|allergens|dairy)\b|"
+    r"\b(?:no|zero)\s+(?:risk\s+of\s+)?cross\s*-?\s*contamination\b|"
+    r"\bguarantee(?:d)?\s+(?:\w+\s+){0,3}(?:allerg|nut\s*-?\s*free)",
+    re.IGNORECASE,
+)
+
+# Phrasings that correctly DENY a claim. Checked first, so an honest
+# sentence is never blocked for containing the words.
+_ALLERGEN_DENIAL = re.compile(
+    r"(?:not|isn't|is\s+not|aren't|are\s+not|cannot\s+guarantee|can't\s+guarantee|no\s+guarantee)"
+    r"[^.\n]{0,40}(?:nut|peanut|allergen|dairy)\s*-?\s*free|"
+    r"(?:nut|peanut|allergen)\s*-?\s*free[^.\n]{0,30}(?:we\s+are\s+not|is\s+not|cannot|can't|not\s+a)",
+    re.IGNORECASE,
+)
 
 
 @dataclass
@@ -228,6 +258,18 @@ def _validate(draft: str, *, client_asked_for_figures: bool) -> RuleResult:
                 WALKTHROUGH_HOURS, BLOCK,
                 "Offers a walkthrough without the days. It must say Wednesday through Sunday, 3 to 5pm, "
                 "and that we are closed Monday and Tuesday.",
+            )
+        )
+
+    claim = _ALLERGEN_CLAIM.search(text)
+    if claim and not _ALLERGEN_DENIAL.search(text):
+        result.violations.append(
+            RuleViolation(
+                ALLERGEN_CLAIM, BLOCK,
+                "Claims the kitchen or an item is free of an allergen, or safe for one. The kitchen is "
+                "100% gluten free and is NOT nut free, and nothing is certified for any other allergy. "
+                "This is a safety claim, so it never goes out unchecked.",
+                _excerpt(claim),
             )
         )
 
