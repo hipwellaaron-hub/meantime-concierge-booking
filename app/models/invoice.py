@@ -68,6 +68,17 @@ class Invoice(Base):
 
     access_token: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, default=generate_access_token)
 
+    # Every Stripe Payment Link ever created for this invoice. A fresh one
+    # is generated on each invoice-page view (see stripe_integration's own
+    # docstring), so there can be several live at once, and a Payment Link
+    # has no expiry of its own -- unlike a Checkout Session, it stays
+    # payable indefinitely until deactivated. Recorded here so
+    # cancel_invoice has something to deactivate; see
+    # stripe_integration.deactivate_payment_links.
+    stripe_payment_link_ids: Mapped[list] = mapped_column(
+        JSONB, nullable=False, server_default=text("'[]'::jsonb"), default=list
+    )
+
     # Legacy upload (iVvy migration): an inert record of a deposit already
     # invoiced/paid in a prior system. is_legacy marks it read-only -- never
     # edited, revised, re-sent, or taking a new payment. legacy_file is the

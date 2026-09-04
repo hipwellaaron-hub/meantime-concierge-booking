@@ -15,6 +15,7 @@ from app.models import Booking, BookingEvent, Invoice, Payment, PublicHoliday
 from app.services import booking as booking_service
 from app.models.invoice import InvoiceStatus, InvoiceType
 from app.models.payment import PaymentMethod
+from app.services import stripe_integration
 from app.services.policy import (
     CARD_SURCHARGE_RATE,
     DEFAULT_CARD_NETWORK,
@@ -427,7 +428,22 @@ def cancel_invoice(db: Session, invoice: Invoice, *, actor: str) -> Invoice:
     )
     db.commit()
     db.refresh(invoice)
+    # A Payment Link never expires on its own -- this is the one thing
+    # that actually closes a link a client already has open, not just
+    # stops issuing new ones. Best-effort and never raises (see its own
+    # docstring), so a Stripe hiccup never leaves this cancellation
+    # half-done.
+    stripe_integration.deactivate_payment_links(invoice.stripe_payment_link_ids or [])
     return invoice
+
+
+def record_payment_link(db: Session, invoice: Invoice, link_id: str) -> None:
+    """Every Payment Link ever created for this invoice, so cancel_invoice
+    has something to deactivate. A fresh link is generated on each
+    invoice-page view (see stripe_integration's own docstring), so there
+    can be more than one live at a time."""
+    invoice.stripe_payment_link_ids = [*(invoice.stripe_payment_link_ids or []), link_id]
+    db.commit()
 
 
 def get_total_paid(db: Session, invoice_id: uuid.UUID) -> Decimal:

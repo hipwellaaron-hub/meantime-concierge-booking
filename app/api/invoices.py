@@ -9,12 +9,32 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models.invoice import InvoiceStatus
 from app.services import invoicing, policy, stripe_integration
+from app.services.booking import TERMINAL_STATUSES
 from app.services.pdf import render_html_to_pdf
 from app.templating import templates
 from app.utils import looks_like_a_token
 
 router = APIRouter(tags=["invoices"])
 logger = logging.getLogger(__name__)
+
+
+def _unavailable_response(request: Request, invoice) -> HTMLResponse:
+    # Reached once a booking has moved to a terminal status (see
+    # app.services.booking.change_status, which cancels every live
+    # invoice on the way) or an invoice was cancelled directly -- either
+    # way, nothing on it is payable any more. A real incident, 2026-09-04:
+    # Sophie Mavridis still had a working card link after her offer on the
+    # Loft was superseded. 410, not 404: this token is not unknown, it is
+    # deliberately no longer live.
+    return templates.TemplateResponse(
+        request, "link_unavailable.html",
+        {
+            "booking": invoice.booking,
+            "contact_email": policy.VENUE_CONTACT_EMAIL,
+            "message": "This invoice is no longer active. Get in touch and we'll help directly.",
+        },
+        status_code=410,
+    )
 
 
 def _get_viewable_invoice_or_404(db: Session, token: str):
@@ -38,7 +58,8 @@ def _build_invoice_context(db: Session, invoice, *, include_card_payment: bool) 
     if include_card_payment and stripe_integration.is_configured() and not summary["is_fully_paid"]:
         card_payment_amount = invoicing.calculate_card_payment_amount(summary["balance_due"], dt.date.today())
         try:
-            card_payment_url = stripe_integration.create_payment_link(invoice, card_payment_amount)
+            card_payment_url, link_id = stripe_integration.create_payment_link(invoice, card_payment_amount)
+            invoicing.record_payment_link(db, invoice, link_id)
         except stripe_integration.StripeNotConfigured:
             card_payment_url = None
         except stripe.StripeError:
@@ -82,14 +103,18 @@ def _build_invoice_context(db: Session, invoice, *, include_card_payment: bool) 
 @router.get("/i/{token}", response_class=HTMLResponse)
 def view_invoice(token: str, request: Request, db: Session = Depends(get_db)):
     invoice = _get_viewable_invoice_or_404(db, token)
+    if invoice.status == InvoiceStatus.cancelled or invoice.booking.status in TERMINAL_STATUSES:
+        return _unavailable_response(request, invoice)
     invoice = invoicing.record_view(db, invoice)
     context = _build_invoice_context(db, invoice, include_card_payment=True)
     return templates.TemplateResponse(request, "invoice.html", context)
 
 
 @router.get("/i/{token}/pdf")
-def download_invoice_pdf(token: str, db: Session = Depends(get_db)):
+def download_invoice_pdf(token: str, request: Request, db: Session = Depends(get_db)):
     invoice = _get_viewable_invoice_or_404(db, token)
+    if invoice.status == InvoiceStatus.cancelled or invoice.booking.status in TERMINAL_STATUSES:
+        return _unavailable_response(request, invoice)
     # The PDF carries the same working card link as the web invoice -- a
     # client sent the PDF can pay by card straight from it, rather than being
     # told to "contact us" for something the web version already offers. This

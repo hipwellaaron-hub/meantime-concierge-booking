@@ -36,7 +36,7 @@ from sqlalchemy.orm import Session
 from app.models import Booking, Space
 from app.services import availability, policy
 from app.services.ai_availability import TOUCHING_STATUSES
-from app.services.ai_pipeline import times_overlap
+from app.services.booking import times_overlap
 from app.services.enquiry_classification import GENERIC_EVENT_TYPES, looks_like_18th
 from app.services.validation import DAYTIME_CUTOFF, SATURDAY
 

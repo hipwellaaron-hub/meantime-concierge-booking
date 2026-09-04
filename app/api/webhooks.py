@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models import Invoice, Payment
 from app.models.payment import PaymentMethod
+from app.services import booking as booking_service
 from app.services import invoicing
 from app.services.stripe_integration import INVOICE_METADATA_KEY, STRIPE_WEBHOOK_SECRET
 
@@ -90,9 +91,23 @@ def _handle_checkout_completed(db: Session, session: dict) -> None:
             reference=payment_intent_id,
             actor="stripe_webhook",
         )
-    except ValueError:
-        # e.g. invoice was cancelled between link creation and payment --
-        # a real state we can't silently paper over, but also not
-        # something to crash the webhook response for. Falls to staff to
-        # notice and reconcile manually via the Stripe dashboard.
+    except ValueError as exc:
+        # The invoice was cancelled between link creation and payment --
+        # the booking most likely went to a terminal status in between
+        # (see app.services.booking.change_status, which deactivates a
+        # cancelled invoice's Payment Links, but cannot undo a Stripe
+        # checkout that had already started). Real money moved and this
+        # system did not record where -- that must never be a silent
+        # `return` again (an incident, 2026-09-04, made the risk obvious):
+        # flag it on the booking so a human sees it on Triage and the
+        # booking page, and does not have to notice it on a Stripe payout
+        # weeks later.
+        booking_service.flag_for_review(
+            db, invoice.booking,
+            note=(
+                f"Stripe payment of ${amount} (reference {payment_intent_id}) landed on invoice "
+                f"{invoice.invoice_number} after it was closed ({exc}). Needs a manual refund."
+            ),
+            actor="stripe_webhook",
+        )
         return

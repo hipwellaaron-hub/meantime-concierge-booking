@@ -15,12 +15,15 @@ amount).
 """
 
 import enum
+import logging
 import os
 from decimal import ROUND_HALF_UP, Decimal
 
 import stripe
 
 from app.models import Invoice
+
+logger = logging.getLogger(__name__)
 
 STRIPE_SECRET_KEY = os.environ.get("STRIPE_SECRET_KEY")
 STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET")
@@ -70,10 +73,17 @@ def _to_cents(amount: Decimal) -> int:
     return int((amount * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
 
 
-def create_payment_link(invoice: Invoice, amount: Decimal) -> str:
+def create_payment_link(invoice: Invoice, amount: Decimal) -> tuple[str, str]:
     """Create a Stripe Payment Link for `amount` against this invoice.
-    Returns the payment link URL. Raises StripeNotConfigured if no key is
-    set -- failing loudly beats silently faking a working payment flow.
+    Returns (url, payment_link_id). Raises StripeNotConfigured if no key
+    is set -- failing loudly beats silently faking a working payment flow.
+
+    The id matters as much as the url: the caller records it on
+    Invoice.stripe_payment_link_ids so a later cancellation (see
+    invoicing.cancel_invoice) has something to deactivate. A Payment Link
+    never expires on its own, so that id is the only way to actually close
+    a link a client already has open, rather than just stopping new ones
+    from being issued.
     """
     if not is_configured():
         raise StripeNotConfigured(
@@ -103,4 +113,26 @@ def create_payment_link(invoice: Invoice, amount: Decimal) -> str:
         },
         api_key=STRIPE_SECRET_KEY,
     )
-    return payment_link.url
+    return payment_link.url, payment_link.id
+
+
+def deactivate_payment_links(link_ids: list[str]) -> None:
+    """Best-effort: called whenever an invoice is cancelled (see
+    invoicing.cancel_invoice), which itself fires whenever a booking moves
+    to a terminal status (see app.services.booking.change_status) -- a
+    real incident, 2026-09-04: Sophie Mavridis still had a working card
+    link after her offer on the Loft was superseded by Chanai Duncombe
+    confirming the same room and night.
+
+    One link's failure (already inactive, a transient Stripe error) must
+    never stop the others from being tried, and this must never raise
+    into the caller -- cancelling an invoice has to succeed even when
+    Stripe is unreachable. A failure here means a link stays live and
+    payable; it is logged so that is visible, not silently lost."""
+    if not is_configured():
+        return
+    for link_id in link_ids:
+        try:
+            stripe.PaymentLink.modify(link_id, active=False, api_key=STRIPE_SECRET_KEY)
+        except stripe.StripeError:
+            logger.exception("Could not deactivate Stripe Payment Link %s -- it may still be payable", link_id)

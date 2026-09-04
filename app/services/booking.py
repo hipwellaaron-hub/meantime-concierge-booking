@@ -14,7 +14,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models import Booking, BookingEvent, Contact, Document, Invoice, Space
-from app.models.booking import BookingStatus, MinReductionReasonCode
+from app.models.booking import BLOCKING_STATUSES, BookingStatus, MinReductionReasonCode
 from app.models.document import DocumentStatus, DocumentType
 from app.models.invoice import InvoiceStatus, InvoiceType
 from app.services import policy
@@ -58,6 +58,20 @@ LEGAL_TRANSITIONS: dict[BookingStatus, tuple[BookingStatus, ...]] = {
     # transition, same as any other terminal status.
     BookingStatus.archived: (),
 }
+
+
+def times_overlap(a: Booking, b: Booking) -> bool:
+    """Mirrors the database exclusion constraint: a NULL time range never
+    conflicts, and touching endpoints do not overlap (half-open ranges).
+    This is why Renee at lunch and Alyssa in the evening, both in the
+    Mezzanine on 28 November, are not contesting each other.
+
+    Lives here (not app.services.ai_pipeline, where it used to) because
+    change_status below needs it and ai_pipeline already imports from this
+    module -- the other direction would be circular."""
+    if None in (a.start_time, a.end_time, b.start_time, b.end_time):
+        return False
+    return a.start_time < b.end_time and b.start_time < a.end_time
 
 
 def generate_reference_code(db: Session, event_date: dt.date | None, venue_slug: str = "HAM") -> str:
@@ -186,9 +200,89 @@ def change_status(
                 actor=actor,
             )
         )
+
+    if new_status in TERMINAL_STATUSES and old_status not in TERMINAL_STATUSES:
+        _invalidate_client_facing_tokens(db, booking, actor=actor)
+    if new_status in BLOCKING_STATUSES:
+        _supersede_losing_offers(db, booking, actor=actor)
+
     db.commit()
     db.refresh(booking)
     return booking
+
+
+def _invalidate_client_facing_tokens(db: Session, booking: Booking, *, actor: str) -> None:
+    """A booking moving to a terminal status must kill every live path a
+    client could still act through -- a real incident, 2026-09-04: Sophie
+    Mavridis still had a working agreement-sign link and a working Stripe
+    card link after her offer on the Loft was superseded.
+
+    Cancelling each invoice (see invoicing.cancel_invoice) is what
+    deactivates its Stripe Payment Links; the document side needs no
+    parallel action here at all -- app.api.documents and app.api.invoices
+    both gate their public routes on booking.status, so a signed-looking
+    link simply stops working the moment this status is visible to them.
+
+    Best-effort per invoice: one failure (Stripe unreachable, an invoice
+    already paid) must never stop the others from being tried, or leave
+    this status change half-done."""
+    from app.services import invoicing  # deferred: invoicing imports this module already
+
+    for invoice in booking.invoices:
+        if invoice.is_legacy or invoice.status in invoicing.INVOICE_TERMINAL_STATUSES:
+            continue
+        try:
+            invoicing.cancel_invoice(db, invoice, actor=actor)
+        except Exception:  # noqa: BLE001 -- one invoice's failure must not block the others or this status change
+            logger.exception(
+                "Could not cancel invoice %s while moving booking %s to %s",
+                invoice.id, booking.id, booking.status.value,
+            )
+
+
+def _supersede_losing_offers(db: Session, booking: Booking, *, actor: str) -> None:
+    """A booking becoming tentative or confirmed wins its slot outright --
+    the exclusion constraint already guarantees no OTHER blocking booking
+    can share it. What that constraint does NOT cover is a rival `offered`
+    booking on the same space and overlapping time: nothing stops staff
+    sending an agreement to two parties for one date, and the loser's
+    agreement and invoice links must not stay live once someone else has
+    won it. A real case, 2026-09-04: Sophie Mavridis (offered, the Loft,
+    21 November) against Chanai Duncombe confirming the same room and
+    night.
+
+    Killing the rival goes through change_status, so it gets the exact
+    same terminal-status treatment as any other move to dead --
+    invoices cancelled, Stripe links deactivated, links gated off. Scoped
+    to `offered` PARENT bookings only: a linked child never carries its
+    own offer (the parent owns it), and this runs on every entry into a
+    blocking status, including tentative -> confirmed, which is always a
+    harmless no-op by then since any real rival already died at the
+    tentative step."""
+    if booking.parent_booking_id is not None:
+        return
+    space = booking.space
+    if space is None or not space.is_bookable or booking.event_date is None:
+        return
+    if None in (booking.start_time, booking.end_time):
+        return
+
+    rivals = db.scalars(
+        select(Booking).where(
+            Booking.id != booking.id,
+            Booking.space_id == booking.space_id,
+            Booking.event_date == booking.event_date,
+            Booking.status == BookingStatus.offered,
+            Booking.parent_booking_id.is_(None),
+        )
+    ).all()
+    for rival in rivals:
+        if not times_overlap(booking, rival):
+            continue
+        change_status(
+            db, rival, BookingStatus.dead, actor=actor,
+            reason=f"Superseded: {booking.reference_code} was confirmed for the same room and time.",
+        )
 
 
 TERMINAL_STATUSES = (BookingStatus.completed, BookingStatus.cancelled, BookingStatus.dead, BookingStatus.archived)

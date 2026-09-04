@@ -51,7 +51,7 @@ from app.models.document import DocumentStatus, DocumentType
 from app.models.invoice import InvoiceStatus, InvoiceType
 from app.models.wizard_session import WizardSessionStatus
 from app.services import booking as booking_service
-from app.services.ai_pipeline import CONTESTING_STATUSES, times_overlap
+from app.services.ai_pipeline import CONTESTING_STATUSES
 
 logger = logging.getLogger(__name__)
 
@@ -228,7 +228,7 @@ def check_overlapping_open_interest(bookings) -> list[Finding]:
     out = []
     for group in by_slot.values():
         for b in group:
-            rivals = [o.reference_code for o in group if o.id != b.id and times_overlap(b, o)]
+            rivals = [o.reference_code for o in group if o.id != b.id and booking_service.times_overlap(b, o)]
             if rivals:
                 out.append(
                     Finding(b.id, "OVERLAPPING_OPEN_INTEREST", NEEDS_HUMAN,

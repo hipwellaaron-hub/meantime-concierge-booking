@@ -35,7 +35,7 @@ from app.models.booking import BookingStatus
 from app.models.document import DocumentStatus, DocumentType
 from app.models.invoice import InvoiceStatus, InvoiceType
 from app.models.wizard_session import WizardSessionStatus
-from app.services.booking import TERMINAL_STATUSES
+from app.services.booking import TERMINAL_STATUSES, times_overlap
 
 # Stage values, in pipeline order. Exported so the API validates a ?stage=
 # filter against the real set rather than a second copy of the list.
@@ -107,16 +107,6 @@ def _current(documents, doc_type: DocumentType) -> Document | None:
         if doc.type == doc_type and doc.is_current:
             return doc
     return None
-
-
-def times_overlap(a: Booking, b: Booking) -> bool:
-    """Mirrors the database exclusion constraint: a NULL time range never
-    conflicts, and touching endpoints do not overlap (half-open ranges).
-    This is why Renee at lunch and Alyssa in the evening, both in the
-    Mezzanine on 28 November, are not contesting each other."""
-    if None in (a.start_time, a.end_time, b.start_time, b.end_time):
-        return False
-    return a.start_time < b.end_time and b.start_time < a.end_time
 
 
 def compute_stage(booking: Booking, *, today: dt.date | None = None) -> str:

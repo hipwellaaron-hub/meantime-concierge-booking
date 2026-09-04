@@ -113,12 +113,14 @@ def test_create_payment_link_calls_stripe_with_invoice_metadata(db, booking):
 
     class FakeLink:
         url = "https://checkout.stripe.com/fake-link"
+        id = "plink_fake123"
 
     with patch.object(stripe_integration, "STRIPE_SECRET_KEY", "sk_test_fake"):
         with patch.object(stripe_integration.stripe.PaymentLink, "create", return_value=FakeLink()) as mock_create:
-            url = stripe_integration.create_payment_link(invoice, Decimal("500.00"))
+            url, link_id = stripe_integration.create_payment_link(invoice, Decimal("500.00"))
 
     assert url == "https://checkout.stripe.com/fake-link"
+    assert link_id == "plink_fake123"
     kwargs = mock_create.call_args.kwargs
     assert kwargs["metadata"][stripe_integration.INVOICE_METADATA_KEY] == str(invoice.id)
     assert kwargs["line_items"][0]["price_data"]["unit_amount"] == 50000
@@ -277,6 +279,7 @@ def test_webhook_ignores_unrelated_event_types(db, booking):
 
 class _FakeLink:
     url = "https://checkout.stripe.com/fake-link"
+    id = "plink_fake123"
 
 
 def test_invoice_view_names_the_card_surcharge_when_it_applies(db, booking):
