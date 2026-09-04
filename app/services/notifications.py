@@ -31,6 +31,14 @@ from app.models import Booking
 from app.services import policy
 from app.utils import format_date_dmy, format_person_name, is_valid_email
 
+
+def _friendly_event_date(value) -> str:
+    """"17 October" -- no year (this always describes a near-term event),
+    no leading zero, full month name. Used only where the reader is the
+    client: the enquiry subject, which Gmail carries verbatim into
+    whatever "Re:" the client eventually sees."""
+    return f"{value.day} {value.strftime('%B')}"
+
 logger = logging.getLogger(__name__)
 
 GMAIL_SMTP_HOST = "smtp.gmail.com"
@@ -119,22 +127,33 @@ def send_digest_email(subject: str, text_body: str) -> None:
 
 
 def build_enquiry_notification_subject(booking: Booking) -> str:
-    """Scannable in a phone push notification -- Aaron triages from this
-    line alone before opening anything, so event name / date / guest
-    count have to be visible without opening the message."""
-    date_str = booking.event_date.strftime("%d %b") if booking.event_date else "date TBD"
-    guest_count = booking.adult_count + booking.child_count
-    guest_str = f"{guest_count} guests" if guest_count else "guest count TBD"
-    return f"New enquiry: {booking.event_name} — {date_str} — {guest_str}"
+    """Scannable in a phone push notification, AND the subject the client
+    sees the moment Aaron hits Reply: Gmail carries a message's own
+    Subject into "Re: ..." verbatim, and this is the root of that thread
+    (see build_enquiry_notification_body). "New enquiry: X -- 17 Oct --
+    40 guests" read as an internal ticket once it came back as a reply, so
+    there is only one subject now, not a staff one that gets swapped at
+    reply time -- event name and date, no guest count, no ticket framing."""
+    if booking.event_date:
+        return f"Your enquiry — {booking.event_name}, {_friendly_event_date(booking.event_date)}"
+    return f"Your enquiry — {booking.event_name}"
 
 
-def build_enquiry_notification_body(booking: Booking, *, flags: list[str], dashboard_base_url: str) -> str:
-    """Plain text, not HTML -- read on a phone, and this is a working
-    document (what a reply gets drafted from), not a marketing email that
-    needs to look polished. Every field captured on the enquiry form is
-    included verbatim; nothing here is summarized or dropped, since
-    whatever isn't in this email doesn't exist for whoever drafts the
-    reply (see the module docstring)."""
+def build_enquiry_notification_body(booking: Booking) -> str:
+    """Plain text, read on a phone, and the working document a reply gets
+    drafted from -- but also the thing that gets quoted in FULL the moment
+    Aaron hits Reply, because Reply-To on the sent message points at the
+    client to keep the thread going (see send_enquiry_notification_email).
+    A real client (Chanai Duncombe, 2026-09-04) received an admin link and
+    the internal FLAGS section this way, quoted under Aaron's reply.
+
+    So every line here has to be safe read back to the client it
+    describes: contact details, event facts, guest numbers, and what they
+    themselves wrote. Nothing staff-only belongs in this function --
+    flags already surface on Triage and the booking page (queried from
+    the audit trail, not this email, so removing them here loses nothing),
+    and the admin link lives in a custom header instead, added by the
+    sender below, never in a body a mail client can quote."""
     contact = booking.contact
     guest_total = booking.adult_count + booking.child_count
 
@@ -155,27 +174,28 @@ def build_enquiry_notification_body(booking: Booking, *, flags: list[str], dashb
     ]
 
     if booking.notes:
-        lines += ["", "NOTES", booking.notes]
+        lines += ["", "DETAILS", booking.notes]
 
-    lines += ["", f"FLAGS ({len(flags)})"]
-    if flags:
-        lines += [f"- {f}" for f in flags]
-    else:
-        lines.append("None.")
-
-    lines += ["", f"View in Concierge: {dashboard_base_url}/admin/bookings/{booking.id}"]
+    if booking.enquiry_text:
+        lines += ["", "WHAT THEY WROTE", booking.enquiry_text]
 
     return "\n".join(lines)
 
 
-def send_enquiry_notification_email(booking: Booking, *, flags: list[str], dashboard_base_url: str) -> None:
+def send_enquiry_notification_email(booking: Booking, *, dashboard_base_url: str) -> None:
     """One email per enquiry, sent to the venue's own inbox
     (ENQUIRY_NOTIFICATION_RECIPIENT) -- never to the client, who already
     has the thank-you page. From carries a display name that reads as
     internal so it's obviously not a message from the client; Reply-To is
     the client's own address (when there is a valid one on file) so
     hitting Reply in Gmail addresses the client directly rather than the
-    system that sent this.
+    system that sent this -- which is exactly what makes the BODY the
+    thread root a client eventually sees quoted, so it has to be safe on
+    its own (see build_enquiry_notification_body).
+
+    The booking link is a custom header, not a body line: visible via
+    "Show original" for the one-click admin lookup, but a mail client
+    never quotes headers into a reply, so it can never reach a client.
 
     Single attempt -- raises GmailSendNotConfigured / GmailSendRejected on
     failure. The caller (app.services.enquiry_classification.
@@ -189,7 +209,8 @@ def send_enquiry_notification_email(booking: Booking, *, flags: list[str], dashb
     if contact is not None and is_valid_email(contact.email):
         message["Reply-To"] = contact.email
     message["Subject"] = build_enquiry_notification_subject(booking)
-    message.set_content(build_enquiry_notification_body(booking, flags=flags, dashboard_base_url=dashboard_base_url))
+    message["X-Concierge-Booking-Url"] = f"{dashboard_base_url}/admin/bookings/{booking.id}"
+    message.set_content(build_enquiry_notification_body(booking))
 
     _send_via_gmail_smtp(message)
 

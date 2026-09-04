@@ -276,7 +276,12 @@ def create_enquiry_booking(
             first_touch_attribution=first_touch_attribution,
             last_touch_attribution=last_touch_attribution,
         )
-        flags = classify_and_flag(
+        # classify_and_flag writes each flag as its own "enquiry_flagged"
+        # BookingEvent (surfaced on Triage and the booking page) -- nothing
+        # downstream needs its return value any more, since the enquiry
+        # notification stopped rendering flags (2026-09-04: they were
+        # reaching clients quoted under Aaron's replies).
+        classify_and_flag(
             db,
             booking,
             event_type=event_type,
@@ -288,7 +293,7 @@ def create_enquiry_booking(
 
     # Lock released: the notification email (a slow SMTP call with its own
     # retry) must never be held under the submission lock.
-    notify_new_enquiry(db, booking, flags=flags, actor=actor)
+    notify_new_enquiry(db, booking, actor=actor)
     return booking, duplicate_candidates, True
 
 
@@ -363,7 +368,7 @@ def _create_enquiry_booking_locked(
     )
 
 
-def notify_new_enquiry(db: Session, booking: Booking, *, flags: list[str], actor: str) -> None:
+def notify_new_enquiry(db: Session, booking: Booking, *, actor: str) -> None:
     """The one email that makes a brand-new enquiry visible outside this
     database -- see app.services.notifications' module docstring on why a
     client reply can only ever be drafted from what actually lands in the
@@ -385,7 +390,7 @@ def notify_new_enquiry(db: Session, booking: Booking, *, flags: list[str], actor
     for attempt in (1, 2):
         try:
             notifications.send_enquiry_notification_email(
-                booking, flags=flags, dashboard_base_url=settings.dashboard_base_url
+                booking, dashboard_base_url=settings.dashboard_base_url
             )
         except Exception as exc:  # noqa: BLE001 -- a live email-provider problem must not take the
             # enquiry submission down with it (same reasoning as the Stripe guard in app.api.invoices).
@@ -402,22 +407,18 @@ def notify_new_enquiry(db: Session, booking: Booking, *, flags: list[str], actor
     _record_notification_failure(db, booking, reason=str(last_error), actor=actor)
 
 
-def _flags_from_audit_trail(booking: Booking) -> list[str]:
-    return [e.new_value for e in booking.events if e.event_type == "enquiry_flagged" and e.new_value]
-
-
-def preview_enquiry_notification(booking: Booking) -> tuple[str, str, str]:
-    """The exact recipient, subject and body that a send for this booking
-    would produce -- built by the same functions that do the sending, so
-    the preview cannot drift from the real thing. Sends nothing, records
-    nothing, and needs no Gmail credentials: it answers "what would this
-    email say" without requiring the mail path to be working."""
+def preview_enquiry_notification(booking: Booking) -> tuple[str, str, str, str]:
+    """The exact recipient, subject, body and booking-link header that a
+    send for this booking would produce -- built by the same functions
+    that do the sending, so the preview cannot drift from the real thing.
+    Sends nothing, records nothing, and needs no Gmail credentials: it
+    answers "what would this email say" without requiring the mail path
+    to be working."""
     return (
         notifications.ENQUIRY_NOTIFICATION_RECIPIENT,
         notifications.build_enquiry_notification_subject(booking),
-        notifications.build_enquiry_notification_body(
-            booking, flags=_flags_from_audit_trail(booking), dashboard_base_url=settings.dashboard_base_url
-        ),
+        notifications.build_enquiry_notification_body(booking),
+        f"{settings.dashboard_base_url}/admin/bookings/{booking.id}",
     )
 
 
@@ -430,10 +431,9 @@ def resend_enquiry_notification(db: Session, booking: Booking, *, actor: str) ->
     -- the caller is a deliberate staff action, not a background step of
     enquiry submission, so a failure here should surface to whoever
     clicked the button, not just to the log."""
-    flags = _flags_from_audit_trail(booking)
     try:
         notifications.send_enquiry_notification_email(
-            booking, flags=flags, dashboard_base_url=settings.dashboard_base_url
+            booking, dashboard_base_url=settings.dashboard_base_url
         )
     except Exception as exc:
         logger.exception("Manual resend of the enquiry notification failed for booking %s", booking.id)

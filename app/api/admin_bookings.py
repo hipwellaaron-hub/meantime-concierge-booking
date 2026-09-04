@@ -1241,7 +1241,7 @@ def preview_enquiry_notification(
     and whether or not this booking ever had one sent -- the question
     "what would this email say" is worth answering on its own."""
     booking = _get_booking_or_404(db, booking_id)
-    recipient, subject, body = enquiry_classification.preview_enquiry_notification(booking)
+    recipient, subject, body, booking_url = enquiry_classification.preview_enquiry_notification(booking)
     contact = booking.contact
     return templates.TemplateResponse(
         request,
@@ -1253,6 +1253,7 @@ def preview_enquiry_notification(
             recipient=recipient,
             subject=subject,
             body=body,
+            booking_url=booking_url,
             reply_to=contact.email if contact and is_valid_email(contact.email) else None,
         ),
     )

@@ -17,7 +17,8 @@ def _booking(**overrides) -> Booking:
         proposed_time_slot="Evening",
         adult_count=40,
         child_count=5,
-        notes="Company: Acme Pty Ltd\nDates flexible: yes\nWanting balloons please.",
+        notes="Company: Acme Pty Ltd\nDates flexible: yes",
+        enquiry_text="Wanting balloons please.",
         reference_code="HAM-20260912-ABCDE",
     )
     defaults.update(overrides)
@@ -106,27 +107,27 @@ def test_send_raises_with_gmail_error_on_rejection():
 # --- enquiry notification email --------------------------------------------
 
 
-def test_subject_is_scannable_with_event_date_and_guest_count():
+def test_subject_reads_as_a_message_to_the_client_not_an_internal_ticket():
+    # Real incident, 2026-09-04: Chanai Duncombe's reply carried "Re: New
+    # enquiry: ..." back to her, because Gmail keeps a thread's subject
+    # verbatim. There is one subject now, and it has to work as both the
+    # phone-scannable original AND the client-facing "Re:".
     booking = _booking()
     subject = notifications.build_enquiry_notification_subject(booking)
-    assert "Jane's 30th" in subject
-    assert "12 Sep" in subject
-    assert "45 guests" in subject
+    assert subject == "Your enquiry — Jane's 30th, 12 September"
+    assert "New enquiry" not in subject
+    assert "guests" not in subject.lower()
 
 
-def test_subject_falls_back_to_tbd_for_missing_date_and_guests():
-    booking = _booking(event_date=None, adult_count=0, child_count=0)
+def test_subject_omits_the_date_clause_when_no_date_given():
+    booking = _booking(event_date=None)
     subject = notifications.build_enquiry_notification_subject(booking)
-    assert "date TBD" in subject
-    assert "guest count TBD" in subject
+    assert subject == "Your enquiry — Jane's 30th"
 
 
-def test_body_includes_every_captured_field():
+def test_body_includes_every_client_describing_field():
     booking = _booking()
-    body = notifications.build_enquiry_notification_body(
-        booking, flags=["Event type 'Birthday' is unclear -- confirm what kind of event this actually is."],
-        dashboard_base_url="https://example.test",
-    )
+    body = notifications.build_enquiry_notification_body(booking)
     assert "HAM-20260912-ABCDE" in body
     assert "Jane Client" in body
     assert "jane@example.com" in body
@@ -137,21 +138,32 @@ def test_body_includes_every_captured_field():
     assert "Evening" in body
     assert "45 total (40 adults, 5 children)" in body
     assert "Acme Pty Ltd" in body
+    assert "WHAT THEY WROTE" in body
     assert "Wanting balloons please." in body
-    assert "confirm what kind of event this actually is" in body
-    assert f"https://example.test/admin/bookings/{booking.id}" in body
 
 
-def test_body_says_none_when_no_flags_raised():
+def test_body_never_carries_staff_only_content():
+    # The real leak, 2026-09-04: this body is quoted in FULL under Aaron's
+    # reply, because Reply-To routes that reply to the client. Nothing
+    # staff-only can be in it -- the admin link and the flags moved out
+    # (link to a header, flags dropped -- they already live on Triage and
+    # the booking page's own audit trail).
     booking = _booking()
-    body = notifications.build_enquiry_notification_body(booking, flags=[], dashboard_base_url="https://example.test")
-    assert "FLAGS (0)" in body
-    assert "None." in body
+    body = notifications.build_enquiry_notification_body(booking)
+    assert "FLAGS" not in body
+    assert "View in Concierge" not in body
+    assert "/admin/bookings/" not in body
+
+
+def test_body_omits_what_they_wrote_when_nothing_was_written():
+    booking = _booking(enquiry_text=None)
+    body = notifications.build_enquiry_notification_body(booking)
+    assert "WHAT THEY WROTE" not in body
 
 
 def test_body_handles_missing_contact():
     booking = _booking(contact=None)
-    body = notifications.build_enquiry_notification_body(booking, flags=[], dashboard_base_url="https://example.test")
+    body = notifications.build_enquiry_notification_body(booking)
     assert "Not captured" in body
 
 
@@ -163,13 +175,28 @@ def test_send_enquiry_notification_sets_reply_to_client_and_internal_from():
     with patch.object(notifications, "DIGEST_GMAIL_ADDRESS", "meantimehamilton@gmail.com"), \
          patch.object(notifications, "DIGEST_GMAIL_APP_PASSWORD", "fake-app-password"), \
          patch.object(notifications.smtplib, "SMTP_SSL", return_value=mock_smtp):
-        notifications.send_enquiry_notification_email(booking, flags=[], dashboard_base_url="https://example.test")
+        notifications.send_enquiry_notification_email(booking, dashboard_base_url="https://example.test")
 
     sent_message = mock_smtp.send_message.call_args.args[0]
     assert sent_message["To"] == "meantimehamilton@gmail.com"
     assert "meantimehamilton@gmail.com" in sent_message["From"]
     assert sent_message["Reply-To"] == "jane@example.com"
     assert "Jane's 30th" in sent_message["Subject"]
+
+
+def test_send_enquiry_notification_puts_the_admin_link_in_a_header_not_the_body():
+    mock_smtp = MagicMock()
+    mock_smtp.__enter__.return_value = mock_smtp
+    booking = _booking()
+
+    with patch.object(notifications, "DIGEST_GMAIL_ADDRESS", "meantimehamilton@gmail.com"), \
+         patch.object(notifications, "DIGEST_GMAIL_APP_PASSWORD", "fake-app-password"), \
+         patch.object(notifications.smtplib, "SMTP_SSL", return_value=mock_smtp):
+        notifications.send_enquiry_notification_email(booking, dashboard_base_url="https://example.test")
+
+    sent_message = mock_smtp.send_message.call_args.args[0]
+    assert sent_message["X-Concierge-Booking-Url"] == f"https://example.test/admin/bookings/{booking.id}"
+    assert "/admin/bookings/" not in sent_message.get_content()
 
 
 def test_send_enquiry_notification_omits_reply_to_when_no_valid_contact_email():
@@ -180,7 +207,7 @@ def test_send_enquiry_notification_omits_reply_to_when_no_valid_contact_email():
     with patch.object(notifications, "DIGEST_GMAIL_ADDRESS", "meantimehamilton@gmail.com"), \
          patch.object(notifications, "DIGEST_GMAIL_APP_PASSWORD", "fake-app-password"), \
          patch.object(notifications.smtplib, "SMTP_SSL", return_value=mock_smtp):
-        notifications.send_enquiry_notification_email(booking, flags=[], dashboard_base_url="https://example.test")
+        notifications.send_enquiry_notification_email(booking, dashboard_base_url="https://example.test")
 
     sent_message = mock_smtp.send_message.call_args.args[0]
     assert sent_message["Reply-To"] is None
@@ -191,7 +218,7 @@ def test_send_enquiry_notification_raises_when_not_configured():
     with patch.object(notifications, "DIGEST_GMAIL_ADDRESS", None), \
          patch.object(notifications, "DIGEST_GMAIL_APP_PASSWORD", None):
         with pytest.raises(notifications.GmailSendNotConfigured):
-            notifications.send_enquiry_notification_email(booking, flags=[], dashboard_base_url="https://example.test")
+            notifications.send_enquiry_notification_email(booking, dashboard_base_url="https://example.test")
 
 
 # --- agreement-signed & deposit-paid alerts -----------------------------------

@@ -1170,17 +1170,19 @@ def test_enquiry_notification_preview_shows_the_real_email(admin_client, db, lof
         adult_count=0, child_count=0, notes=None, actor="test",
     )
 
-    recipient, subject, body = preview_enquiry_notification(booking)
+    recipient, subject, body, booking_url = preview_enquiry_notification(booking)
     assert recipient == ENQUIRY_NOTIFICATION_RECIPIENT
     assert subject == build_enquiry_notification_subject(booking)
     assert "meantime Christmas party" in subject
-    assert "guest count TBD" in subject  # no guest count captured
     assert "Reference:" in body and str(booking.reference_code) in body
+    assert str(booking.id) in booking_url
+    assert "/admin/bookings/" not in body  # the link is the header, never the body
 
     page = admin_client.get(f"/admin/bookings/{booking.id}/enquiry-notification/preview")
     assert page.status_code == 200
     assert ENQUIRY_NOTIFICATION_RECIPIENT in page.text
     assert "meantime Christmas party" in page.text
+    assert booking_url in page.text
 
 
 def test_enquiry_notification_preview_sends_nothing(admin_client, db, loft):

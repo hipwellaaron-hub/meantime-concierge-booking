@@ -446,7 +446,7 @@ def test_notify_new_enquiry_records_success_and_sets_sent_at(db, unassigned_spac
     booking = _make_booking(db, unassigned_space, event_date=dt.date(2027, 4, 1))
     with patch.object(notifications, "is_gmail_smtp_configured", return_value=True), \
          patch.object(notifications, "send_enquiry_notification_email") as mock_send:
-        notify_new_enquiry(db, booking, flags=[], actor="test")
+        notify_new_enquiry(db, booking, actor="test")
 
     mock_send.assert_called_once()
     db.refresh(booking)
@@ -459,7 +459,7 @@ def test_notify_new_enquiry_not_configured_records_failure_without_retry(db, una
     booking = _make_booking(db, unassigned_space, event_date=dt.date(2027, 4, 1))
     with patch.object(notifications, "is_gmail_smtp_configured", return_value=False), \
          patch.object(notifications, "send_enquiry_notification_email") as mock_send:
-        notify_new_enquiry(db, booking, flags=[], actor="test")
+        notify_new_enquiry(db, booking, actor="test")
 
     mock_send.assert_not_called()
     db.refresh(booking)
@@ -474,7 +474,7 @@ def test_notify_new_enquiry_retries_once_then_succeeds(db, unassigned_space):
     with patch.object(notifications, "is_gmail_smtp_configured", return_value=True), \
          patch.object(notifications, "send_enquiry_notification_email", side_effect=[RuntimeError("boom"), None]) as mock_send, \
          patch.object(enquiry_classification.time, "sleep") as mock_sleep:
-        notify_new_enquiry(db, booking, flags=[], actor="test")
+        notify_new_enquiry(db, booking, actor="test")
 
     assert mock_send.call_count == 2
     mock_sleep.assert_called_once()
@@ -489,7 +489,7 @@ def test_notify_new_enquiry_records_failure_after_exhausting_retry(db, unassigne
     with patch.object(notifications, "is_gmail_smtp_configured", return_value=True), \
          patch.object(notifications, "send_enquiry_notification_email", side_effect=RuntimeError("Gmail is down")) as mock_send, \
          patch.object(enquiry_classification.time, "sleep"):
-        notify_new_enquiry(db, booking, flags=[], actor="test")
+        notify_new_enquiry(db, booking, actor="test")
 
     assert mock_send.call_count == 2
     db.refresh(booking)
@@ -507,7 +507,7 @@ def test_notify_new_enquiry_never_raises_even_on_total_failure(db, unassigned_sp
     with patch.object(notifications, "is_gmail_smtp_configured", return_value=True), \
          patch.object(notifications, "send_enquiry_notification_email", side_effect=RuntimeError("boom")), \
          patch.object(enquiry_classification.time, "sleep"):
-        notify_new_enquiry(db, booking, flags=[], actor="test")  # must not raise
+        notify_new_enquiry(db, booking, actor="test")  # must not raise
 
 
 def test_get_enquiry_notification_failures_excludes_bookings_never_attempted(db, hamilton, loft):
@@ -523,7 +523,7 @@ def test_get_enquiry_notification_failures_excludes_bookings_never_attempted(db,
 def test_get_enquiry_notification_failures_lists_and_clears_on_resend(db, hamilton, unassigned_space):
     booking = _make_booking(db, unassigned_space, event_date=dt.date(2027, 4, 1), event_name="Failed Notification Booking")
     with patch.object(notifications, "is_gmail_smtp_configured", return_value=False):
-        notify_new_enquiry(db, booking, flags=[], actor="test")
+        notify_new_enquiry(db, booking, actor="test")
 
     result = get_enquiry_notification_failures(db, hamilton)
     assert booking.id in {b.id for b in result}
@@ -535,15 +535,22 @@ def test_get_enquiry_notification_failures_lists_and_clears_on_resend(db, hamilt
     assert booking.id not in {b.id for b in result_after}
 
 
-def test_resend_enquiry_notification_uses_flags_already_recorded(db, unassigned_space):
+def test_resend_enquiry_notification_no_longer_threads_flags_into_the_email(db, unassigned_space):
+    """Flags stopped reaching the email on 2026-09-04 (they were quoted
+    back to a client under a staff reply) -- they still get written as
+    BookingEvents by classify_and_flag, and still surface on Triage and
+    the booking page, but resend no longer re-derives or passes them."""
     booking = _make_booking(db, unassigned_space, event_date=_next_friday(dt.date(2027, 1, 1)))
     classify_and_flag(db, booking, event_type="Birthday", adult_count=None, attendee_count=40, actor="test")
+    flagged = [e for e in booking.events if e.event_type == "enquiry_flagged"]
+    assert len(flagged) == 2
 
     with patch.object(notifications, "send_enquiry_notification_email") as mock_send:
         resend_enquiry_notification(db, booking, actor="staff:test")
 
     _, kwargs = mock_send.call_args
-    assert len(kwargs["flags"]) == 2
+    assert "flags" not in kwargs
+    assert kwargs["dashboard_base_url"]
 
 
 def test_resend_enquiry_notification_raises_and_records_failure(db, unassigned_space):
