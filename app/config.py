@@ -2,7 +2,18 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    # str_strip_whitespace: every string field here gets a Railway variable
+    # or a pasted secret at some point, and a copy-paste artifact (a
+    # trailing newline, a stray space) is invisible in a dashboard text box
+    # but not to a strict consumer -- httpx refuses to send a header value
+    # containing a raw newline at all (httpx.LocalProtocolError), which is
+    # exactly how a whitespace-contaminated ANTHROPIC_API_KEY surfaced,
+    # 2026-09-04: every drafting attempt recorded "Could not reach the
+    # model (LocalProtocolError)" even though the key itself was correct.
+    # Same root cause as the Gmail app-password fix in
+    # app.services.notifications._strip_all_whitespace; fixed here once,
+    # for every field, rather than per-field as each one bites.
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore", str_strip_whitespace=True)
 
     database_url: str
     test_database_url: str = ""
