@@ -414,3 +414,79 @@ def test_a_stripe_failure_while_closing_links_never_undoes_a_real_payment(db, lo
     db.refresh(invoice)
     assert payment.id is not None
     assert invoice.status == InvoiceStatus.paid
+
+
+# --- completing an event is not the same as voiding it (review, 2026-09-04) ---
+#
+# TERMINAL_STATUSES lumps `completed`/`archived` in with `cancelled`/`dead`,
+# so the ordinary post-event step used to cancel the client's unpaid
+# balance, kill its card link, and 410 the receipt and signed contract of
+# a client who had already paid in full. Completion is a statement about
+# the event having happened, not about the money being settled.
+
+
+def _completed_booking_with_sent_invoice(db, space, contact):
+    booking = _booking_on(db, space, contact)
+    transition_status(db, booking, BookingStatus.offered, actor="staff:test")
+    transition_status(db, booking, BookingStatus.tentative, actor="staff:test")
+    transition_status(db, booking, BookingStatus.confirmed, actor="staff:test")
+    invoice = create_invoice(
+        db, booking, InvoiceType.final, [{"description": "Balance", "quantity": 1, "unit_price": "1200.00"}],
+        dt.date(2026, 11, 25), actor="test",
+    )
+    mark_invoice_sent(db, invoice, actor="test")
+    return booking, invoice
+
+
+def test_completing_an_event_leaves_an_unpaid_balance_payable(db, loft, contact):
+    booking, invoice = _completed_booking_with_sent_invoice(db, loft, contact)
+    record_payment_link(db, invoice, "plink_balance")
+
+    with patch.object(stripe_integration, "deactivate_payment_links") as mock_deactivate:
+        transition_status(db, booking, BookingStatus.completed, actor="staff:test")
+
+    db.refresh(invoice)
+    assert invoice.status == InvoiceStatus.sent, "the balance must stay payable after the event happens"
+    mock_deactivate.assert_not_called()
+
+
+def test_a_completed_bookings_invoice_and_signed_agreement_stay_reachable(db, loft, contact):
+    booking, invoice = _completed_booking_with_sent_invoice(db, loft, contact)
+    document = create_new_version(db, booking, DocumentType.agreement, {"x": 1}, actor="test")
+    mark_document_sent(db, document, actor="test")
+    sign(db, document, signer_name="Pat Wilson", signer_ip="203.0.113.9")
+
+    transition_status(db, booking, BookingStatus.completed, actor="staff:test")
+    db.refresh(invoice)
+    db.refresh(document)
+
+    app.dependency_overrides[get_db] = lambda: db
+    try:
+        client = TestClient(app)
+        assert client.get(f"/i/{invoice.access_token}").status_code == 200
+        assert client.get(f"/d/{document.access_token}").status_code == 200
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_a_dead_booking_still_kills_everything(db, loft, contact):
+    # The Sophie Mavridis guarantee, unchanged by the completed/void split.
+    booking, invoice = _completed_booking_with_sent_invoice(db, loft, contact)
+    document = create_new_version(db, booking, DocumentType.agreement, {"x": 1}, actor="test")
+    mark_document_sent(db, document, actor="test")
+    record_payment_link(db, invoice, "plink_dead")
+
+    with patch.object(stripe_integration, "deactivate_payment_links") as mock_deactivate:
+        transition_status(db, booking, BookingStatus.cancelled, actor="staff:test")
+
+    db.refresh(invoice)
+    assert invoice.status == InvoiceStatus.cancelled
+    mock_deactivate.assert_called_once_with(["plink_dead"])
+
+    app.dependency_overrides[get_db] = lambda: db
+    try:
+        client = TestClient(app)
+        assert client.get(f"/i/{invoice.access_token}").status_code == 410
+        assert client.get(f"/d/{document.access_token}").status_code == 410
+    finally:
+        app.dependency_overrides.clear()

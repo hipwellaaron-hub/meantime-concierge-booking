@@ -201,7 +201,7 @@ def change_status(
             )
         )
 
-    if new_status in TERMINAL_STATUSES and old_status not in TERMINAL_STATUSES:
+    if new_status in VOIDED_STATUSES and old_status not in VOIDED_STATUSES:
         _invalidate_client_facing_tokens(db, booking, actor=actor)
     if new_status in BLOCKING_STATUSES:
         _supersede_losing_offers(db, booking, actor=actor)
@@ -286,6 +286,26 @@ def _supersede_losing_offers(db: Session, booking: Booking, *, actor: str) -> No
 
 
 TERMINAL_STATUSES = (BookingStatus.completed, BookingStatus.cancelled, BookingStatus.dead, BookingStatus.archived)
+
+# The event is NOT happening -- as distinct from TERMINAL_STATUSES, which
+# only means "no further transition is legal" and includes the two ways a
+# booking ends *successfully* (completed, and archived for the historical
+# bulk-archive).
+#
+# Only these two kill a client's live paths: the agreement they could
+# still sign, the invoice they could still pay. Completing an event must
+# not, and that distinction is the whole point of this tuple existing
+# separately (review finding, 2026-09-04): treating `completed` as void
+# cancelled the client's unpaid balance and 410'd the link, so the normal
+# post-event step made the money uncollectable, while a client who had
+# fully paid lost access to their own receipt and signed contract the
+# moment the event was ticked off.
+#
+# Completion is a statement about the event having happened, not about
+# the money being settled (Aaron's call, 2026-09-05): a completed
+# booking's documents stay readable and an outstanding balance stays
+# payable until that invoice is itself settled or cancelled.
+VOIDED_STATUSES = (BookingStatus.cancelled, BookingStatus.dead)
 
 
 def _pin_status(db: Session, booking: Booking, *, actor: str) -> None:

@@ -7,7 +7,7 @@ from app.models.document import DocumentStatus
 from app.rate_limit import InMemoryRateLimiter, client_ip, rate_limit_dependency
 from app.services import documents as documents_service
 from app.services import policy
-from app.services.booking import TERMINAL_STATUSES
+from app.services.booking import VOIDED_STATUSES
 from app.services.pdf import render_html_to_pdf
 from app.templating import templates
 from app.utils import looks_like_a_token, truncate
@@ -24,14 +24,20 @@ BOOKING_EVENT_ACTOR_MAX_LENGTH = 255
 
 
 def _is_live(document) -> bool:
-    """False once the booking behind this document has moved to a
-    terminal status (see app.services.booking.change_status, which
-    cancels the booking's live invoices on the same move -- this is the
+    """False once the event behind this document is off (see
+    app.services.booking.VOIDED_STATUSES and change_status, which cancels
+    the booking's live invoices on the same move -- this is the
     document-side half) or a newer version has superseded this one. A
     real incident, 2026-09-04: Sophie Mavridis still had a working sign
     link after her offer was superseded by Chanai Duncombe confirming the
-    same room and night."""
-    return document.booking.status not in TERMINAL_STATUSES and document.is_current
+    same room and night.
+
+    VOIDED_STATUSES, not TERMINAL_STATUSES: a client whose event has
+    simply HAPPENED keeps access to the agreement they signed. Gating on
+    the wider tuple meant a signed contract 410'd the moment staff ticked
+    the booking completed, so anyone wanting to re-read the cancellation
+    terms they had agreed to was told the link no longer existed."""
+    return document.booking.status not in VOIDED_STATUSES and document.is_current
 
 
 def _unavailable_response(request: Request, document) -> HTMLResponse:
