@@ -142,6 +142,13 @@ def apple_touch_icon():
 def site_webmanifest():
     return FileResponse("app/static/site.webmanifest", media_type="application/manifest+json")
 
+
+@app.get("/browserconfig.xml", include_in_schema=False)
+def browserconfig():
+    # Legacy Windows/IE tile pinning -- browsers request this fixed root
+    # path automatically, same convention as favicon.ico and site.webmanifest.
+    return FileResponse("app/static/icons/browserconfig.xml", media_type="application/xml", headers=_ICON_CACHE)
+
 app.include_router(ai_read_router)
 app.include_router(availability_router)
 app.include_router(health_router)
