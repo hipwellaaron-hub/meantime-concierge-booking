@@ -340,12 +340,15 @@ def build_agreement_signed_subject(booking: Booking) -> str:
 
 
 def build_agreement_signed_body(
-    booking: Booking, *, signer_name: str, deposit_paid: bool, now_confirmed: bool, dashboard_base_url: str
+    booking: Booking, *, signer_name: str, deposit_paid: bool, now_confirmed: bool
 ) -> str:
     """Plain text, to the venue -- an alert, not a message to answer. Leads
     with the one thing that changes what Aaron does next: whether this
     signature has now tipped the booking into confirmed, or the deposit is
-    still outstanding."""
+    still outstanding. The booking link is a header on the sent message
+    (see send_agreement_signed_email), not a body line -- same treatment
+    as the enquiry notification (2026-09-04), applied here even though
+    this alert has no Reply-To that could route a reply to a client."""
     if now_confirmed:
         headline = "This booking is now CONFIRMED (agreement signed and deposit paid)."
     elif deposit_paid:
@@ -357,8 +360,6 @@ def build_agreement_signed_body(
         "",
         f"Signed by: {format_person_name(signer_name)}",
         _booking_line(booking),
-        "",
-        f"View in Concierge: {dashboard_base_url}/admin/bookings/{booking.id}",
     ]
     return "\n".join(lines)
 
@@ -370,13 +371,10 @@ def send_agreement_signed_email(
     message["From"] = f"Meantime Concierge <{DIGEST_GMAIL_ADDRESS}>"
     message["To"] = ENQUIRY_NOTIFICATION_RECIPIENT
     message["Subject"] = build_agreement_signed_subject(booking)
+    message["X-Concierge-Booking-Url"] = f"{dashboard_base_url}/admin/bookings/{booking.id}"
     message.set_content(
         build_agreement_signed_body(
-            booking,
-            signer_name=signer_name,
-            deposit_paid=deposit_paid,
-            now_confirmed=now_confirmed,
-            dashboard_base_url=dashboard_base_url,
+            booking, signer_name=signer_name, deposit_paid=deposit_paid, now_confirmed=now_confirmed,
         )
     )
     _send_via_gmail_smtp(message)
@@ -388,8 +386,10 @@ def build_deposit_paid_subject(booking: Booking) -> str:
 
 
 def build_deposit_paid_body(
-    booking: Booking, *, amount: Decimal, agreement_signed: bool, now_confirmed: bool, dashboard_base_url: str
+    booking: Booking, *, amount: Decimal, agreement_signed: bool, now_confirmed: bool
 ) -> str:
+    """Same header treatment as build_agreement_signed_body -- see there
+    for why."""
     if now_confirmed:
         headline = "This booking is now CONFIRMED (deposit paid and agreement signed)."
     elif agreement_signed:
@@ -401,8 +401,6 @@ def build_deposit_paid_body(
         "",
         f"Amount received: ${amount}",
         _booking_line(booking),
-        "",
-        f"View in Concierge: {dashboard_base_url}/admin/bookings/{booking.id}",
     ]
     return "\n".join(lines)
 
@@ -414,13 +412,10 @@ def send_deposit_paid_email(
     message["From"] = f"Meantime Concierge <{DIGEST_GMAIL_ADDRESS}>"
     message["To"] = ENQUIRY_NOTIFICATION_RECIPIENT
     message["Subject"] = build_deposit_paid_subject(booking)
+    message["X-Concierge-Booking-Url"] = f"{dashboard_base_url}/admin/bookings/{booking.id}"
     message.set_content(
         build_deposit_paid_body(
-            booking,
-            amount=amount,
-            agreement_signed=agreement_signed,
-            now_confirmed=now_confirmed,
-            dashboard_base_url=dashboard_base_url,
+            booking, amount=amount, agreement_signed=agreement_signed, now_confirmed=now_confirmed,
         )
     )
     _send_via_gmail_smtp(message)

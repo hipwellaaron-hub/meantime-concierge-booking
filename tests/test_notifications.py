@@ -238,20 +238,18 @@ def test_agreement_signed_body_confirmed_headline():
     b = _booking_with_space()
     body = notifications.build_agreement_signed_body(
         b, signer_name="nicole jones", deposit_paid=True, now_confirmed=True,
-        dashboard_base_url="https://x",
     )
     assert "CONFIRMED" in body
     assert "Nicole Jones" in body  # recased
     assert "The Loft" in body
     assert "HAM-20260912-ABCDE" in body
-    assert "https://x/admin/bookings/" in body
+    assert "/admin/bookings/" not in body  # link is a header now, not a body line
 
 
 def test_agreement_signed_body_waiting_on_deposit():
     b = _booking_with_space()
     body = notifications.build_agreement_signed_body(
         b, signer_name="Nicole Jones", deposit_paid=False, now_confirmed=False,
-        dashboard_base_url="https://x",
     )
     assert "waiting on the deposit" in body.lower()
     assert "CONFIRMED" not in body
@@ -261,10 +259,10 @@ def test_deposit_paid_body_shows_amount_and_status():
     b = _booking_with_space()
     body = notifications.build_deposit_paid_body(
         b, amount=Decimal("500.00"), agreement_signed=False, now_confirmed=False,
-        dashboard_base_url="https://x",
     )
     assert "$500.00" in body
     assert "waiting on the signed agreement" in body.lower()
+    assert "/admin/bookings/" not in body  # link is a header now, not a body line
 
 
 def test_send_agreement_signed_goes_to_venue_no_reply_to():
@@ -283,6 +281,8 @@ def test_send_agreement_signed_goes_to_venue_no_reply_to():
     assert "Meantime Concierge" in msg["From"]
     assert msg["Reply-To"] is None  # an internal alert, not a message to answer
     assert "Agreement signed" in msg["Subject"]
+    assert msg["X-Concierge-Booking-Url"] == f"https://x/admin/bookings/{b.id}"
+    assert "/admin/bookings/" not in msg.get_content()
 
 
 def test_send_deposit_paid_goes_to_venue():
@@ -299,6 +299,8 @@ def test_send_deposit_paid_goes_to_venue():
     msg = mock_smtp.send_message.call_args.args[0]
     assert msg["To"] == notifications.ENQUIRY_NOTIFICATION_RECIPIENT
     assert "Deposit paid" in msg["Subject"]
+    assert msg["X-Concierge-Booking-Url"] == f"https://x/admin/bookings/{b.id}"
+    assert "/admin/bookings/" not in msg.get_content()
 
 
 def test_notify_agreement_signed_noops_when_not_configured():
