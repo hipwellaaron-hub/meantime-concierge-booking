@@ -428,18 +428,42 @@ def cancel_invoice(db: Session, invoice: Invoice, *, actor: str) -> Invoice:
     )
     db.commit()
     db.refresh(invoice)
-    # A Payment Link never expires on its own -- this is the one thing
-    # that actually closes a link a client already has open, not just
-    # stops issuing new ones. Best-effort and never raises (see its own
-    # docstring), so a Stripe hiccup never leaves this cancellation
-    # half-done.
-    stripe_integration.deactivate_payment_links(invoice.stripe_payment_link_ids or [])
+    _close_payment_links(invoice, why="cancellation")
     return invoice
 
 
+def _close_payment_links(invoice: Invoice, *, why: str) -> None:
+    """Deactivate every Payment Link ever minted for this invoice.
+
+    Called from BOTH ends of an invoice's life -- cancellation and full
+    payment -- because a Payment Link has no expiry of its own and a fresh
+    one is minted on every invoice-page view and every PDF download, so an
+    invoice a client opened three times has three links that stay payable
+    forever.
+
+    Cancellation used to be the only drain, which left the commonest exit
+    -- actually paying -- with every one of those links still chargeable:
+    the client, or anyone they forwarded the invoice email to, could tap
+    an old link and pay a second time. `_invalidate_client_facing_tokens`
+    could never rescue it either, since it skips any invoice already in
+    INVOICE_TERMINAL_STATUSES, and `paid` is one of them. Found in review,
+    2026-09-04.
+
+    Never raises. By the time this runs the caller has committed real
+    money or a real cancellation, and neither may fail because Stripe is
+    unreachable -- a link left live is bad, undoing a committed payment is
+    worse.
+    """
+    try:
+        stripe_integration.deactivate_payment_links(invoice.stripe_payment_link_ids or [])
+    except Exception:  # noqa: BLE001 -- see above
+        logger.exception("Could not deactivate Payment Links for invoice %s after %s", invoice.id, why)
+
+
 def record_payment_link(db: Session, invoice: Invoice, link_id: str) -> None:
-    """Every Payment Link ever created for this invoice, so cancel_invoice
-    has something to deactivate. A fresh link is generated on each
+    """Every Payment Link ever created for this invoice, so that both
+    drains (_close_payment_links, from cancellation and from full payment)
+    have something to deactivate. A fresh link is generated on each
     invoice-page view (see stripe_integration's own docstring), so there
     can be more than one live at a time."""
     invoice.stripe_payment_link_ids = [*(invoice.stripe_payment_link_ids or []), link_id]
@@ -546,6 +570,15 @@ def record_payment(
 
     db.commit()
     db.refresh(payment)
+
+    if just_paid:
+        # The invoice is settled, so every Payment Link ever minted for it
+        # must stop being chargeable -- otherwise the client can pay the
+        # same invoice twice from an old link in their inbox. After the
+        # commit and never raising, for the same reason the auto-confirm
+        # below is: the payment is real and recorded, and nothing here may
+        # undo it.
+        _close_payment_links(invoice, why="full payment")
 
     if just_paid and invoice.type == InvoiceType.deposit:
         # Paying the deposit is half of what confirms a booking; signing

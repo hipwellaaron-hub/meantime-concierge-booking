@@ -28,6 +28,7 @@ from app.main import app
 from app.models.booking import BookingStatus
 from app.models.document import DocumentType
 from app.models.invoice import InvoiceStatus, InvoiceType
+from app.models.payment import PaymentMethod
 from app.services import stripe_integration
 from app.services.booking import (
     add_linked_space,
@@ -36,7 +37,13 @@ from app.services.booking import (
     transition_status,
 )
 from app.services.documents import create_new_version, get_by_token, mark_sent as mark_document_sent, sign
-from app.services.invoicing import cancel_invoice, create_invoice, mark_sent as mark_invoice_sent, record_payment_link
+from app.services.invoicing import (
+    cancel_invoice,
+    create_invoice,
+    mark_sent as mark_invoice_sent,
+    record_payment,
+    record_payment_link,
+)
 
 
 def _booking_on(db, space, contact, *, when=dt.date(2026, 11, 21), start=dt.time(18, 0), end=dt.time(23, 0), name="Test Event"):
@@ -329,3 +336,81 @@ def test_webhook_flags_for_review_instead_of_silently_dropping_a_payment_on_a_cl
     db.refresh(booking)
     flags = [e.new_value for e in booking.events if e.event_type == "enquiry_flagged"]
     assert any("pi_late_1" in f and "refund" in f.lower() for f in flags)
+
+
+# --- paying an invoice must also close its links (review finding, 2026-09-04) ---
+
+
+def test_paying_an_invoice_in_full_deactivates_every_payment_link_ever_minted(db, loft, contact):
+    """The commonest exit from an invoice is payment, not cancellation, and
+    it used to drain nothing: deactivate_payment_links had exactly one
+    caller (cancel_invoice). A Payment Link never expires and a fresh one
+    is minted on every page view and PDF download, so a client who opened
+    the invoice three times kept three chargeable links after paying --
+    and could pay the same invoice again from any of them.
+    """
+    booking = _booking_on(db, loft, contact)
+    invoice = create_invoice(
+        db, booking, InvoiceType.deposit, [{"description": "Deposit", "quantity": 1, "unit_price": "500.00"}],
+        dt.date(2026, 11, 10), actor="test",
+    )
+    mark_invoice_sent(db, invoice, actor="test")
+    record_payment_link(db, invoice, "plink_view_one")
+    record_payment_link(db, invoice, "plink_view_two")
+    record_payment_link(db, invoice, "plink_pdf")  # she opened it twice and downloaded the PDF
+
+    with patch.object(stripe_integration, "deactivate_payment_links") as mock_deactivate:
+        record_payment(
+            db, invoice, amount=Decimal("500.00"), method=PaymentMethod.card,
+            reference="pi_paid_in_full", actor="test",
+        )
+
+    db.refresh(invoice)
+    assert invoice.status == InvoiceStatus.paid
+    mock_deactivate.assert_called_once_with(["plink_view_one", "plink_view_two", "plink_pdf"])
+
+
+def test_a_part_payment_leaves_the_links_alone(db, loft, contact):
+    # Still payable, so the links must stay live -- draining on any
+    # payment rather than on the settling one would strand a client
+    # mid-way through a split payment with no way to pay the rest.
+    booking = _booking_on(db, loft, contact)
+    invoice = create_invoice(
+        db, booking, InvoiceType.deposit, [{"description": "Deposit", "quantity": 1, "unit_price": "500.00"}],
+        dt.date(2026, 11, 10), actor="test",
+    )
+    mark_invoice_sent(db, invoice, actor="test")
+    record_payment_link(db, invoice, "plink_one")
+
+    with patch.object(stripe_integration, "deactivate_payment_links") as mock_deactivate:
+        record_payment(
+            db, invoice, amount=Decimal("200.00"), method=PaymentMethod.card,
+            reference="pi_part", actor="test",
+        )
+
+    db.refresh(invoice)
+    assert invoice.status == InvoiceStatus.sent
+    mock_deactivate.assert_not_called()
+
+
+def test_a_stripe_failure_while_closing_links_never_undoes_a_real_payment(db, loft, contact):
+    # The money has already been committed by the time the links are
+    # closed. A Stripe outage may leave a link live (logged); it may not
+    # cost us the payment record.
+    booking = _booking_on(db, loft, contact)
+    invoice = create_invoice(
+        db, booking, InvoiceType.deposit, [{"description": "Deposit", "quantity": 1, "unit_price": "500.00"}],
+        dt.date(2026, 11, 10), actor="test",
+    )
+    mark_invoice_sent(db, invoice, actor="test")
+    record_payment_link(db, invoice, "plink_one")
+
+    with patch.object(stripe_integration, "deactivate_payment_links", side_effect=RuntimeError("stripe down")):
+        payment = record_payment(
+            db, invoice, amount=Decimal("500.00"), method=PaymentMethod.card,
+            reference="pi_stripe_down", actor="test",
+        )
+
+    db.refresh(invoice)
+    assert payment.id is not None
+    assert invoice.status == InvoiceStatus.paid
