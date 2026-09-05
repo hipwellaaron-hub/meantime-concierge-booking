@@ -52,12 +52,17 @@
 
   {% set check = freshness.get(d.id) if freshness else None %}
   {% if check %}
-    {% if check.fresh %}
-    <p style="margin:10px 0 0;"><span class="badge green">facts re-checked just now</span> <span class="muted" style="font-size:0.85rem;">Who is on this date has not changed since the draft was written.</span></p>
+    {% if check.fresh and check.status_verified %}
+    <p style="margin:10px 0 0;"><span class="badge green">facts re-checked just now</span> <span class="muted" style="font-size:0.85rem;">Who is on this date, and their status, has not changed since the draft was written.</span></p>
+    {% elif check.fresh %}
+    {# Predates status tracking: never green, because a rival that merely
+       changed status cannot be seen by a reference-only check. #}
+    <p style="margin:10px 0 0;"><span class="badge ember">re-checked by reference only</span> <span class="muted" style="font-size:0.85rem;">{{ check.reason }} Treat the availability in this draft as unverified.</span></p>
     {% else %}
     <p style="margin:10px 0 0;"><span class="badge wine">stale</span> <b>{{ check.reason }}</b>
       {% if check.appeared %}<span class="muted">Appeared: {{ check.appeared | join(', ') }}.</span>{% endif %}
       {% if check.gone %}<span class="muted">Left: {{ check.gone | join(', ') }}.</span>{% endif %}
+      {% if check.changed %}<span class="muted">Changed: {% for c in check.changed %}{{ c.reference }} ({{ c.from }} &rarr; {{ c.to }}){% if not loop.last %}, {% endif %}{% endfor %}.</span>{% endif %}
       <span class="muted">Do not send as written.</span></p>
     {% endif %}
   {% endif %}

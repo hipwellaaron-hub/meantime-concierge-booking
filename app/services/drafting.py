@@ -154,16 +154,30 @@ def _ground(db: Session, booking: Booking, profile: venue_profile.VenueProfile) 
     on_date = [o for o in ai_availability.bookings_on_date(db, venue, on=day) if o.id != booking.id]
     path_b = {o.reference_code for o in on_date if o.space_id in bookable_ids}
     consistent = path_a == path_b
-    facts["cross_check"] = {"agrees": consistent, "path_a": sorted(path_a), "path_b": sorted(path_b)}
-
     # Other enquiries on this date that have no room yet. They sit on the
     # non-bookable placeholder, so build_availability never lists them and
     # the model would otherwise be told there is no other interest. The
     # gate blocks on these (draft_gate.CONTESTED); this is the same fact,
     # stored so the review page can re-check it later (see freshness).
-    facts["unassigned_enquiries_on_date"] = sorted(
-        o.reference_code for o in on_date if o.space_id not in bookable_ids
-    )
+    unassigned_refs = sorted(o.reference_code for o in on_date if o.space_id not in bookable_ids)
+    # (reference, bucket) pairs are what freshness() compares. A bare set
+    # of references cannot see a rival CHANGING status: a booking moving
+    # from open enquiry to confirmed keeps its reference, and the review
+    # page rendered "nothing changed" in green over a room that was now
+    # taken (2026-09-05 review, finding 14). path_a stays as the plain
+    # reference set for the availability cross-check.
+    path_a_buckets = sorted(
+        [e["reference"], k]
+        for b in blocks
+        for k in ("confirmed", "tentative", "open_enquiries")
+        for e in b[k]
+        if e["reference"] != booking.reference_code
+    ) + [[r, "unassigned"] for r in unassigned_refs]
+    facts["cross_check"] = {
+        "agrees": consistent, "path_a": sorted(path_a), "path_b": sorted(path_b),
+        "path_a_buckets": path_a_buckets,
+    }
+    facts["unassigned_enquiries_on_date"] = unassigned_refs
 
     rooms = db.scalars(
         select(Space).where(Space.venue_id == venue.id, Space.is_bookable.is_(True)).order_by(Space.capacity)
@@ -319,26 +333,88 @@ def freshness(db: Session, draft: EnquiryDraft) -> dict | None:
     """
     booking = draft.booking
     facts = draft.facts or {}
-    stored = (facts.get("cross_check") or {}).get("path_a")
-    if stored is None or booking.event_date is None:
+    cross = facts.get("cross_check") or {}
+    stored_refs = cross.get("path_a")
+    if stored_refs is None or booking.event_date is None:
         return None
 
     checked_at = dt.datetime.now(dt.timezone.utc)
     if (facts.get("event") or {}).get("date") != booking.event_date.isoformat():
-        return {"fresh": False, "reason": "The booking's date has changed since the draft was written.",
-                "appeared": [], "gone": [], "checked_at": checked_at}
+        return {"fresh": False, "status_verified": True,
+                "reason": "The booking's date has changed since the draft was written.",
+                "appeared": [], "gone": [], "changed": [], "checked_at": checked_at}
 
+    me = booking.reference_code
     venue = booking.space.venue
     days = ai_availability.build_availability(db, venue, date_from=booking.event_date, date_to=booking.event_date)
     blocks = days[0]["spaces"] if days else []
-    now_refs = {
-        e["reference"] for b in blocks for k in ("confirmed", "tentative", "open_enquiries") for e in b[k]
-    } - {booking.reference_code}
-    then_refs = set(stored) - {booking.reference_code}
-    appeared = sorted(now_refs - then_refs)
-    gone = sorted(then_refs - now_refs)
-    fresh = not appeared and not gone
-    reason = None if fresh else (
-        f"Since the draft was written: {len(appeared)} booking(s) appeared and {len(gone)} left on this date."
-    )
-    return {"fresh": fresh, "reason": reason, "appeared": appeared, "gone": gone, "checked_at": checked_at}
+    now_pairs = {
+        (e["reference"], k)
+        for b in blocks
+        for k in ("confirmed", "tentative", "open_enquiries")
+        for e in b[k]
+        if e["reference"] != me
+    }
+    # Enquiries with no room yet never appear in the availability blocks
+    # (they sit on the non-bookable placeholder), so a third enquiry for
+    # this date arriving after the draft was written was invisible to this
+    # re-check as well (finding 15). Same source _ground uses.
+    bookable_ids = {uuid.UUID(b["space_id"]) for b in blocks}
+    now_pairs |= {
+        (o.reference_code, "unassigned")
+        for o in ai_availability.bookings_on_date(db, venue, on=booking.event_date)
+        if o.space_id not in bookable_ids and o.id != booking.id
+    }
+
+    stored_pairs = cross.get("path_a_buckets")
+    if stored_pairs is None:
+        # A draft written before statuses were stored. Compare by
+        # reference only, and SAY so: a rival that merely changed status is
+        # invisible here, so this must never render as verified. Stale
+        # data gets labelled, not trusted (Aaron, 2026-09-05).
+        then_refs = set(stored_refs) - {me}
+        now_refs = {ref for ref, _bucket in now_pairs}
+        appeared = sorted(now_refs - then_refs)
+        gone = sorted(then_refs - now_refs)
+        fresh = not appeared and not gone
+        reason = (
+            "Checked by reference only: this draft predates status tracking, so a rival changing "
+            "status would not show here."
+            if fresh else
+            f"Since the draft was written: {len(appeared)} booking(s) appeared and {len(gone)} left on this date."
+        )
+        return {"fresh": fresh, "status_verified": False, "reason": reason,
+                "appeared": appeared, "gone": gone, "changed": [], "checked_at": checked_at}
+
+    then_by_ref = {ref: bucket for ref, bucket in stored_pairs if ref != me}
+    now_by_ref = dict(now_pairs)
+    appeared = sorted(now_by_ref.keys() - then_by_ref.keys())
+    gone = sorted(then_by_ref.keys() - now_by_ref.keys())
+    changed = [
+        {"reference": ref, "from": _bucket_label(then_by_ref[ref]), "to": _bucket_label(now_by_ref[ref])}
+        for ref in sorted(then_by_ref.keys() & now_by_ref.keys())
+        if then_by_ref[ref] != now_by_ref[ref]
+    ]
+    fresh = not appeared and not gone and not changed
+    parts = []
+    if appeared:
+        parts.append(f"{len(appeared)} appeared")
+    if gone:
+        parts.append(f"{len(gone)} left")
+    if changed:
+        parts.append(f"{len(changed)} changed status")
+    reason = None if fresh else "Since the draft was written: " + ", ".join(parts) + " on this date."
+    return {"fresh": fresh, "status_verified": True, "reason": reason,
+            "appeared": appeared, "gone": gone, "changed": changed, "checked_at": checked_at}
+
+
+_BUCKET_LABELS = {
+    "confirmed": "confirmed",
+    "tentative": "held (tentative)",
+    "open_enquiries": "open enquiry",
+    "unassigned": "unassigned enquiry",
+}
+
+
+def _bucket_label(bucket: str) -> str:
+    return _BUCKET_LABELS.get(bucket, bucket)

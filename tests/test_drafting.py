@@ -466,3 +466,86 @@ def test_grounding_lists_other_unassigned_enquiries_on_the_date(db, hamilton, un
 
     assert first.reference_code in facts["unassigned_enquiries_on_date"]
     assert second.reference_code not in facts["unassigned_enquiries_on_date"]
+
+
+# --- wave 2 (14): freshness compares status, not just who is on the date ---
+
+
+def test_freshness_flags_a_rival_that_changed_status(db, hamilton, loft, unassigned_space, drafting_on, model):
+    # The exact case from the 2026-09-05 review: a rival open enquiry on
+    # the Loft is later CONFIRMED. Its reference is unchanged, so a
+    # reference-only comparison said "nothing changed" and rendered the
+    # green badge over a draft offering a room that was now taken.
+    from app.models import Contact
+    from app.models.booking import BookingStatus
+    from app.services.booking import change_status, create_booking
+    when = _saturday()
+    rc = Contact(name="Rival Client", email="rival.fresh@example.com")
+    db.add(rc)
+    db.flush()
+    rival = create_booking(
+        db, space_id=loft.id, contact_id=rc.id, event_date=when,
+        start_time=dt.time(18, 0), end_time=dt.time(23, 0), event_name="Rival dinner", event_type="corporate",
+        adult_count=60, child_count=0, notes=None, actor="test",
+    )
+    booking = _enquiry(db, hamilton, comments="Dinner for 40", adults=40, when=when,
+                       event_type="corporate", event_name="Our dinner")
+    row = drafting.draft_for_booking(db, booking.id)
+    assert row.status == STATUS_GENERATED, row.failure_reason
+    assert drafting.freshness(db, row)["fresh"] is True
+
+    change_status(db, rival, BookingStatus.confirmed, actor="test")
+
+    check = drafting.freshness(db, row)
+    assert check["fresh"] is False
+    assert check["status_verified"] is True
+    assert any(c["reference"] == rival.reference_code and c["to"] == "confirmed" for c in check["changed"])
+
+
+def test_freshness_flags_a_new_unassigned_enquiry_on_the_date(db, hamilton, unassigned_space, drafting_on, model):
+    # A third enquiry for the same date, arriving after the draft, sits on
+    # the placeholder and never reached the availability blocks -- so the
+    # re-check could not see it (finding 15, closed here for freshness).
+    when = _saturday()
+    booking = _enquiry(db, hamilton, comments="Dinner for 40", adults=40, when=when,
+                       event_type="corporate", event_name="Our dinner")
+    row = drafting.draft_for_booking(db, booking.id)
+    assert row.status == STATUS_GENERATED, row.failure_reason
+    assert drafting.freshness(db, row)["fresh"] is True
+
+    late, _dups, created = create_enquiry_booking(
+        db, venue=hamilton, full_name="Late Client", email="late.client@example.com", phone="0400000009",
+        event_name="Late drinks", event_type="corporate", event_date=when,
+        proposed_time_slot="Saturday evening", attendee_count=40, adult_count=40,
+        company_name=None, dates_flexible=False, comments="Drinks for 40", lead_source="website",
+        lead_referrer=None, actor="test", first_touch_attribution=None, last_touch_attribution=None,
+    )
+    assert created
+
+    check = drafting.freshness(db, row)
+    assert check["fresh"] is False
+    assert late.reference_code in check["appeared"]
+
+
+def test_freshness_on_a_draft_without_stored_statuses_is_labelled_unverified(
+    db, hamilton, unassigned_space, drafting_on, model
+):
+    # Drafts written before statuses were stored get a reference-only
+    # check and an explicit label -- never the green badge. Stale data is
+    # labelled, not trusted.
+    booking = _enquiry(db, hamilton, comments="Dinner for 40", adults=40, when=_saturday(),
+                       event_type="corporate", event_name="Our dinner")
+    row = drafting.draft_for_booking(db, booking.id)
+    assert row.status == STATUS_GENERATED, row.failure_reason
+
+    facts = dict(row.facts)
+    cross = dict(facts["cross_check"])
+    cross.pop("path_a_buckets")
+    facts["cross_check"] = cross
+    row.facts = facts
+    db.commit()
+
+    check = drafting.freshness(db, row)
+    assert check["fresh"] is True
+    assert check["status_verified"] is False
+    assert "reference only" in check["reason"]
