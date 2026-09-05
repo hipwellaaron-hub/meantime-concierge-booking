@@ -65,18 +65,36 @@ _TRADING_HOURS_CLAUSE = (
     "Your function is licensed to run until midnight, any night of the week, with music off by 11:30pm."
 )
 
-def _minimum_spend_clause(min_food_spend) -> str:
+def _minimum_spend_clause(min_food_spend, bar_credit=None) -> str:
     """Minimum Spend, stated ONCE, from the same value the agreement's fact
     table shows. Until 2026-09-03 this was two hand-maintained literals
     ($1,000 Loft / $500 Mezzanine) selected by space name, alongside the
     live column in the fact table, with nothing checking they agreed.
-    Aaron: "minimum spend stated once from the resolved value". Today the
-    resolved value is the space's figure; when the per-day minimum
-    resolver lands this is the one call site to change."""
-    return (
+
+    The value is now booking.agreed_min_food_spend, the figure this client
+    actually agreed to -- NOT space.min_food_spend. That gap is what sent
+    a client an agreement reading $1,000 in the header summary and $500 in
+    this clause (HAM-20261024-M1QZQ, 2026-09-05): the clause had been
+    hand-edited to the truth and the header still rendered the space
+    default. Both now read the one column, so they cannot disagree.
+
+    A bar credit, when there is one, is stated here too rather than typed
+    in by hand -- see Booking.bar_credit."""
+    body = (
         f"There is a ${min_food_spend:,.0f} minimum spend required for your event across food. Your deposit "
         "will be credited toward this total and deducted from your final invoice."
     )
+    if bar_credit is not None and bar_credit > 0:
+        body += f" A ${bar_credit:,.0f} bar credit is included with your booking, applied on the night."
+    return body
+
+
+def _bar_credit_clause(bar_credit) -> str:
+    """Standalone, for a booking that has a bar credit but no food minimum
+    to attach it to (a waived minimum is $0, which produces no Minimum
+    Spend clause). A promised credit must never fall off the contract just
+    because the clause it usually rides on is absent."""
+    return f"A ${bar_credit:,.0f} bar credit is included with your booking, applied on the night."
 
 # 18th birthday appendix (§3.3) -- appended as its own final clause
 # whenever the booking looks like an 18th (see looks_like_18th, the same
@@ -145,8 +163,17 @@ def _terms_sections(booking: Booking) -> list[dict]:
     ]
     if booking.agreed_min_adults > 0:
         sections.append({"heading": "Guest Numbers", "body": _guest_numbers_clause(space_name, booking.agreed_min_adults)})
-    if space.min_food_spend and space.min_food_spend > 0:
-        sections.append({"heading": "Minimum Spend", "body": _minimum_spend_clause(space.min_food_spend)})
+    # booking.agreed_min_food_spend, never space.min_food_spend -- see
+    # _minimum_spend_clause. Compared with > 0 and never tested for
+    # truthiness: $0 is a deliberately waived minimum, and a waived
+    # minimum correctly produces no clause rather than "a $0 minimum".
+    if booking.agreed_min_food_spend > 0:
+        sections.append({
+            "heading": "Minimum Spend",
+            "body": _minimum_spend_clause(booking.agreed_min_food_spend, booking.bar_credit),
+        })
+    elif booking.bar_credit > 0:
+        sections.append({"heading": "Bar Credit", "body": _bar_credit_clause(booking.bar_credit)})
     sections += [
         {"heading": "Booking Agreement", "body": _BOOKING_AGREEMENT_CLAUSE},
         {"heading": "Decorations", "body": _DECORATIONS_CLAUSE},
@@ -388,6 +415,22 @@ def build_total_food_spend(food_total: Decimal | None, deposit_paid: Decimal | N
     }
 
 
+def _bar_structure_with_credit(bar_structure, bar_credit) -> str:
+    """A bar credit is a promise the FLOOR has to honour, so it belongs in
+    the bar structure the team actually reads on the night -- not only in
+    the agreement the client signed. It used to be typed as free text into
+    the Minimum Spend clause, which meant the one group of people who
+    needed it never saw it.
+
+    Stated first, before the structure itself, because it changes how the
+    tab is run from the opening drink."""
+    base = bar_structure or f"{REVIEW} add bar structure"
+    if bar_credit is not None and bar_credit > 0:
+        credit = f"${bar_credit:,.0f} bar credit included, applied on the night."
+        return credit + "\n\n" + base
+    return base
+
+
 def generate_beo_content(
     booking: Booking,
     food_order_line_items: list[dict] | None = None,
@@ -438,7 +481,10 @@ def generate_beo_content(
             "note": None if food_order_line_items else f"{REVIEW} no food order captured yet",
         },
         "total_food_spend": build_total_food_spend(food_total, deposit_paid),
-        "bar_structure": bar_structure or f"{REVIEW} add bar structure",
+        "bar_structure": _bar_structure_with_credit(bar_structure, booking.bar_credit),
+        # Also carried as its own field so the Event Order can show the
+        # figure without anyone having to read it out of the prose.
+        "bar_credit": str(booking.bar_credit),
         "room_layout_notes": room_layout_notes if room_layout_notes is not None else f"{REVIEW} add room layout notes",
         "music": music,
         "entertainment": entertainment,
@@ -503,7 +549,11 @@ def generate_agreement_content(booking: Booking) -> dict:
         "end_time": _format_time(booking.end_time),
         "adult_count": booking.adult_count,
         "child_count": booking.child_count,
-        "min_food_spend": str(space.min_food_spend),
+        # The agreed figure, not the space default. This line and the
+        # Minimum Spend clause above are the two halves that disagreed on
+        # a signed contract (2026-09-05); they now share one source.
+        "min_food_spend": str(booking.agreed_min_food_spend),
+        "bar_credit": str(booking.bar_credit),
         "standard_min_adults": space.standard_min_adults,
         "deposit_required": str(STANDARD_DEPOSIT),
         # Both forms are stored: terms_sections is what the template

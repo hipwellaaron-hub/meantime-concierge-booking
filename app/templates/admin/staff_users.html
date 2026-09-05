@@ -3,9 +3,9 @@
 {% block content %}
 <h1>Staff accounts</h1>
 {% if welcome == "sent" %}
-<div class="card" style="border-color:#3f9d5e;"><b style="color:#4bbe74;">Floor account created.</b> A setup email with install and usage instructions has been sent to them. Give them their password separately.</div>
+<div class="card" style="border-color:var(--safe-green);"><b style="color:var(--safe-green-text);">Floor account created.</b> A setup email with install and usage instructions has been sent to them. Give them their password separately.</div>
 {% elif welcome == "failed" %}
-<div class="card" style="border-color:#b5495f;"><b style="color:#cf6079;">Floor account created</b>, but the setup email couldn't be sent (check Gmail is connected). They can still sign in at <code>/floor</code> &mdash; you'll need to send them the instructions manually.</div>
+<div class="card" style="border-color:var(--wine);"><b style="color:var(--wine);">Floor account created</b>, but the setup email couldn't be sent (check Gmail is connected). They can still sign in at <code>/floor</code> &mdash; you'll need to send them the instructions manually.</div>
 {% endif %}
 <p class="muted">
   <b>Admin</b> accounts use the full Concierge dashboard. <b>Floor</b> accounts can only log into the

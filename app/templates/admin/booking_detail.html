@@ -553,9 +553,35 @@
       <div><label>Reason (required if reduced)</label>
         <select name="reason">
           <option value="">— none —</option>
-          {% for r in min_reduction_reasons %}<option value="{{ r.value }}">{{ r.value }}</option>{% endfor %}
+          {% for r in min_reduction_reasons %}<option value="{{ r.value }}"{% if booking.agreed_min_reduction_reason and booking.agreed_min_reduction_reason.value == r.value %} selected{% endif %}>{{ r.value }}</option>{% endfor %}
         </select>
       </div>
+      <div style="flex:0 0 auto; align-self:flex-end;"><button class="btn" type="submit">Save</button></div>
+    </div>
+  </form>
+
+  <h3 style="font-size:0.9rem; color:var(--muted); margin:20px 0 6px;">Agreed minimum spend</h3>
+  <p class="muted">Space standard: ${{ booking.space.min_food_spend }} &middot; Currently agreed: ${{ booking.agreed_min_food_spend }}{% if booking.agreed_min_food_spend_reason %} ({{ booking.agreed_min_food_spend_reason.value }}){% endif %}</p>
+  <form method="post" action="/admin/bookings/{{ booking.id }}/policy/agreed-food-minimum">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="field-row">
+      <div><label>Agreed minimum spend ($)</label><input type="number" name="agreed_min_food_spend" value="{{ booking.agreed_min_food_spend }}" min="0" step="0.01" required></div>
+      <div><label>Reason (required if changed)</label>
+        <select name="reason">
+          <option value="">— none —</option>
+          {% for r in min_reduction_reasons %}<option value="{{ r.value }}"{% if booking.agreed_min_food_spend_reason and booking.agreed_min_food_spend_reason.value == r.value %} selected{% endif %}>{{ r.value }}</option>{% endfor %}
+        </select>
+      </div>
+      <div style="flex:0 0 auto; align-self:flex-end;"><button class="btn" type="submit">Save</button></div>
+    </div>
+  </form>
+
+  <h3 style="font-size:0.9rem; color:var(--muted); margin:20px 0 6px;">Bar credit</h3>
+  <p class="muted">Currently ${{ booking.bar_credit }}{% if booking.bar_credit > 0 %} &middot; prints on the agreement, the Event Order and the bar structure{% endif %}</p>
+  <form method="post" action="/admin/bookings/{{ booking.id }}/policy/bar-credit">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="field-row">
+      <div><label>Bar credit ($)</label><input type="number" name="bar_credit" value="{{ booking.bar_credit }}" min="0" step="0.01" required></div>
       <div style="flex:0 0 auto; align-self:flex-end;"><button class="btn" type="submit">Save</button></div>
     </div>
   </form>
@@ -594,8 +620,8 @@
   {% endif %}
 </details>
 
-<div class="card" style="border-color: var(--wine, #7a2b3a);">
-  <h2 style="color: var(--wine, #b5495f);">Danger zone</h2>
+<div class="card" style="border-color: var(--wine);">
+  <h2 style="color: var(--wine);">Danger zone</h2>
   <p class="muted" style="font-size:0.85rem;">
     Permanently delete this booking and everything attached to it &mdash; invoices, payments,
     documents, and any linked second-room booking. This is the one action in Concierge that can't be
