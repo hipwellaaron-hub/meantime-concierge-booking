@@ -651,7 +651,7 @@ def test_a_legacy_draft_does_not_report_a_preexisting_unassigned_enquiry_as_new(
     assert check["appeared"] == []
 
 
-def test_a_legacy_draft_that_is_stale_still_says_reference_only(
+def test_a_legacy_draft_that_is_stale_reports_only_the_delta(
     db, hamilton, loft, unassigned_space, drafting_on, model
 ):
     booking = _enquiry(db, hamilton, comments="Dinner for 40", adults=40, when=_saturday(7),
@@ -804,6 +804,12 @@ def test_the_rules_block_a_draft_that_names_a_room_the_gate_did_not_clear():
     assert draft_rules.ROOM_NOT_OFFERABLE in result.codes and result.blocked
     assert not draft_rules.validate(CLEAN, rooms={**rooms, "The Loft": True}).blocked
     assert not draft_rules.validate(CLEAN).blocked
+    # The proper noun without its article is still the room; common-noun
+    # prose is not (re-review).
+    bare = CLEAN.replace("The Loft is available", "Our Loft is available")
+    assert draft_rules.ROOM_NOT_OFFERABLE in draft_rules.validate(bare, rooms=rooms).codes
+    prose = CLEAN.replace("The Loft is available", "The Mezzanine is available, and guests can spill into the lounge area,")
+    assert not draft_rules.validate(prose, rooms={**rooms, "The Loft": True}).blocked
 
 
 def test_the_review_page_survives_many_drafts_with_one_read_per_date(
@@ -828,7 +834,7 @@ def test_the_review_page_survives_many_drafts_with_one_read_per_date(
     real = drafting._occupants_on_date
 
     def counting(*args, **kwargs):
-        calls.append(args[2])
+        calls.append(kwargs.get("day", args[2] if len(args) > 2 else None))
         return real(*args, **kwargs)
 
     monkeypatch.setattr(drafting, "_occupants_on_date", counting)

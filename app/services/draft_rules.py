@@ -196,7 +196,10 @@ def _validate(draft: str, *, client_asked_for_figures: bool, profile=None, rooms
     for room, offerable in (rooms or {}).items():
         if offerable:
             continue
-        match = re.search(r"\b" + re.escape(room) + r"\b", text, re.IGNORECASE)
+        # The proper noun, with or without its article, case-sensitive:
+        # "Loft" and "the Loft" are the room; "the lounge area" is prose.
+        word = re.sub(r"^[Tt]he\s+", "", room)
+        match = re.search(r"\b(?:[Tt]he\s+)?" + re.escape(word) + r"\b", text)
         if match:
             result.violations.append(
                 RuleViolation(

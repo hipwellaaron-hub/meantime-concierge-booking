@@ -641,6 +641,18 @@ def test_an_18th_with_children_on_the_booking_still_says_18th(db, hamilton, loft
     ("6pm to 11pm, 40 guests", (dt.time(18, 0), dt.time(23, 0))),
     ("Sat 28/11 6pm-11pm", (dt.time(18, 0), dt.time(23, 0))),
     ("6pm \u2013 11pm", (dt.time(18, 0), dt.time(23, 0))),
+    ("12/11 - 6pm to 11pm", (dt.time(18, 0), dt.time(23, 0))),
+    ("25-30 people, 6pm to 11pm", (dt.time(18, 0), dt.time(23, 0))),
+    ("12:00 - 17:00", (dt.time(12, 0), dt.time(17, 0))),
+    ("10am to 12", (dt.time(10, 0), dt.time(12, 0))),
+    ("8am to 12 noon", (dt.time(8, 0), dt.time(12, 0))),
+    ("7pm to 12", (dt.time(19, 0), dt.time(23, 59))),
+    ("12.11 - 6pm to 11pm", None),
+    ("5-6pm arrival, finish 11pm", None),
+    ("6-7pm arrival, finish at 11pm", None),
+    ("6:00-11:00", None),
+    ("6.30 to 11", None),
+    ("7pm to 12:30am", None),
     ("Saturday evening", None),
     ("6pm till late", None),
     ("6 to 11", None),
@@ -815,3 +827,19 @@ def test_young_milestones_read_as_proper_ordinals(db, hamilton, loft):
     assert "3rd birthday" in draft_gate.evaluate(db, b, adult_count=20, attendee_count=30).as_note()
     c = _booking(db, loft, name="Ben's 12th", event_type="birthday", adults=20)
     assert "12th birthday" in _decide(db, c, guests=20).as_note()
+
+
+def test_a_date_before_the_range_is_not_read_as_its_start(
+    db, hamilton, loft, mezzanine, lounge, unassigned_space
+):
+    # "12/12 - 6pm to 11pm" was parsing as 12:00-18:00 and offering the
+    # Loft for a night a hold already had (re-review sweep).
+    when = _saturday(14)
+    hold = _booking(db, loft, name="Evening hold", event_type="corporate", when=when, adults=60,
+                    start=dt.time(18, 0), end=dt.time(23, 0))
+    change_status(db, hold, BookingStatus.tentative, actor="test")
+    enquiry = _unassigned(db, unassigned_space, name="Dated enquiry", when=when, adults=80, event_type="corporate",
+                          proposed_time=f"{when.day}/{when.month} - 6pm to 11pm")
+    decision = draft_gate.evaluate(db, enquiry, adult_count=80, attendee_count=80)
+    assert "The Loft" not in decision.facts["rooms_free"]
+    assert decision.facts["times_from_form"] == "18:00-23:00"
