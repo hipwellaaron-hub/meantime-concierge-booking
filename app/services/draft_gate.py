@@ -209,30 +209,43 @@ def _haystack(booking: Booking, extra: str = "") -> str:
 _TIME_TOKEN = re.compile(r"(?<![\d:])(\d{1,2})(?:[:.](\d{2}))?\s*(am|pm|a\.m\.|p\.m\.)?(?![\d:])", re.I)
 _RANGE_SEPARATOR = re.compile(r"\s*(?:-|\u2013|\u2014|to|till|til|until)\s*", re.I)
 _MIDNIGHT = re.compile(r"\b(?:12\s*)?midnight\b", re.I)
-_NOON = re.compile(r"\b(?:12\s*)?noon\b", re.I)
+_NOON = re.compile(r"\b(?:12\s*)?(?:noon|midday)\b", re.I)
+# Words that say the range is not the event's bounds: an arrival window,
+# a start with no finish, or an end that may move.
+_OPEN_ENDED = re.compile(
+    r"\b(?:arriv\w*|start\w*|doors|finish\w*|end\w*|late|later|onwards?|then|ish|tbc|tba|"
+    r"at\s+least|minimum|maybe|possibly|approx\w*|about|around)\b|\+",
+    re.I,
+)
 
 
 def parse_time_range(text: str | None) -> tuple[dt.time, dt.time] | None:
     """A (start, end) pair from free text, or None when it is not clearly
-    a two-ended clock range.
+    the event's two-ended clock range.
 
     The field is client free text, and every reading the gate trusts
     narrows contention, so the policy is: parse only what is unambiguous
-    and fall back to the whole day for everything else (re-review, twice).
-    - A clock token carries am/pm or minutes. A pair is two adjacent
-      tokens joined by a range word or dash with a clock token on at least
-      one side; the pair with the most am/pm markers wins ("12/11 - 6pm to
-      11pm" is the 6pm-11pm pair, not "11 - 6pm").
-    - Any other clock token outside the chosen pair means the field says
-      more than one range ("5-6pm arrival, finish 11pm") and falls back.
-    - With no am/pm on either side, one hour must be past 12: "18:00-23:00"
-      parses, "6:00-11:00" and "6.30 to 11" do not (a dinner is not a
-      breakfast because the client left off "pm").
-    - "12am"/"midnight" as an exact end means the end of that day; a
-      bare 12 after an am start is noon; an unmarked start against a 12
-      o'clock end ("6-12pm"), or a range running past midnight, falls back.
-    """
+    and fall back to the whole day for everything else. Three review
+    passes each found a shape that slipped through a looser rule ("12/11
+    - 6pm" as 11:00-18:00, "Dec 6 - 8pm", "12am-3" for a lunch, "5-6pm
+    arrival" as the whole night), and every one was a bare number next
+    to a marked one. So:
+    - Both ends carry am/pm ("6pm to 11pm", "12:00 PM - 5:00 PM"), or
+      both carry minutes on a 24-hour clock with an hour past 12
+      ("18:00-23:00"). "6-11pm", "6pm to 12", "10-2pm" all fall back:
+      the client is not harmed by the whole day, and the gate is not
+      guessing which side the am/pm belongs to.
+    - The two ends must be adjacent and joined by a range word or dash;
+      any other am/pm or minutes token in the field means it says more
+      than one range and it falls back.
+    - Words like arrival, start, finish, late, onwards, TBC, or a "+",
+      mean the range is not the event's bounds; fall back.
+    - "12am"/"midnight"/"12:00am" as the end means the end of that day;
+      "12am" as a start (lay usage for noon) and anything past midnight
+      fall back."""
     if not text:
+        return None
+    if _OPEN_ENDED.search(text):
         return None
     text = _NOON.sub("12pm", _MIDNIGHT.sub("12am", text))
     tokens = list(_TIME_TOKEN.finditer(text))
@@ -247,11 +260,11 @@ def parse_time_range(text: str | None) -> tuple[dt.time, dt.time] | None:
     pairs = [
         (a, b)
         for a, b in zip(tokens, tokens[1:])
-        if (clockish(a) or clockish(b)) and _RANGE_SEPARATOR.fullmatch(text[a.end():b.start()])
+        if clockish(a) and clockish(b) and _RANGE_SEPARATOR.fullmatch(text[a.end():b.start()])
     ]
-    if not pairs:
+    if len(pairs) != 1:
         return None
-    first, second = max(pairs, key=lambda ab: (sum(1 for m in ab if meridiem(m)), -ab[0].start()))
+    first, second = pairs[0]
     if any(clockish(t) and t not in (first, second) for t in tokens):
         return None
 
@@ -262,8 +275,8 @@ def parse_time_range(text: str | None) -> tuple[dt.time, dt.time] | None:
         if ampm:
             if not 1 <= hour <= 12:
                 return None
-            if is_end and hour == 12 and ampm == "am":
-                return dt.time(23, 59) if minute == 0 else None
+            if hour == 12 and ampm == "am":
+                return dt.time(23, 59) if is_end and minute == 0 else None
             hour = hour % 12 + (12 if ampm == "pm" else 0)
         elif hour > 23:
             return None
@@ -271,25 +284,16 @@ def parse_time_range(text: str | None) -> tuple[dt.time, dt.time] | None:
 
     m1, m2 = meridiem(first), meridiem(second)
     h1, h2 = int(first.group(1)), int(second.group(1))
-    if m1 is None and m2 is None:
-        if h1 <= 12 and h2 <= 12:
-            return None
-        candidates = [(None, None)]
-    elif m1 is None:
-        if h2 == 12:
-            return None
-        candidates = [(m2, m2), ("am" if m2 == "pm" else "pm", m2)]
-    elif m2 is None:
-        other = "am" if m1 == "pm" else "pm"
-        # A bare 12 after "10am" is noon, after "7pm" is midnight.
-        candidates = [(m1, other), (m1, m1)] if h2 == 12 else [(m1, m1), (m1, other)]
+    if m1 and m2:
+        pass
+    elif m1 is None and m2 is None and first.group(2) and second.group(2) and (h1 > 12 or h2 > 12):
+        pass
     else:
-        candidates = [(m1, m2)]
-    for a, b in candidates:
-        start, end = build(first, a), build(second, b, is_end=True)
-        if start is not None and end is not None and start < end:
-            return start, end
-    return None
+        return None
+    start_t, end_t = build(first, m1), build(second, m2, is_end=True)
+    if start_t is None or end_t is None or not start_t < end_t:
+        return None
+    return start_t, end_t
 
 
 def _effective_times(booking: Booking) -> tuple[dt.time | None, dt.time | None, bool]:

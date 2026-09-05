@@ -196,10 +196,17 @@ def _validate(draft: str, *, client_asked_for_figures: bool, profile=None, rooms
     for room, offerable in (rooms or {}).items():
         if offerable:
             continue
-        # The proper noun, with or without its article, case-sensitive:
-        # "Loft" and "the Loft" are the room; "the lounge area" is prose.
-        word = re.sub(r"^[Tt]he\s+", "", room)
-        match = re.search(r"\b(?:[Tt]he\s+)?" + re.escape(word) + r"\b", text)
+        # The proper noun with or without its article ("Loft", "the
+        # Loft"), or the article plus the name in any case ("The loft",
+        # model-typical prose for the room). A bare common noun ("lounge
+        # bar") is not the room. Boundaries are non-word lookarounds so a
+        # name ending in ")" still matches; curly apostrophes are
+        # normalised so "O'Brien's Room" matches either way.
+        word = re.sub(r"^[Tt]he\s+", "", room).replace("\u2019", "'")
+        haystack = text.replace("\u2019", "'")
+        proper = r"(?<!\w)(?:[Tt]he\s+)?" + re.escape(word) + r"(?!\w)"
+        with_article = r"(?<!\w)the\s+" + re.escape(word) + r"(?!\w)"
+        match = re.search(proper, haystack) or re.search(with_article, haystack, re.IGNORECASE)
         if match:
             result.violations.append(
                 RuleViolation(

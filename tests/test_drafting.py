@@ -808,8 +808,15 @@ def test_the_rules_block_a_draft_that_names_a_room_the_gate_did_not_clear():
     # prose is not (re-review).
     bare = CLEAN.replace("The Loft is available", "Our Loft is available")
     assert draft_rules.ROOM_NOT_OFFERABLE in draft_rules.validate(bare, rooms=rooms).codes
-    prose = CLEAN.replace("The Loft is available", "The Mezzanine is available, and guests can spill into the lounge area,")
+    prose = CLEAN.replace("The Loft is available", "The Mezzanine is available, and there is a lounge bar downstairs;")
     assert not draft_rules.validate(prose, rooms={**rooms, "The Loft": True}).blocked
+    # "The loft" is the room in prose; a name ending in ")" still matches.
+    lower = CLEAN.replace("The Loft is available", "The loft is available")
+    assert draft_rules.ROOM_NOT_OFFERABLE in draft_rules.validate(lower, rooms=rooms).codes
+    bracket = CLEAN.replace("The Loft is available", "The Room (Upstairs) is available")
+    assert draft_rules.ROOM_NOT_OFFERABLE in draft_rules.validate(
+        bracket, rooms={**rooms, "The Loft": True, "The Room (Upstairs)": False}
+    ).codes
 
 
 def test_the_review_page_survives_many_drafts_with_one_read_per_date(
