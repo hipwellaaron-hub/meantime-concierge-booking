@@ -6,6 +6,7 @@ because the whole point is to exercise real concurrent transactions.
 """
 
 import datetime as dt
+from decimal import Decimal
 import threading
 import uuid
 
@@ -49,6 +50,7 @@ def test_concurrent_overlapping_inserts_cannot_both_succeed():
                 adult_count=10,
                 child_count=0,
                 agreed_min_adults=0,
+                agreed_min_food_spend=Decimal("0"),
                 pricing_locked_at=dt.date.today(),
                 reference_code=f"CONC-{key}-{uuid.uuid4().hex[:8].upper()}",
             )

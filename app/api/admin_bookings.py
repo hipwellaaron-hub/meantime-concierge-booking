@@ -1219,6 +1219,45 @@ def set_agreed_minimum(
     return _redirect_to_detail(booking_id)
 
 
+@router.post("/{booking_id}/policy/agreed-food-minimum", dependencies=[Depends(require_csrf)])
+def set_agreed_food_minimum(
+    booking_id: uuid.UUID,
+    request: Request,
+    agreed_min_food_spend: Decimal = Form(...),
+    reason: str | None = Form(None),
+    db: Session = Depends(get_db),
+    staff: StaffUser = Depends(require_staff),
+):
+    booking = _get_booking_or_404(db, booking_id)
+    try:
+        parsed_reason = MinReductionReasonCode(reason) if reason else None
+    except ValueError:
+        raise HTTPException(status_code=422, detail=f"Unknown reason code {reason}")
+    try:
+        booking_service.set_agreed_food_minimum(
+            db, booking, agreed_min_food_spend=agreed_min_food_spend, reason=parsed_reason, actor=_actor(staff)
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return _redirect_to_detail(booking_id)
+
+
+@router.post("/{booking_id}/policy/bar-credit", dependencies=[Depends(require_csrf)])
+def set_bar_credit(
+    booking_id: uuid.UUID,
+    request: Request,
+    bar_credit: Decimal = Form(...),
+    db: Session = Depends(get_db),
+    staff: StaffUser = Depends(require_staff),
+):
+    booking = _get_booking_or_404(db, booking_id)
+    try:
+        booking_service.set_bar_credit(db, booking, bar_credit=bar_credit, actor=_actor(staff))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return _redirect_to_detail(booking_id)
+
+
 @router.post("/{booking_id}/policy/outside-cake", dependencies=[Depends(require_csrf)])
 def set_outside_cake_permitted(
     booking_id: uuid.UUID,

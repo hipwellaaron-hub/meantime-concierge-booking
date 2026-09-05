@@ -8,6 +8,7 @@ import logging
 import secrets
 import string
 import uuid
+from decimal import Decimal
 
 from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
@@ -114,6 +115,7 @@ def create_booking(
     migration_external_ref: str | None = None,
     migration_snapshot: dict | None = None,
     agreed_min_adults: int | None = None,
+    agreed_min_food_spend: Decimal | None = None,
     pricing_locked_at: dt.date | None = None,
 ) -> Booking:
     space = db.get(Space, space_id)
@@ -146,6 +148,11 @@ def create_booking(
         # defaults to the standard" (Master Policy v1.3 §4.1). Only ever
         # changes from here via an explicit staff reduction afterward.
         agreed_min_adults=agreed_min_adults if agreed_min_adults is not None else space.standard_min_adults,
+        # Same "is not None" as above, and for the same reason: a waived
+        # minimum of $0 is a real agreed figure, not an absent one.
+        agreed_min_food_spend=(
+            agreed_min_food_spend if agreed_min_food_spend is not None else space.min_food_spend
+        ),
         # Defaults to today -- correct for the normal enquiry/booking flow,
         # where created_at and the real quote date are the same day. A
         # caller importing a booking from a prior system with no reliable
@@ -785,6 +792,92 @@ def set_agreed_minimum(
                 actor=actor,
             )
         )
+    db.commit()
+    db.refresh(booking)
+    return booking
+
+
+def set_agreed_food_minimum(
+    db: Session, booking: Booking, *, agreed_min_food_spend: Decimal, reason: MinReductionReasonCode | None, actor: str
+) -> Booking:
+    """The dollar counterpart of set_agreed_minimum, and subject to the
+    same Master Policy rule: a reason is required whenever the agreed
+    figure differs from the space's own standard, and is cleared when it
+    is put back to standard so a stale justification never lingers.
+
+    Kept as its own column and its own reason (never sharing the guest
+    minimum's) because the two move independently -- a Friday booking
+    routinely gets a reduced food spend at the standard guest minimum.
+
+    $0 is a legitimate agreed figure (a waived minimum) and is handled
+    here exactly like any other: the guard below compares values, it never
+    tests truthiness.
+    """
+    if agreed_min_food_spend < 0:
+        raise ValueError("the agreed food minimum cannot be negative")
+
+    standard = booking.space.min_food_spend
+    if agreed_min_food_spend != standard and reason is None:
+        raise ValueError("a reason is required when the agreed food minimum differs from the space standard")
+    if agreed_min_food_spend == standard:
+        reason = None
+
+    old_spend, old_reason = booking.agreed_min_food_spend, booking.agreed_min_food_spend_reason
+    booking.agreed_min_food_spend = agreed_min_food_spend
+    booking.agreed_min_food_spend_reason = reason
+    db.add(
+        BookingEvent(
+            booking_id=booking.id,
+            event_type="field_changed",
+            field_name="agreed_min_food_spend",
+            old_value=str(old_spend),
+            new_value=str(agreed_min_food_spend),
+            actor=actor,
+        )
+    )
+    if reason != old_reason:
+        db.add(
+            BookingEvent(
+                booking_id=booking.id,
+                event_type="field_changed",
+                field_name="agreed_min_food_spend_reason",
+                old_value=old_reason.value if old_reason else None,
+                new_value=reason.value if reason else None,
+                actor=actor,
+            )
+        )
+    db.commit()
+    db.refresh(booking)
+    return booking
+
+
+def set_bar_credit(db: Session, booking: Booking, *, bar_credit: Decimal, actor: str) -> Booking:
+    """Dollar bar credit included in the deal. No reason code: unlike the
+    minimums this is not a reduction of a standard, it is an inclusion
+    being added, and there is no space-level default to depart from.
+
+    Recorded as a figure rather than words in the Minimum Spend clause so
+    that the Event Order and the bar structure carry it too -- staff
+    pouring on the night were previously the only people who could not
+    see it."""
+    if bar_credit < 0:
+        raise ValueError("bar credit cannot be negative")
+
+    old_credit = booking.bar_credit
+    if old_credit == bar_credit:
+        return booking
+
+    booking.bar_credit = bar_credit
+    db.add(
+        BookingEvent(
+            booking_id=booking.id,
+            event_type="field_changed",
+            field_name="bar_credit",
+            old_value=str(old_credit),
+            new_value=str(bar_credit),
+            actor=actor,
+        )
+    )
     db.commit()
     db.refresh(booking)
     return booking

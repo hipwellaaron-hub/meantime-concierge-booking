@@ -235,7 +235,8 @@ def _booking_payload(db: Session, booking: Booking) -> dict:
         # Not a field yet -- the per-booking override is parked, so the
         # space default is the only real figure. Reported as null rather
         # than echoing the default, which would look like a negotiated term.
-        "agreed_min_food_spend": None,
+        "agreed_min_food_spend": str(booking.agreed_min_food_spend),
+        "bar_credit": str(booking.bar_credit),
         "space_default_min_food_spend": (
             str(booking.space.min_food_spend) if booking.space else None
         ),

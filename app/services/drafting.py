@@ -165,6 +165,21 @@ def _ground(db: Session, booking: Booking, profile: venue_profile.VenueProfile) 
         for r in rooms
     ]
 
+    # What THIS booking was actually agreed, which is not necessarily what
+    # its room's standard says. facts["rooms"] above is the space defaults
+    # and stays that way -- it is there to help pick a room, and a room
+    # nobody has chosen yet has no agreed figure. Once a real room IS
+    # assigned, the agreed terms are the ones that bind, and a draft that
+    # quotes the space standard at a client who negotiated something else
+    # is quoting them a number they never agreed to.
+    space = booking.space
+    if space is not None and space.is_bookable:
+        facts["agreed_terms"] = {
+            "min_adults": booking.agreed_min_adults,
+            "min_food_spend": str(booking.agreed_min_food_spend),
+            "bar_credit": str(booking.bar_credit),
+        }
+
     items = db.scalars(select(MenuItem).where(MenuItem.is_active.is_(True)).order_by(MenuItem.category, MenuItem.name)).all()
     facts["catalogue"] = [
         {"name": i.name, "category": i.category.value, "price": str(i.current_price),
