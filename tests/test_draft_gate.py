@@ -402,3 +402,65 @@ def test_no_children_and_no_keyword_does_not_block_under_18(db, hamilton, loft):
     b = _booking(db, loft, name="Work drinks", event_type="corporate", adults=40)
     decision = _decide(db, b, guests=40, text="Drinks and canapes after work")
     assert draft_gate.UNDER_18 not in decision.codes
+
+
+# --- wave 2 (15): a timeless enquiry contends for the whole day --------------
+
+
+def test_two_unassigned_enquiries_on_the_same_date_block_each_other(
+    db, hamilton, loft, mezzanine, lounge, unassigned_space
+):
+    # Both sit on the placeholder with no times. Until 2026-09-05 the
+    # contention check ran times_overlap, which is False on any None time,
+    # so each was told the date was clear with no other interest.
+    when = _saturday(8)
+    first = _unassigned(db, unassigned_space, name="First party", when=when, adults=40, event_type="corporate")
+    second = _unassigned(db, unassigned_space, name="Second party", when=when, adults=40, event_type="corporate")
+
+    decision = draft_gate.evaluate(db, second, adult_count=40, attendee_count=40)
+
+    assert draft_gate.CONTESTED in decision.codes
+    assert first.reference_code in decision.facts["contested_by"]
+
+
+def test_an_untimed_enquiry_treats_an_offered_room_as_taken_all_day(
+    db, hamilton, loft, mezzanine, lounge, unassigned_space
+):
+    # The untimed path used to ask availability.is_space_free, which only
+    # counts BLOCKING statuses, so an `offered` booking on the Loft left
+    # the Loft reading as free to a form enquiry with no times.
+    when = _saturday(8)
+    rival = _booking(db, loft, name="Evening offer", event_type="corporate", when=when, adults=60)
+    change_status(db, rival, BookingStatus.offered, actor="test")
+    enquiry = _unassigned(db, unassigned_space, name="Untimed enquiry", when=when, adults=60, event_type="corporate")
+
+    decision = draft_gate.evaluate(db, enquiry, adult_count=60, attendee_count=60)
+
+    assert "The Loft" not in decision.facts["rooms_free"]
+
+
+def test_unassigned_enquiries_on_different_dates_do_not_contend(
+    db, hamilton, loft, mezzanine, lounge, unassigned_space
+):
+    first = _unassigned(db, unassigned_space, name="Week eight", when=_saturday(8), adults=40, event_type="corporate")
+    second = _unassigned(db, unassigned_space, name="Week nine", when=_saturday(9), adults=40, event_type="corporate")
+
+    decision = draft_gate.evaluate(db, second, adult_count=40, attendee_count=40)
+
+    assert draft_gate.CONTESTED not in decision.codes
+    assert first.reference_code not in decision.facts["contested_by"]
+
+
+def test_a_timed_lunch_and_a_timed_evening_still_do_not_contend(db, hamilton, loft):
+    # The gate predicate defers to times_overlap when BOTH sides have
+    # times, so the "lunch and evening are not competing" rule survives.
+    when = _saturday(8)
+    lunch = _booking(db, loft, name="Lunch", event_type="corporate", when=when,
+                     start=dt.time(11, 0), end=dt.time(15, 0), adults=40)
+    change_status(db, lunch, BookingStatus.offered, actor="test")
+    evening = _booking(db, loft, name="Evening", event_type="corporate", when=when, adults=40)
+
+    decision = draft_gate.evaluate(db, evening, adult_count=40, attendee_count=40)
+
+    assert decision.facts["contested_by"] == []
+    assert draft_gate.DATE_TAKEN not in decision.codes

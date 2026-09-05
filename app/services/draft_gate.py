@@ -53,6 +53,9 @@ MULTI_SPACE = "multi_space"
 OVER_CAPACITY = "over_capacity"
 DAYTIME = "daytime"
 DATE_TAKEN = "date_taken"
+# Two or more unassigned enquiries chasing one date: no room reads as
+# taken, but they are competing for the same pool.
+CONTESTED = "contested"
 ROOM_HELD = "room_held"
 NEGOTIATION = "negotiation"
 BEREAVEMENT = "bereavement"
@@ -179,11 +182,34 @@ def _haystack(booking: Booking, extra: str = "") -> str:
     ).lower()
 
 
+def _gate_overlaps(a: Booking, b: Booking) -> bool:
+    """Overlap as the GATE sees it: a booking with no times contends for
+    the whole day.
+
+    Deliberately NOT booking.times_overlap. That function mirrors the
+    database exclusion constraint -- a NULL range never conflicts -- and
+    is shared by the supersede cascade and reconciliation, so widening it
+    there would change what kills a rival. The gate asks a different
+    question: is this date safe to offer? A form enquiry arrives with no
+    times, and treating "no time" as "no clash" is how two enquiries for
+    the same Saturday were each told the date was clear (2026-09-05
+    review). Overstating contention costs a human ten minutes;
+    understating it sells the same night twice. Aaron's call: contend on
+    date and space, and a missing time means the whole day."""
+    if None in (a.start_time, a.end_time, b.start_time, b.end_time):
+        return True
+    return times_overlap(a, b)
+
+
 def _contention(db: Session, booking: Booking) -> list[Booking]:
     """Other live bookings and enquiries overlapping this room and time.
 
-    Time-aware, matching the exclusion constraint: a lunch and an evening
-    in one room are not competing for the same slot.
+    Time-aware when both sides have times: a lunch and an evening in one
+    room are not competing for the same slot. A side with no times
+    contends for the whole day (see _gate_overlaps). For a booking still
+    on the Unassigned placeholder, "this room" is the placeholder itself,
+    so the rivals found here are the OTHER unassigned enquiries on the
+    date -- the set the caller blocks on.
     """
     if booking.event_date is None:
         return []
@@ -199,7 +225,7 @@ def _contention(db: Session, booking: Booking) -> list[Booking]:
         )
         .execution_options(populate_existing=True)
     ).all()
-    return [o for o in others if times_overlap(booking, o)]
+    return [o for o in others if _gate_overlaps(booking, o)]
 
 
 def _evaluate_candidate_rooms(db: Session, booking: Booking, guests: int, facts: dict) -> list[GateBlock]:
@@ -239,23 +265,26 @@ def _evaluate_candidate_rooms(db: Session, booking: Booking, guests: int, facts:
     for room in fitting:
         if booking.event_date is None:
             continue
-        if booking.start_time is not None and booking.end_time is not None:
-            clash = db.scalars(
-                select(Booking)
-                .where(
-                    Booking.space_id == room.id,
-                    Booking.event_date == booking.event_date,
-                    Booking.id != booking.id,
-                    Booking.status.in_(TOUCHING_STATUSES),
-                )
-                .execution_options(populate_existing=True)
-            ).all()
-            if not any(times_overlap(booking, o) for o in clash):
-                free.append(room)
-        else:
-            is_free, _ = availability.is_space_free(db, room.id, booking.event_date)
-            if is_free:
-                free.append(room)
+        # One path for timed and untimed alike. The untimed case used to
+        # fall back to availability.is_space_free, which counts only
+        # BLOCKING statuses -- so an `offered` or open `enquiry` already
+        # sitting on a room made that room read as free to a form enquiry
+        # with no times. TOUCHING_STATUSES is a superset of
+        # BLOCKING_STATUSES, so this is strictly more conservative than
+        # what it replaces, and _gate_overlaps makes a missing time mean
+        # the whole day.
+        clash = db.scalars(
+            select(Booking)
+            .where(
+                Booking.space_id == room.id,
+                Booking.event_date == booking.event_date,
+                Booking.id != booking.id,
+                Booking.status.in_(TOUCHING_STATUSES),
+            )
+            .execution_options(populate_existing=True)
+        ).all()
+        if not any(_gate_overlaps(booking, o) for o in clash):
+            free.append(room)
 
     facts["rooms_free"] = [r.name for r in free]
 
@@ -489,8 +518,24 @@ def _evaluate(
             )
         )
     elif rivals:
-        # Not a block. A contested but free slot may still be drafted, and
-        # the draft must disclose the other interest (brief section 4).
         facts["open_enquiry_count"] = len(rivals)
+        if not space.is_bookable:
+            # Two or more unassigned enquiries chasing the same date. No
+            # room reads as taken, because none of them holds one -- but
+            # they are competing for the same pool, and which one gets
+            # which room is a sales call, not a draft. Aaron's call
+            # (2026-09-05): block, do not disclose. Until then each was
+            # told the date was clear with no other interest.
+            noun = "enquiry" if len(rivals) == 1 else "enquiries"
+            blocks.append(
+                GateBlock(
+                    CONTESTED,
+                    f"{len(rivals)} other open {noun} for this date with no room assigned yet "
+                    f"({', '.join(o.reference_code for o in rivals)}). Which one gets which room is a sales call.",
+                )
+            )
+        # For an assigned room a contested but free slot may still be
+        # drafted, and the draft must disclose the other interest (brief
+        # section 4).
 
     return GateDecision(should_draft=not blocks, blocks=blocks, facts=facts)

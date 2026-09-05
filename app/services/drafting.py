@@ -151,13 +151,19 @@ def _ground(db: Session, booking: Booking, profile: venue_profile.VenueProfile) 
 
     path_a = {e["reference"] for b in blocks for k in ("confirmed", "tentative", "open_enquiries") for e in b[k]}
     bookable_ids = {uuid.UUID(b["space_id"]) for b in blocks}
-    path_b = {
-        o.reference_code
-        for o in ai_availability.bookings_on_date(db, venue, on=day)
-        if o.space_id in bookable_ids and o.id != booking.id
-    }
+    on_date = [o for o in ai_availability.bookings_on_date(db, venue, on=day) if o.id != booking.id]
+    path_b = {o.reference_code for o in on_date if o.space_id in bookable_ids}
     consistent = path_a == path_b
     facts["cross_check"] = {"agrees": consistent, "path_a": sorted(path_a), "path_b": sorted(path_b)}
+
+    # Other enquiries on this date that have no room yet. They sit on the
+    # non-bookable placeholder, so build_availability never lists them and
+    # the model would otherwise be told there is no other interest. The
+    # gate blocks on these (draft_gate.CONTESTED); this is the same fact,
+    # stored so the review page can re-check it later (see freshness).
+    facts["unassigned_enquiries_on_date"] = sorted(
+        o.reference_code for o in on_date if o.space_id not in bookable_ids
+    )
 
     rooms = db.scalars(
         select(Space).where(Space.venue_id == venue.id, Space.is_bookable.is_(True)).order_by(Space.capacity)

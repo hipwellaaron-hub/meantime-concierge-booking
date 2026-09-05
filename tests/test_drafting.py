@@ -438,3 +438,31 @@ def test_the_gate_receives_the_total_headcount_not_adults_twice(db, hamilton, un
 
     assert seen["adult_count"] == 30
     assert seen["attendee_count"] == 50
+
+
+# --- wave 2 (15): grounding records the other unassigned enquiries ----------
+
+
+def test_grounding_lists_other_unassigned_enquiries_on_the_date(db, hamilton, unassigned_space, drafting_on, model):
+    from app.services import venue_profile
+    when = _saturday()
+    first, _d1, c1 = create_enquiry_booking(
+        db, venue=hamilton, full_name="First Client", email="first.client@example.com", phone="0400000001",
+        event_name="First dinner", event_type="corporate", event_date=when,
+        proposed_time_slot="Saturday evening", attendee_count=40, adult_count=40,
+        company_name=None, dates_flexible=False, comments="A dinner for 40", lead_source="website",
+        lead_referrer=None, actor="test", first_touch_attribution=None, last_touch_attribution=None,
+    )
+    second, _d2, c2 = create_enquiry_booking(
+        db, venue=hamilton, full_name="Second Client", email="second.client@example.com", phone="0400000002",
+        event_name="Second drinks", event_type="corporate", event_date=when,
+        proposed_time_slot="Saturday evening", attendee_count=40, adult_count=40,
+        company_name=None, dates_flexible=False, comments="Drinks for 40", lead_source="website",
+        lead_referrer=None, actor="test", first_touch_attribution=None, last_touch_attribution=None,
+    )
+    assert c1 and c2
+
+    facts, _ok = drafting._ground(db, second, venue_profile.for_booking(second))
+
+    assert first.reference_code in facts["unassigned_enquiries_on_date"]
+    assert second.reference_code not in facts["unassigned_enquiries_on_date"]
