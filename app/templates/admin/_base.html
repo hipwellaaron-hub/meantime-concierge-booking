@@ -12,27 +12,45 @@
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <link rel="mask-icon" href="/static/icons/safari-pinned-tab.svg" color="#c9a96e">
 <link rel="manifest" href="/site.webmanifest">
-<meta name="theme-color" content="#0e0e0e">
+<meta name="theme-color" content="#f5f0e8">
 <meta name="msapplication-TileColor" content="#0e0e0e">
 <meta name="msapplication-config" content="/browserconfig.xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Playfair+Display:wght@600;700&display=swap" rel="stylesheet">
 <style>
+  /* Light theme, 2026-09-05. Same three brand colours as before -- Dark
+     #0e0e0e, Gold #c9a96e, Cream #f5f0e8 -- with the ground and the ink
+     swapped: cream page, dark text, gold accents. Aaron found the dark
+     admin hard to look at all day; the client-facing pages keep their
+     evening-venue dark and are untouched.
+
+     Text colours were chosen by WCAG contrast against the cream ground,
+     not by eye: brand gold fails as text (1.97:1), so --gold is a darker
+     readable gold for links and labels and --gold-fill is the brand gold
+     for buttons, where dark text sits on top of it. */
   :root {
-    --bg: #0e0e0e;
-    --surface: #161616;
-    --surface-hi: #1e1e1e;
-    --gold: #c9a96e;
+    --bg: #f5f0e8;
+    --surface: #ffffff;
+    --surface-hi: #faf7f2;
+    --ink: #1a1815;
+    /* Legacy name. On the dark theme this WAS the text colour (cream on
+       black); it is still the text colour, now dark on cream. Kept as an
+       alias so every existing var(--cream) keeps meaning "text". */
+    --cream: var(--ink);
+    --muted: #6e6862;
+    --gold: #856637;
+    --gold-fill: #c9a96e;
     --gold-dim: #a08350;
-    --cream: #f5f0e8;
-    --muted: #8a8580;
-    --ember: #d4622b;
-    --safe-green: #4a6b4a;
-    --safe-green-text: #7ab87a;
+    --ember: #b04b1c;
+    --safe-green: #3f7a4a;
+    --safe-green-text: #2c6a3a;
     --wine: #7a2e3a;
-    --border: rgba(201,169,110,0.15);
-    --border-bright: rgba(201,169,110,0.35);
+    --info: #4a7ab8;
+    --info-text: #2f5f9e;
+    --border: rgba(26,24,21,0.10);
+    --border-bright: rgba(26,24,21,0.22);
+    --shadow: 0 1px 2px rgba(26,24,21,0.04), 0 6px 20px rgba(26,24,21,0.06);
     --radius: 12px;
     --font-head: "Playfair Display", Georgia, serif;
     --font-body: "DM Sans", -apple-system, BlinkMacSystemFont, sans-serif;
@@ -42,7 +60,7 @@
   a { color: var(--gold); }
   header.top {
     display: flex; flex-direction: column; gap: 10px;
-    padding: 14px 24px; background: var(--surface-hi); border-bottom: 1px solid var(--border);
+    padding: 14px 24px; background: var(--surface); border-bottom: 1px solid var(--border);
     position: sticky; top: 0; z-index: 10;
   }
   /* Brand centred; the system-status cluster + log out sit at the right,
@@ -61,7 +79,7 @@
     padding: 8px 24px; font-size: 0.82rem; font-weight: 700; letter-spacing: 0.02em;
     position: sticky; top: 57px; z-index: 9; text-align: center;
   }
-  .stripe-banner.mode-test { background: var(--ember); color: #201a10; }
+  .stripe-banner.mode-test { background: var(--ember); color: #ffffff; }
   .stripe-banner.mode-not_configured { background: var(--wine); color: #f5e2e5; }
   .stripe-banner .detail { font-weight: 500; text-transform: none; letter-spacing: normal; }
   nav.primary { display: flex; gap: 18px; align-items: center; justify-content: center; }
@@ -89,7 +107,7 @@
   .detail-nav a:hover { color: var(--gold); border-color: var(--gold-dim); }
   .card {
     background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
-    padding: 20px; margin-bottom: 18px;
+    padding: 20px; margin-bottom: 18px; box-shadow: var(--shadow);
     /* Every table in this app lives inside a .card -- on a phone a wide
        table (Recent activity, Triage worklists, the audit trail) would
        otherwise force the whole page's layout viewport wider than the
@@ -134,19 +152,19 @@
   .field-row { display: flex; gap: 12px; }
   .field-row > div { flex: 1; }
 
-  .btn { display: inline-block; padding: 9px 16px; border-radius: 8px; border: 1px solid var(--gold-dim); background: var(--gold); color: #201a10; font-weight: 700; font-size: 0.85rem; cursor: pointer; font-family: inherit; }
+  .btn { display: inline-block; padding: 9px 16px; border-radius: 8px; border: 1px solid var(--gold-dim); background: var(--gold-fill); color: #201a10; font-weight: 700; font-size: 0.85rem; cursor: pointer; font-family: inherit; }
   .btn:hover { background: var(--gold-dim); }
   .btn.secondary { background: transparent; color: var(--cream); border: 1px solid var(--border-bright); }
   .btn.secondary:hover { border-color: var(--gold); color: var(--gold); }
-  .btn.danger { background: transparent; color: #e8b3bd; border: 1px solid var(--wine); }
-  .btn.danger:hover { background: rgba(122,46,58,0.2); }
+  .btn.danger { background: transparent; color: var(--wine); border: 1px solid var(--wine); }
+  .btn.danger:hover { background: rgba(122,46,58,0.08); }
   form.inline { display: inline; }
 
   .badge { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 0.72rem; font-weight: 700; letter-spacing: 0.02em; text-transform: uppercase; border: 1px solid var(--border-bright); color: var(--muted); }
   .badge.gold { background: rgba(201,169,110,0.12); border-color: var(--gold-dim); color: var(--gold); }
-  .badge.green { background: rgba(74,107,74,0.2); border-color: var(--safe-green); color: var(--safe-green-text); }
-  .badge.ember { background: rgba(212,98,43,0.12); border-color: var(--ember); color: #eeb08f; }
-  .badge.wine { background: rgba(122,46,58,0.2); border-color: var(--wine); color: #e8b3bd; }
+  .badge.green { background: rgba(63,122,74,0.12); border-color: var(--safe-green); color: var(--safe-green-text); }
+  .badge.ember { background: rgba(176,75,28,0.10); border-color: var(--ember); color: var(--ember); }
+  .badge.wine { background: rgba(122,46,58,0.10); border-color: var(--wine); color: var(--wine); }
 
   .muted { color: var(--muted); }
   .empty-state { color: var(--muted); font-style: italic; padding: 20px 0; }
@@ -160,8 +178,8 @@
   .health-dot.degraded { background: var(--gold); }
   .health-dot.down { background: #e8586a; animation: health-pulse-red 1s ease-in-out infinite; }
   @keyframes health-pulse-green {
-    0%, 100% { box-shadow: 0 0 0 0 rgba(122,184,122,0.55); }
-    50% { box-shadow: 0 0 0 5px rgba(122,184,122,0); }
+    0%, 100% { box-shadow: 0 0 0 0 rgba(63,122,74,0.45); }
+    50% { box-shadow: 0 0 0 5px rgba(63,122,74,0); }
   }
   @keyframes health-pulse-red {
     0%, 100% { opacity: 1; }
