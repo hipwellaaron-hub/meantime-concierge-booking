@@ -290,7 +290,7 @@
         <td>
           {% if current_agreement %}<span class="badge {{ current_agreement.status.value | status_badge }}">{{ current_agreement.status.value }}</span>{% else %}<span class="muted">none</span>{% endif %}
           {% if current_agreement and current_agreement.is_legacy %}<span class="badge wine" title="Signed in iVvy before the Concierge migration — a fixed record, not a live document">LEGACY · iVvy</span>{% endif %}
-          {% if current_agreement and current_agreement.viewed_at %}<div class="muted" style="font-size:0.72rem; margin-top:3px;">Opened {{ current_agreement.viewed_at | sydney_time }}</div>{% endif %}
+          {% if current_agreement and current_agreement.viewed_at %}<div class="muted" style="font-size:0.8rem; margin-top:3px; color: var(--ink);">Opened {{ current_agreement.viewed_at | sydney_time }}</div>{% endif %}
         </td>
         <td>
           {% if current_agreement and current_agreement.is_legacy %}
@@ -328,7 +328,7 @@
         <td class="muted">{{ current_beo.version if current_beo else "—" }}</td>
         <td>
           {% if current_beo %}<span class="badge {{ current_beo.status.value | status_badge }}">{{ current_beo.status.value }}</span>{% else %}<span class="muted">none</span>{% endif %}
-          {% if current_beo and current_beo.viewed_at %}<div class="muted" style="font-size:0.72rem; margin-top:3px;">Opened {{ current_beo.viewed_at | sydney_time }}</div>{% endif %}
+          {% if current_beo and current_beo.viewed_at %}<div class="muted" style="font-size:0.8rem; margin-top:3px; color: var(--ink);">Opened {{ current_beo.viewed_at | sydney_time }}</div>{% endif %}
         </td>
         <td>
           <form class="inline" method="post" action="/admin/bookings/{{ booking.id }}/documents/beo/generate">
@@ -437,7 +437,7 @@
         <td>
           <span class="badge {{ invoice.status.value | status_badge }}">{{ invoice.status.value }}</span>
           {% if invoice.is_legacy %}<span class="badge wine" title="Deposit paid in iVvy before the migration — a fixed record">LEGACY · iVvy</span>{% endif %}
-          {% if invoice.viewed_at %}<div class="muted" style="font-size:0.72rem; margin-top:3px;" title="{{ invoice.viewed_at | sydney_time }}">Opened {{ invoice.viewed_at | time_ago }}</div>{% endif %}
+          {% if invoice.viewed_at %}<div class="muted" style="font-size:0.8rem; margin-top:3px; color: var(--ink);" title="{{ invoice.viewed_at | sydney_time }}">Opened {{ invoice.viewed_at | time_ago }}</div>{% endif %}
         </td>
         <td class="muted">{{ invoice.due_date | aus_date }}</td>
         <td>
