@@ -194,7 +194,8 @@ def _validate(draft: str, *, client_asked_for_figures: bool, profile=None, rooms
     text = draft or ""
 
     for room, offerable in (rooms or {}).items():
-        if offerable:
+        room = (room or "").strip()
+        if offerable or not room:
             continue
         # The proper noun with or without its article ("Loft", "the
         # Loft"), or the article plus the name in any case ("The loft",
@@ -204,8 +205,8 @@ def _validate(draft: str, *, client_asked_for_figures: bool, profile=None, rooms
         # normalised so "O'Brien's Room" matches either way.
         word = re.sub(r"^[Tt]he\s+", "", room).replace("\u2019", "'")
         haystack = text.replace("\u2019", "'")
-        proper = r"(?<!\w)(?:[Tt]he\s+)?" + re.escape(word) + r"(?!\w)"
-        with_article = r"(?<!\w)the\s+" + re.escape(word) + r"(?!\w)"
+        proper = r"(?<!\w)(?:[Tt]he\s+)?" + re.escape(word) + r"(?:s|'s)?(?!\w)"
+        with_article = r"(?<!\w)(?:the|our|your)\s+" + re.escape(word) + r"(?:s|'s)?(?!\w)"
         match = re.search(proper, haystack) or re.search(with_article, haystack, re.IGNORECASE)
         if match:
             result.violations.append(

@@ -210,42 +210,40 @@ _TIME_TOKEN = re.compile(r"(?<![\d:])(\d{1,2})(?:[:.](\d{2}))?\s*(am|pm|a\.m\.|p
 _RANGE_SEPARATOR = re.compile(r"\s*(?:-|\u2013|\u2014|to|till|til|until)\s*", re.I)
 _MIDNIGHT = re.compile(r"\b(?:12\s*)?midnight\b", re.I)
 _NOON = re.compile(r"\b(?:12\s*)?(?:noon|midday)\b", re.I)
-# Words that say the range is not the event's bounds: an arrival window,
-# a start with no finish, or an end that may move.
-_OPEN_ENDED = re.compile(
-    r"\b(?:arriv\w*|start\w*|doors|finish\w*|end\w*|late|later|onwards?|then|ish|tbc|tba|"
-    r"at\s+least|minimum|maybe|possibly|approx\w*|about|around)\b|\+",
-    re.I,
+# The only words allowed to sit around the range. Anything else -- a
+# guest count, a date, "arrival", "TBC", "plus", "?", a second time --
+# means the field says more than the range, and the gate does not guess.
+_HARMLESS = frozenset(
+    "monday tuesday wednesday thursday friday saturday sunday mon tue tues wed thu thur thurs fri sat sun "
+    "morning afternoon evening night lunch dinner drinks from on at the a an".split()
 )
+_RESIDUE_PUNCTUATION = re.compile(r"[\s,.;:()\-\u2013\u2014]+")
 
 
 def parse_time_range(text: str | None) -> tuple[dt.time, dt.time] | None:
-    """A (start, end) pair from free text, or None when it is not clearly
-    the event's two-ended clock range.
+    """A (start, end) pair from free text, or None when the field is not
+    simply the event's two-ended clock range.
 
     The field is client free text, and every reading the gate trusts
     narrows contention, so the policy is: parse only what is unambiguous
-    and fall back to the whole day for everything else. Three review
-    passes each found a shape that slipped through a looser rule ("12/11
-    - 6pm" as 11:00-18:00, "Dec 6 - 8pm", "12am-3" for a lunch, "5-6pm
-    arrival" as the whole night), and every one was a bare number next
-    to a marked one. So:
+    and fall back to the whole day for everything else. Four review
+    passes each found a shape a looser rule let through ("12/11 - 6pm"
+    as 11:00-18:00, "5-6pm arrival" as the whole night, "6pm-8pm dinner
+    and dancing after", "5 for 6pm-11pm", "6pm to 11pm plus"), and an
+    allow-list of bad words cannot be finished. So the rule is the
+    reverse: the field must be the range and nothing else.
     - Both ends carry am/pm ("6pm to 11pm", "12:00 PM - 5:00 PM"), or
       both carry minutes on a 24-hour clock with an hour past 12
-      ("18:00-23:00"). "6-11pm", "6pm to 12", "10-2pm" all fall back:
-      the client is not harmed by the whole day, and the gate is not
+      ("18:00-23:00"). "6-11pm", "6pm to 12", "10-2pm" fall back: the
+      client is not harmed by the whole day, and the gate is not
       guessing which side the am/pm belongs to.
-    - The two ends must be adjacent and joined by a range word or dash;
-      any other am/pm or minutes token in the field means it says more
-      than one range and it falls back.
-    - Words like arrival, start, finish, late, onwards, TBC, or a "+",
-      mean the range is not the event's bounds; fall back.
+    - The two ends are adjacent and joined by a range word or dash, and
+      whatever else is in the field is a weekday or a word like
+      "evening"; any other word, digit or symbol falls back.
     - "12am"/"midnight"/"12:00am" as the end means the end of that day;
       "12am" as a start (lay usage for noon) and anything past midnight
       fall back."""
     if not text:
-        return None
-    if _OPEN_ENDED.search(text):
         return None
     text = _NOON.sub("12pm", _MIDNIGHT.sub("12am", text))
     tokens = list(_TIME_TOKEN.finditer(text))
@@ -265,7 +263,8 @@ def parse_time_range(text: str | None) -> tuple[dt.time, dt.time] | None:
     if len(pairs) != 1:
         return None
     first, second = pairs[0]
-    if any(clockish(t) and t not in (first, second) for t in tokens):
+    residue = text[:first.start()] + " " + text[second.end():]
+    if any(word.lower() not in _HARMLESS for word in _RESIDUE_PUNCTUATION.split(residue) if word):
         return None
 
     def build(match, ampm, *, is_end=False):

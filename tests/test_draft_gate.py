@@ -642,11 +642,23 @@ def test_an_18th_with_children_on_the_booking_still_says_18th(db, hamilton, loft
     ("7pm to midnight", (dt.time(19, 0), dt.time(23, 59))),
     ("8am to 12 noon", (dt.time(8, 0), dt.time(12, 0))),
     ("10am to midday", (dt.time(10, 0), dt.time(12, 0))),
-    ("6pm to 11pm, 40 guests", (dt.time(18, 0), dt.time(23, 0))),
-    ("Sat 28/11 6pm-11pm", (dt.time(18, 0), dt.time(23, 0))),
     ("6pm \u2013 11pm", (dt.time(18, 0), dt.time(23, 0))),
-    ("12/11 - 6pm to 11pm", (dt.time(18, 0), dt.time(23, 0))),
-    ("25-30 people, 6pm to 11pm", (dt.time(18, 0), dt.time(23, 0))),
+    ("Saturday 6pm to 11pm", (dt.time(18, 0), dt.time(23, 0))),
+    ("Sat evening, 6pm to 11pm", (dt.time(18, 0), dt.time(23, 0))),
+    ("6pm to 11pm.", (dt.time(18, 0), dt.time(23, 0))),
+    ("dinner from 6pm to 11pm", (dt.time(18, 0), dt.time(23, 0))),
+    # Falls back: anything beyond the range in the field.
+    ("6pm to 11pm, 40 guests", None),
+    ("Sat 28/11 6pm-11pm", None),
+    ("12/11 - 6pm to 11pm", None),
+    ("25-30 people, 6pm to 11pm", None),
+    ("6pm-8pm dinner and dancing after", None),
+    ("5 for 6pm-11pm", None),
+    ("6pm to 11pm cocktails from 530pm", None),
+    ("6pm to 11pm plus", None),
+    ("6pm to 11pm?", None),
+    ("6pm to 11pm ideally", None),
+    ("6pm to 11pm sharp", None),
     # Falls back: a bare number next to a marked one is a guess.
     ("6-11pm", None),
     ("10-2pm", None),
@@ -859,4 +871,5 @@ def test_a_date_before_the_range_is_not_read_as_its_start(
                           proposed_time=f"{when.day}/{when.month} - 6pm to 11pm")
     decision = draft_gate.evaluate(db, enquiry, adult_count=80, attendee_count=80)
     assert "The Loft" not in decision.facts["rooms_free"]
-    assert decision.facts["times_from_form"] == "18:00-23:00"
+    # A date in the field means the field is not simply the range: whole day.
+    assert "times_from_form" not in decision.facts
