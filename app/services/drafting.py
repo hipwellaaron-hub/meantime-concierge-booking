@@ -124,6 +124,9 @@ def _ground(db: Session, booking: Booking, profile: venue_profile.VenueProfile) 
             "date": _serialise(day) if day else None,
             "day_of_week": ai_availability.day_of_week(day) if day else None,
             "adults": booking.adult_count,
+            # Stated separately so the model cannot quote a headcount that
+            # silently excludes the children the gate now blocks on.
+            "children": booking.child_count or 0,
             "proposed_time": booking.proposed_time_slot,
             "contact_first_name": (booking.contact.name.split()[0] if booking.contact and booking.contact.name else None),
         },
@@ -231,7 +234,13 @@ def draft_for_booking(db: Session, booking_id: uuid.UUID, *, trigger: str = "enq
                            failure_reason="No model API key is configured.")
 
         decision = draft_gate.evaluate(
-            db, booking, adult_count=booking.adult_count, attendee_count=booking.adult_count,
+            # The TOTAL headcount, not adults again: the form asks for
+            # adults and total attendees and stores the difference as
+            # child_count, so passing adult_count twice judged room
+            # capacity against 30 for a 50-person party and let the Lounge
+            # (capacity 35) through (2026-09-05 review).
+            db, booking, adult_count=booking.adult_count,
+            attendee_count=booking.adult_count + (booking.child_count or 0),
             enquiry_text=booking.enquiry_text or "",
         )
         if not decision.should_draft:

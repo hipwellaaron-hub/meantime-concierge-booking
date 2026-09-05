@@ -81,7 +81,13 @@ _MULTI_SPACE_PATTERN = re.compile(
 )
 
 _NEGOTIATION_PATTERN = re.compile(
-    r"budget|discount|cheaper|negotiat|best\s+price|deal\b|sponsor|donat|fundrais|"
+    # \bdeal\b, not deal\b: unanchored on the left it matched inside
+    # "ideal" -- "the Loft would be ideal for our team dinner" was being
+    # blocked as a negotiation with a staff note that no budget had been
+    # mentioned. Found by the 2026-09-05 review; it was inflating the
+    # block rate with false positives, which is the calibration signal
+    # shadow mode exists to measure.
+    r"budget|discount|cheaper|negotiat|best\s+price|\bdeal\b|sponsor|donat|fundrais|"
     r"charit|not[\s-]for[\s-]profit|non[\s-]profit|nfp\b|afford"
 )
 
@@ -89,7 +95,12 @@ _BEREAVEMENT_PATTERN = re.compile(r"\bwake\b|funeral|memorial|celebration\s+of\s
 
 # Explicit daytime language, for enquiries with no times attached.
 _DAYTIME_PATTERN = re.compile(
-    r"\blunch|\bdaytime\b|\bafternoon\b|\bbrunch\b|\bmorning\b|high\s+tea|baby\s+shower|christening"
+    # "morning tea" / "mid-morning" are daytime-event signals; a bare
+    # "morning" is not -- it matched the greeting "Good morning!" on an
+    # evening enquiry and blocked it as a daytime event with a factually
+    # wrong staff note (2026-09-05 review).
+    r"\blunch|\bdaytime\b|\bafternoon\b|\bbrunch\b|\bmorning\s+tea\b|\bmid-?morning\b|"
+    r"high\s+tea|baby\s+shower|christening"
 )
 
 
@@ -325,7 +336,24 @@ def _evaluate(
     # RSA conditions are communicated softly and in person. The AI has
     # previously invented a wristband procedure that would have handed
     # underage guests a workaround, so this never gets a draft.
-    if looks_like_18th(booking.event_type or "", booking.event_name or "", booking.notes) or _UNDER_18_PATTERN.search(text):
+    # A structured child count is as strong a signal as the words "kids"
+    # or "18th" in the text, and until 2026-09-05 it was ignored entirely:
+    # the form asks for adults and total attendees, the difference is
+    # stored as child_count, and a 50-guest party with 20 children got an
+    # auto-draft with no RSA conversation because nobody typed the word.
+    # Aaron's call: any child on the booking blocks. If the rate goes up,
+    # that is the honest rate.
+    children = booking.child_count or 0
+    if children > 0:
+        noun = "child" if children == 1 else "children"
+        blocks.append(
+            GateBlock(
+                UNDER_18,
+                f"{children} {noun} on the booking, so guests are under 18 and the RSA conversation "
+                "has to happen in person.",
+            )
+        )
+    elif looks_like_18th(booking.event_type or "", booking.event_name or "", booking.notes) or _UNDER_18_PATTERN.search(text):
         blocks.append(
             GateBlock(UNDER_18, "An 18th, or guests under 18, so the RSA conversation has to happen in person.")
         )

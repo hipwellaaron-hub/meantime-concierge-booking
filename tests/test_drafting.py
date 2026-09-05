@@ -406,3 +406,35 @@ def test_review_page_shows_the_freshness_check(admin_client, db, hamilton, loft,
     drafting.draft_for_booking(db, booking.id)
     page = admin_client.get("/admin/drafts").text
     assert "facts re-checked just now" in page
+
+
+# --- wave 2 (17): the gate is judged on the total headcount ------------------
+
+
+def test_the_gate_receives_the_total_headcount_not_adults_twice(db, hamilton, unassigned_space, drafting_on, model, monkeypatch):
+    # The form asks for adults and total attendees; the difference is the
+    # child count. draft_for_booking passed adult_count as BOTH numbers, so
+    # a 50-person party was judged for room capacity as 30 (2026-09-05
+    # review). A wiring test: patching the gate and reading what it was
+    # actually handed is the only thing that proves this line.
+    booking, _dups, created = create_enquiry_booking(
+        db, venue=hamilton, full_name="Pat Family", email="pat.family@example.com", phone="0400000000",
+        event_name="Family celebration", event_type="celebration", event_date=_saturday(),
+        proposed_time_slot="Saturday evening", attendee_count=50, adult_count=30,
+        company_name=None, dates_flexible=False, comments="A big family do", lead_source="website",
+        lead_referrer=None, actor="test", first_touch_attribution=None, last_touch_attribution=None,
+    )
+    assert created and booking.child_count == 20
+
+    seen = {}
+    real_evaluate = draft_gate.evaluate
+
+    def spy(db_, b, **kwargs):
+        seen.update(kwargs)
+        return real_evaluate(db_, b, **kwargs)
+
+    monkeypatch.setattr(draft_gate, "evaluate", spy)
+    drafting.draft_for_booking(db, booking.id)
+
+    assert seen["adult_count"] == 30
+    assert seen["attendee_count"] == 50

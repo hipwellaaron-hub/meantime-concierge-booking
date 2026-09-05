@@ -349,3 +349,56 @@ def test_a_flexed_minimum_is_honoured_not_the_space_default(db, hamilton, loft):
     assert draft_gate.BELOW_MINIMUM in decision.codes
     assert decision.facts["agreed_minimum"] == 40
     assert "agreed minimum of 40" in decision.as_note()
+
+
+# --- wave 2 (16): two false positives that were inflating the block rate --
+
+
+def test_ideal_is_not_a_deal_and_good_morning_is_not_daytime(db, hamilton, loft):
+    # The exact case from the 2026-09-05 review: an evening corporate
+    # enquiry blocked twice with a staff note that was false on both counts.
+    b = _booking(db, loft, name="Team dinner", event_type="corporate", adults=40)
+    decision = _decide(db, b, guests=40, text="Good morning! The Loft would be ideal for our team dinner")
+    assert "negotiation" not in decision.codes
+    assert "daytime" not in decision.codes
+
+
+def test_real_negotiation_and_real_daytime_still_block(db, hamilton, loft):
+    # Guards: tightening the anchors must not switch the rules off. An
+    # UNTIMED booking, because the text-based daytime rule only applies
+    # when no time has been given (a timed evening booking is settled by
+    # its end time, not its words); and a neutral name and type, because
+    # both go into the haystack -- the first version of this test was
+    # named "Fundraiser" with the default type "birthday" and lit up two
+    # unrelated rules.
+    b = _booking(db, loft, name="Team catch-up", event_type="corporate", adults=60, start=None, end=None)
+    assert "negotiation" in _decide(db, b, guests=60, text="We are on a tight budget, is there a deal on a Friday?").codes
+    assert "daytime" in _decide(db, b, guests=60, text="A morning tea for 40 people").codes
+    assert "daytime" in _decide(db, b, guests=60, text="A lunch for 30 on the Sunday").codes
+    # And the one the fix is for still passes clean on the same booking.
+    assert "daytime" not in _decide(db, b, guests=60, text="Good morning! Keen to book the Loft for drinks").codes
+
+
+# --- wave 2 (17): a structured child count blocks like the word would -------
+
+
+def test_children_on_the_booking_block_under_18_without_any_keyword(db, hamilton, loft):
+    # 50 attendees, 30 adults -> child_count 20, and nothing in the text.
+    # Until 2026-09-05 this drafted: only the words could trigger the block.
+    contact = Contact(name="Family Client", email="family@example.com")
+    db.add(contact)
+    db.flush()
+    b = create_booking(
+        db, space_id=loft.id, contact_id=contact.id, event_date=FUTURE,
+        start_time=dt.time(18, 0), end_time=dt.time(23, 0), event_name="Family party",
+        event_type="celebration", adult_count=30, child_count=20, notes=None, actor="staff:test",
+    )
+    decision = draft_gate.evaluate(db, b, adult_count=30, attendee_count=50, enquiry_text="")
+    assert draft_gate.UNDER_18 in decision.codes
+    assert any("20 children" in blk.reason for blk in decision.blocks)
+
+
+def test_no_children_and_no_keyword_does_not_block_under_18(db, hamilton, loft):
+    b = _booking(db, loft, name="Work drinks", event_type="corporate", adults=40)
+    decision = _decide(db, b, guests=40, text="Drinks and canapes after work")
+    assert draft_gate.UNDER_18 not in decision.codes
