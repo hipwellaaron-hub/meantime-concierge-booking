@@ -109,7 +109,9 @@ _DAYTIME_PATTERN = re.compile(
     # bring back the real daytime uses of "morning" without the greeting.
     r"\blunch|\bdaytime\b|\bafternoon\b|\bbrunch\b|\bbreakfast\b|"
     r"\bmorning[\s-]+teas?\b|\bmid[\s-]?morning\b|"
-    r"\b(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|in\s+the)\s+morning\b|"
+    # Not "in the morning": "drop the decorations off in the morning" is
+    # logistics on an evening enquiry (re-review).
+    r"\b(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\s+morning\b|"
     r"high\s+tea|baby\s+shower|christening"
 )
 
@@ -166,6 +168,11 @@ def _held_for_restaurant(space: Space, booking: Booking) -> bool:
 _MILESTONE = re.compile(r"\b(\d{1,3})\s*(?:st|nd|rd|th)\b")
 
 
+def _ordinal(n: int) -> str:
+    suffix = "th" if 10 <= n % 100 <= 20 else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+    return f"{n}{suffix}"
+
+
 def _milestone_age(event_name: str) -> int | None:
     """The birthday milestone if the name gives one ("Kyle's 30th" -> 30).
 
@@ -201,65 +208,92 @@ def _haystack(booking: Booking, extra: str = "") -> str:
 # "evening", "lunch" and a bare "6 to 11" all fall back.
 _TIME_TOKEN = re.compile(r"(?<![\d:])(\d{1,2})(?:[:.](\d{2}))?\s*(am|pm|a\.m\.|p\.m\.)?(?![\d:])", re.I)
 _RANGE_SEPARATOR = re.compile(r"\s*(?:-|\u2013|\u2014|to|till|til|until)\s*", re.I)
+_MIDNIGHT = re.compile(r"\bmidnight\b", re.I)
 
 
 def parse_time_range(text: str | None) -> tuple[dt.time, dt.time] | None:
     """A (start, end) pair from free text, or None when it is not clearly
-    a two-ended range. Bare numbers with no am/pm are trusted only when
-    one of them is past 12 (a 24-hour clock); "6 to 11" is ambiguous."""
+    a two-ended clock range.
+
+    Reads the first pair of adjacent clock tokens joined by a range word
+    or dash, so "6pm to 11pm, 40 guests" still parses. At least one side
+    must carry am/pm or minutes: two bare numbers ("6 to 11", "15-20
+    December", "10-14 people") are not a clock range, whatever they look
+    like (re-review: "15-20 December" was reading as 15:00-20:00 and
+    narrowing contention). An end of 12am or "midnight" means the end of
+    that day; a range that would run past midnight, or an unmarked start
+    against a 12 o'clock end ("6-12pm"), is ambiguous and falls back."""
     if not text:
         return None
+    text = _MIDNIGHT.sub("12am", text)
     tokens = list(_TIME_TOKEN.finditer(text))
-    if len(tokens) != 2:
+    pair = next(
+        ((a, b) for a, b in zip(tokens, tokens[1:]) if _RANGE_SEPARATOR.fullmatch(text[a.end():b.start()])),
+        None,
+    )
+    if pair is None:
         return None
-    first, second = tokens
-    if not _RANGE_SEPARATOR.fullmatch(text[first.end():second.start()]):
-        return None
+    first, second = pair
 
     def meridiem(match):
         raw = match.group(3)
         return raw.lower().replace(".", "")[:2] if raw else None
 
-    def build(match, ampm):
+    def build(match, ampm, *, is_end=False):
         hour, minute = int(match.group(1)), int(match.group(2) or 0)
         if minute > 59:
             return None
         if ampm:
             if not 1 <= hour <= 12:
                 return None
+            if is_end and hour == 12 and ampm == "am":
+                return dt.time(23, 59)
             hour = hour % 12 + (12 if ampm == "pm" else 0)
         elif hour > 23:
             return None
         return dt.time(hour, minute)
 
     m1, m2 = meridiem(first), meridiem(second)
+    has_minutes = bool(first.group(2) or second.group(2))
     if m1 is None and m2 is None:
-        if int(first.group(1)) <= 12 and int(second.group(1)) <= 12:
+        if not has_minutes:
             return None
         candidates = [(None, None)]
     elif m1 is None:
+        if int(second.group(1)) == 12:
+            return None
         candidates = [(m2, m2), ("am" if m2 == "pm" else "pm", m2)]
     elif m2 is None:
         candidates = [(m1, m1), (m1, "am" if m1 == "pm" else "pm")]
     else:
         candidates = [(m1, m2)]
     for a, b in candidates:
-        start, end = build(first, a), build(second, b)
+        start, end = build(first, a), build(second, b, is_end=True)
         if start is not None and end is not None and start < end:
             return start, end
     return None
 
 
 def _effective_times(booking: Booking) -> tuple[dt.time | None, dt.time | None, bool]:
-    """The times the gate reasons with: the booking's own when set,
-    otherwise the form's Proposed Time when it parses. The flag says
-    which. (None, None, False) means the whole day."""
-    if booking.start_time is not None and booking.end_time is not None:
+    """The times the gate reasons with: the booking's own when either is
+    set, otherwise the form's Proposed Time when it parses. The flag says
+    the form supplied them. (None, None, False) means the whole day.
+
+    Two deliberate limits (re-review). A staff-set start with no end is
+    still the booking's own time and is not overridden by the client's
+    earlier free text. And a hold or confirmation with no real times is
+    never narrowed by its Proposed Time: until staff pin it, it holds the
+    whole day -- the same rule _unassigned_holds applies on the other
+    branch, so a hold is not whole-day for one enquiry and 12-to-5 for
+    the next."""
+    if booking.start_time is not None or booking.end_time is not None:
         return booking.start_time, booking.end_time, False
+    if booking.status in BLOCKING_STATUSES:
+        return None, None, False
     parsed = parse_time_range(booking.proposed_time_slot)
     if parsed is not None:
         return parsed[0], parsed[1], True
-    return booking.start_time, booking.end_time, False
+    return None, None, False
 
 
 def _gate_overlaps(a: Booking, b: Booking) -> bool:
@@ -315,6 +349,13 @@ def _contention(db: Session, booking: Booking) -> list[Booking]:
         )
         .execution_options(populate_existing=True)
     ).all()
+    if not booking.space.is_bookable:
+        # The placeholder is not a room, so "same slot" has no meaning
+        # there: two enquiries with no room yet are competing for the same
+        # pool whatever hours they wrote, and which one gets which room is
+        # the sales call (Aaron: contend on date and space, not time). The
+        # Proposed Time narrows an enquiry against REAL rooms only.
+        return others
     return [o for o in others if _gate_overlaps(booking, o)]
 
 
@@ -430,7 +471,11 @@ def _evaluate_candidate_rooms(
 
     # Minimums are ADULT minimums; capacity counts everyone. Comparing the
     # total headcount against the adult minimum let 35 adults and 10
-    # children through a 40-adult minimum (wave 2 review).
+    # children through a 40-adult minimum (wave 2 review). A free room
+    # whose minimum the party does NOT meet is still free, but it is not
+    # one the draft may offer: flexing a minimum is a commercial call
+    # (re-review -- rooms_free alone was being stamped "offerable").
+    facts["rooms_offerable"] = [r.name for r in free if adults >= r.standard_min_adults]
     if all(adults < r.standard_min_adults for r in free):
         smallest_minimum = min(r.standard_min_adults for r in free)
         return [
@@ -527,7 +572,7 @@ def _evaluate(
         if eighteenth or milestone == 18:
             reason += " It also reads as an 18th."
         elif milestone is not None and milestone < 18:
-            reason += f" It also reads as a {milestone}th birthday."
+            reason += f" It also reads as a {_ordinal(milestone)} birthday."
         blocks.append(GateBlock(UNDER_18, reason))
     elif eighteenth or _UNDER_18_PATTERN.search(text):
         blocks.append(
@@ -591,7 +636,7 @@ def _evaluate(
             # 18 itself is the case this rule exists for: "Eva's 18th" with
             # no "birthday" in the text is still an 18th.
             blocks.append(
-                GateBlock(UNDER_18, f"A {milestone}th birthday, so guests are under 18 or turning 18.")
+                GateBlock(UNDER_18, f"A {_ordinal(milestone)} birthday, so guests are under 18 or turning 18.")
             )
 
     # --- capacity and minimums ------------------------------------------
@@ -645,7 +690,11 @@ def _evaluate(
     if end is not None and end <= DAYTIME_CUTOFF:
         source = " (from the form's proposed time)" if from_form else ""
         blocks.append(GateBlock(DAYTIME, f"A daytime event{source}, where turnaround and the stay-later caveat are a judgement call."))
-    elif start is None and _DAYTIME_PATTERN.search(text):
+    elif (start is None or from_form) and _DAYTIME_PATTERN.search(text):
+        # The text rule stands down only for STAFF-set times. A form that
+        # says "6pm to 11pm" in one field and "morning tea" in another
+        # contradicts itself, which is an ask-before-drafting case, not a
+        # settled evening (re-review).
         blocks.append(GateBlock(DAYTIME, "Reads as a daytime event, where turnaround and the stay-later caveat are a judgement call."))
 
     # --- a room held back for the restaurant ------------------------------
@@ -697,7 +746,6 @@ def _evaluate(
         # status -- an offered or tentative one on the placeholder is
         # still competing for a room, and DATE_TAKEN "Unassigned is already
         # held" named the placeholder as if it were a room (wave 2 review).
-        facts["open_enquiry_count"] = len(rivals)
         noun = "enquiry or hold" if len(rivals) == 1 else "enquiries or holds"
         listed = ", ".join(f"{o.reference_code} ({o.status.value})" for o in rivals)
         blocks.append(

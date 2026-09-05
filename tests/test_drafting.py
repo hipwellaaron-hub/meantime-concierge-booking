@@ -40,6 +40,21 @@ GOOD_DRAFT = (
     "Aaron\nMeantime Hamilton\nmeantimehamilton@gmail.com"
 )
 
+def _offerable_room(user_prompt: str) -> str:
+    """The first room the FACTS block marks offerable, else the chosen
+    room, else the Loft (so a prompt with no availability still yields
+    the canonical text)."""
+    import json
+    try:
+        facts = json.loads(user_prompt.split("FACTS (live, read just now):\n", 1)[1].split("\n\n<client_message>", 1)[0])
+    except (IndexError, ValueError):
+        return "The Loft"
+    for room in facts.get("availability", []):
+        if room.get("offerable"):
+            return room["room"]
+    return (facts.get("event") or {}).get("room") or "The Loft"
+
+
 _enq_mod_spec = importlib.util.spec_from_file_location(
     "_test_enquiries", pathlib.Path(__file__).with_name("test_enquiries.py")
 )
@@ -92,6 +107,10 @@ def model(monkeypatch):
             self.calls.append((system, user))
             if self.raises:
                 raise self.raises
+            if self.reply is GOOD_DRAFT:
+                # Name a room the FACTS mark offerable, as an obedient model
+                # would; the rules block a draft that names any other.
+                return GOOD_DRAFT.replace("The Loft", _offerable_room(user))
             return self.reply
 
     fake = Fake()
@@ -654,7 +673,7 @@ def test_a_legacy_draft_that_is_stale_still_says_reference_only(
     check = drafting.freshness(db, row)
     assert check["fresh"] is False
     assert check["status_verified"] is False
-    assert "reference only" in check["reason"].lower()
+    assert "appeared" in check["reason"]
 
 
 def test_review_page_labels_a_stale_legacy_draft_as_reference_only(
@@ -731,3 +750,92 @@ def test_a_confirmed_booking_with_no_room_is_not_called_an_enquiry(db, hamilton,
     entry = next(e for e in facts["cross_check"]["occupants"] if e[0] == imported.reference_code)
     assert entry[1] == "confirmed" and entry[2] is None
     assert drafting._describe(entry[1:]) == "confirmed, no room yet"
+
+
+# --- re-review fixes -------------------------------------------------------
+
+
+def test_freshness_flags_the_enquiry_itself_being_moved(db, hamilton, loft, unassigned_space, drafting_on, model):
+    from app.services.booking import assign_space_and_time
+    booking = _enquiry(db, hamilton, when=_saturday(8), event_name="Moving dinner")
+    row = drafting.draft_for_booking(db, booking.id)
+    assert row.status == STATUS_GENERATED, row.failure_reason
+    assert drafting.freshness(db, row)["fresh"] is True
+
+    assign_space_and_time(db, booking, space_id=loft.id, start_time=dt.time(12, 0), end_time=dt.time(16, 0), actor="test")
+
+    check = drafting.freshness(db, row)
+    assert check["fresh"] is False
+    assert "own room or times" in check["reason"]
+
+
+def test_a_malformed_stored_entry_is_labelled_not_a_crash(db, hamilton, unassigned_space, drafting_on, model):
+    booking = _enquiry(db, hamilton, when=_saturday(8), event_name="Odd row")
+    row = drafting.draft_for_booking(db, booking.id)
+    assert row.status == STATUS_GENERATED, row.failure_reason
+    facts = dict(row.facts)
+    cross = dict(facts["cross_check"])
+    cross["occupants"] = [["HAM-X", "confirmed", "The Loft"]]
+    facts["cross_check"] = cross
+    row.facts = facts
+    db.commit()
+
+    check = drafting.freshness(db, row)
+    assert check is not None
+    assert check["status_verified"] is False
+
+
+def test_a_room_under_its_minimum_is_not_offerable(db, hamilton, loft, mezzanine, unassigned_space, drafting_on, model):
+    when = _saturday(8) - dt.timedelta(days=1)
+    booking = _enquiry(db, hamilton, comments="Dinner for 45", adults=45, when=when,
+                       event_type="corporate", event_name="Forty-five dinner")
+    row = drafting.draft_for_booking(db, booking.id)
+    assert row.status == STATUS_GENERATED, row.failure_reason
+    offerable = {r["room"]: r["offerable"] for r in row.facts["availability"]}
+    assert offerable["The Mezzanine"] is True
+    assert offerable["The Loft"] is False
+
+
+def test_the_rules_block_a_draft_that_names_a_room_the_gate_did_not_clear():
+    from app.services import draft_rules
+    from tests.test_draft_rules import CLEAN
+    rooms = {"The Loft": False, "The Mezzanine": True, "The Lounge": True}
+    result = draft_rules.validate(CLEAN, rooms=rooms)  # CLEAN offers the Loft
+    assert draft_rules.ROOM_NOT_OFFERABLE in result.codes and result.blocked
+    assert not draft_rules.validate(CLEAN, rooms={**rooms, "The Loft": True}).blocked
+    assert not draft_rules.validate(CLEAN).blocked
+
+
+def test_the_review_page_survives_many_drafts_with_one_read_per_date(
+    admin_client, db, hamilton, unassigned_space, drafting_on, model, monkeypatch
+):
+    # Two unreviewed drafts on the same Saturday share one live read. The
+    # second booking cannot draft on its own (two placeholder enquiries
+    # contend), so its generated row is recorded by hand with facts that
+    # match the live state, exactly as a draft written earlier would look.
+    when = _saturday(8)
+    a = _enquiry(db, hamilton, when=when, event_name="First on the date")
+    ra = drafting.draft_for_booking(db, a.id)
+    assert ra.status == STATUS_GENERATED, ra.failure_reason
+    b = _enquiry(db, hamilton, when=when, event_name="Second on the date")
+    facts_b = dict(ra.facts)
+    facts_b["event"] = {**ra.facts["event"], "room": None, "start_time": None, "end_time": None,
+                        "proposed_time": b.proposed_time_slot}
+    facts_b["cross_check"] = {**ra.facts["cross_check"], "occupants": [[a.reference_code, "open_enquiries", None, None, None]]}
+    rb = drafting._record(db, b, status=STATUS_GENERATED, trigger="test", facts=facts_b, draft_text="x",
+                          prompt_version=drafting.PROMPT_VERSION)
+    calls = []
+    real = drafting._occupants_on_date
+
+    def counting(*args, **kwargs):
+        calls.append(args[2])
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(drafting, "_occupants_on_date", counting)
+    page = admin_client.get("/admin/drafts").text
+    assert calls == [when]
+    # And each draft still sees its own rival, not itself.
+    check_a = drafting.freshness(db, ra)
+    check_b = drafting.freshness(db, rb)
+    assert b.reference_code in check_a["appeared"]
+    assert check_b["fresh"] is True, check_b

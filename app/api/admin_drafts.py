@@ -53,8 +53,9 @@ def review_drafts(request: Request, db: Session = Depends(get_db), staff: StaffU
     # Re-verify on surface (Phase 2 brief): a generated draft still awaiting
     # review is checked against a live availability read as the page
     # renders, so a stale draft is flagged before anyone acts on it.
+    occupants_cache: dict = {}
     freshness = {
-        d.id: drafting.freshness(db, d)
+        d.id: drafting.freshness(db, d, cache=occupants_cache)
         for d in drafts
         if d.status == STATUS_GENERATED and d.outcome is None
     }

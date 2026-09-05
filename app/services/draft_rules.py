@@ -40,6 +40,7 @@ PROMISED_ACCESS = "promised_access"
 WALKTHROUGH_HOURS = "walkthrough_hours"
 GLUTEN_FREE = "gluten_free"
 ALLERGEN_CLAIM = "allergen_claim"
+ROOM_NOT_OFFERABLE = "room_not_offerable"
 RULES_ERROR = "rules_error"
 
 # The sign-off and the venue-specific figures come from the venue profile
@@ -159,7 +160,11 @@ def _excerpt(match: re.Match) -> str:
 
 
 def validate(
-    draft: str, *, client_asked_for_figures: bool = False, profile: "_venue_profile.VenueProfile | None" = None
+    draft: str,
+    *,
+    client_asked_for_figures: bool = False,
+    profile: "_venue_profile.VenueProfile | None" = None,
+    rooms: dict[str, bool] | None = None,
 ) -> RuleResult:
     """Check a generated draft against the house rules.
 
@@ -167,9 +172,14 @@ def validate(
     what they owe may be told. It is passed in by the caller from the
     enquiry, never inferred from the draft itself -- otherwise the draft
     could licence its own violation.
+
+    rooms is {room name: offerable} from the facts the model was given.
+    Naming a room that is not offerable is a block: the ROOMS prompt rule
+    is an instruction, and this module exists because instructions that
+    usually hold are not good enough on a client-facing document.
     """
     try:
-        return _validate(draft, client_asked_for_figures=client_asked_for_figures, profile=profile)
+        return _validate(draft, client_asked_for_figures=client_asked_for_figures, profile=profile, rooms=rooms)
     except Exception:  # noqa: BLE001 -- fail closed
         logger.exception("Draft rule validation failed")
         return RuleResult(
@@ -179,9 +189,23 @@ def validate(
         )
 
 
-def _validate(draft: str, *, client_asked_for_figures: bool, profile=None) -> RuleResult:
+def _validate(draft: str, *, client_asked_for_figures: bool, profile=None, rooms=None) -> RuleResult:
     result = RuleResult()
     text = draft or ""
+
+    for room, offerable in (rooms or {}).items():
+        if offerable:
+            continue
+        match = re.search(r"\b" + re.escape(room) + r"\b", text, re.IGNORECASE)
+        if match:
+            result.violations.append(
+                RuleViolation(
+                    ROOM_NOT_OFFERABLE, BLOCK,
+                    f"Names {room}, which the gate did not clear for this enquiry (other interest, "
+                    "under its minimum, or another room is already chosen).",
+                    _excerpt(match),
+                )
+            )
 
     if "—" in text:
         result.violations.append(
