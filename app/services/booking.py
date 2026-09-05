@@ -996,6 +996,39 @@ def assign_space_and_time(
                 actor=actor,
             )
         )
+    # The same reconciliation for the food minimum, and for the same
+    # reason -- without it every enquiry keeps the placeholder's $0.
+    #
+    # This is not hypothetical: every inbound enquiry is created on the
+    # non-bookable "Unassigned (pending triage)" space, whose
+    # min_food_spend is 0.00, so agreed_min_food_spend is seeded to $0.
+    # Triaging into a real room moved the guest minimum and left the food
+    # minimum at zero, and since a $0 minimum correctly emits NO Minimum
+    # Spend clause, the client's agreement simply had no minimum in it at
+    # all and showed "$0.00" in the header. Found by review 2026-09-05,
+    # hours after the column shipped.
+    #
+    # Conditions mirror the block above exactly: only move a figure that
+    # is still sitting at the OLD space's standard with no reason
+    # recorded, i.e. one nobody deliberately set.
+    if (
+        space_id != old_space_id
+        and booking.agreed_min_food_spend == old_space.min_food_spend
+        and booking.agreed_min_food_spend_reason is None
+        and space.min_food_spend != booking.agreed_min_food_spend
+    ):
+        old_spend = booking.agreed_min_food_spend
+        booking.agreed_min_food_spend = space.min_food_spend
+        db.add(
+            BookingEvent(
+                booking_id=booking.id,
+                event_type="field_changed",
+                field_name="agreed_min_food_spend",
+                old_value=str(old_spend),
+                new_value=str(space.min_food_spend),
+                actor=actor,
+            )
+        )
     booking.space_id = space_id
     booking.start_time = start_time
     booking.end_time = end_time
