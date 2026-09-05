@@ -9,8 +9,9 @@ auto-supersede) gets the same guarantees:
 
 1. A booking moving to a terminal status cancels its own live invoices,
    which deactivates every Stripe Payment Link ever created for them.
-2. A booking becoming tentative or confirmed kills any rival `offered`
-   booking on the same space and overlapping time.
+2. A booking becoming CONFIRMED -- never merely held -- kills any rival
+   `offered` booking on any room it takes, and kills that rival whole,
+   linked child rooms included.
 3. The public document and invoice routes refuse to act once the booking
    behind them is terminal (or, for documents, once a newer version has
    superseded them) -- a "no longer available" page, not a 404.
@@ -32,6 +33,7 @@ from app.models.payment import PaymentMethod
 from app.services import stripe_integration
 from app.services.booking import (
     add_linked_space,
+    change_status,
     create_booking,
     times_overlap,
     transition_status,
@@ -116,17 +118,26 @@ def test_one_invoices_stripe_failure_does_not_stop_the_booking_from_dying_or_the
 # --- confirming one booking kills a rival offer on the same slot -----------
 
 
+def _rival(db, contact, space, *, name, email, **kw):
+    other = contact.__class__(name=name, email=email)
+    db.add(other)
+    db.flush()
+    booking = _booking_on(db, space, other, name=name, **kw)
+    transition_status(db, booking, BookingStatus.offered, actor="staff:test")
+    return booking
+
+
+def _confirm(db, booking):
+    transition_status(db, booking, BookingStatus.tentative, actor="staff:test")
+    transition_status(db, booking, BookingStatus.confirmed, actor="staff:test")
+
+
 def test_confirming_a_booking_kills_a_rival_offer_on_the_same_room_and_night(db, loft, contact):
     sophie = _booking_on(db, loft, contact, name="Sophie's Party")
     transition_status(db, sophie, BookingStatus.offered, actor="staff:test")
 
-    chanai_contact = contact.__class__(name="Chanai Duncombe", email="chanai@example.com")
-    db.add(chanai_contact)
-    db.flush()
-    chanai = _booking_on(db, loft, chanai_contact, name="Chanai's Party")
-    transition_status(db, chanai, BookingStatus.offered, actor="staff:test")
-    transition_status(db, chanai, BookingStatus.tentative, actor="staff:test")
-    transition_status(db, chanai, BookingStatus.confirmed, actor="staff:test")
+    chanai = _rival(db, contact, loft, name="Chanai's Party", email="chanai@example.com")
+    _confirm(db, chanai)
 
     db.refresh(sophie)
     assert sophie.status == BookingStatus.dead
@@ -137,16 +148,58 @@ def test_confirming_a_booking_kills_a_rival_offer_on_the_same_room_and_night(db,
     assert any(chanai.reference_code in r for r in reasons)
 
 
+def test_a_hold_never_kills_a_rival_offer(db, loft, contact):
+    # Sending paperwork is an offer, not a commitment: several parties may
+    # legitimately hold the same date until one of them actually pays.
+    # Review finding 7 (2026-09-05): the automatic hold used to kill the
+    # rival permanently, with no notice and no way back.
+    sophie = _booking_on(db, loft, contact, name="Sophie's Party")
+    transition_status(db, sophie, BookingStatus.offered, actor="staff:test")
+
+    chanai = _rival(db, contact, loft, name="Chanai's Party", email="chanai@example.com")
+    transition_status(db, chanai, BookingStatus.tentative, actor="staff:test")
+
+    db.refresh(sophie)
+    assert sophie.status == BookingStatus.offered
+
+
+def test_marking_paperwork_sent_does_not_kill_a_rival(db, loft, contact):
+    # The exact incident: auto_hold_on_send moves a booking to tentative
+    # the moment its agreement AND deposit invoice are marked sent.
+    from app.services.booking import auto_hold_on_send  # noqa: F401 -- documents the trigger
+    sophie = _booking_on(db, loft, contact, name="Sophie's Party")
+    transition_status(db, sophie, BookingStatus.offered, actor="staff:test")
+
+    # change_status, NOT transition_status or _rival(): transition_status
+    # pins the status as a manual override, and auto_hold_on_send correctly
+    # refuses to move a pinned booking ("manual override always wins"). The
+    # incident booking was never touched by hand, so neither is this one.
+    other = contact.__class__(name="Chanai's Party", email="chanai@example.com")
+    db.add(other)
+    db.flush()
+    chanai = _booking_on(db, loft, other, name="Chanai's Party")
+    change_status(db, chanai, BookingStatus.offered, actor="staff:test")
+    agreement = create_new_version(db, chanai, DocumentType.agreement, {"x": 1}, actor="test")
+    mark_document_sent(db, agreement, actor="test")
+    invoice = create_invoice(
+        db, chanai, InvoiceType.deposit, [{"description": "Deposit", "quantity": 1, "unit_price": "500.00"}],
+        dt.date(2026, 11, 10), actor="test",
+    )
+    mark_invoice_sent(db, invoice, actor="test")
+
+    db.refresh(chanai)
+    db.refresh(sophie)
+    assert chanai.status == BookingStatus.tentative, "the auto-hold itself still happens"
+    assert sophie.status == BookingStatus.offered, "but it must not kill anyone"
+
+
 def test_a_non_overlapping_offer_the_same_night_is_left_alone(db, loft, contact):
     lunch = _booking_on(db, loft, contact, name="Lunch Offer", start=dt.time(11, 0), end=dt.time(15, 0))
     transition_status(db, lunch, BookingStatus.offered, actor="staff:test")
 
-    other = contact.__class__(name="Evening Client", email="evening@example.com")
-    db.add(other)
-    db.flush()
-    evening = _booking_on(db, loft, other, name="Evening Event", start=dt.time(18, 0), end=dt.time(23, 0))
-    transition_status(db, evening, BookingStatus.offered, actor="staff:test")
-    transition_status(db, evening, BookingStatus.tentative, actor="staff:test")
+    evening = _rival(db, contact, loft, name="Evening Event", email="evening@example.com",
+                     start=dt.time(18, 0), end=dt.time(23, 0))
+    _confirm(db, evening)
 
     db.refresh(lunch)
     assert lunch.status == BookingStatus.offered  # never contested -- times_overlap says so
@@ -157,34 +210,100 @@ def test_an_offer_in_a_different_space_is_left_alone(db, loft, lounge, contact):
     lounge_offer = _booking_on(db, lounge, contact, name="Lounge Party")
     transition_status(db, lounge_offer, BookingStatus.offered, actor="staff:test")
 
-    other = contact.__class__(name="Loft Client", email="loftclient@example.com")
-    db.add(other)
-    db.flush()
-    loft_booking = _booking_on(db, loft, other, name="Loft Event")  # same night, same times, different room
-    transition_status(db, loft_booking, BookingStatus.offered, actor="staff:test")
-    transition_status(db, loft_booking, BookingStatus.tentative, actor="staff:test")
+    loft_booking = _rival(db, contact, loft, name="Loft Event", email="loftclient@example.com")
+    _confirm(db, loft_booking)
 
     db.refresh(lounge_offer)
     assert lounge_offer.status == BookingStatus.offered  # a different room was never a rival
 
 
-def test_a_linked_child_never_runs_or_is_hit_by_the_supersede_check(db, loft, lounge, contact):
+# --- multi-room bookings: every room the winner takes, and the loser whole --
+
+
+def test_confirming_a_two_room_booking_kills_a_rival_on_its_second_room(db, loft, lounge, contact):
+    # Review finding 4, direction A: the first version checked only the
+    # winner's own space, so a rival on the winner's SECOND room survived.
+    rival = _booking_on(db, lounge, contact, name="Rival on the Lounge")
+    transition_status(db, rival, BookingStatus.offered, actor="staff:test")
+
+    other = contact.__class__(name="Two Room Client", email="tworoom@example.com")
+    db.add(other)
+    db.flush()
+    parent = _booking_on(db, loft, other, name="Two Room Party")
+    add_linked_space(db, parent, space_id=lounge.id, actor="staff:test")
+    transition_status(db, parent, BookingStatus.offered, actor="staff:test")
+    _confirm(db, parent)
+
+    db.refresh(rival)
+    assert rival.status == BookingStatus.dead
+
+
+def test_confirming_kills_a_rival_that_holds_the_room_as_its_second_space(db, loft, lounge, contact):
+    # Review finding 4, direction B -- the Sophie incident reopened: the
+    # rival's parent is on the Loft, its CHILD holds the Lounge. Confirming
+    # the Lounge must kill the whole rival, parent and child, or its sign
+    # and pay links stay live for an event that has lost a room.
+    rival_parent = _booking_on(db, loft, contact, name="Rival Two Room Party")
+    rival_child = add_linked_space(db, rival_parent, space_id=lounge.id, actor="staff:test")
+    transition_status(db, rival_parent, BookingStatus.offered, actor="staff:test")
+    invoice = create_invoice(
+        db, rival_parent, InvoiceType.deposit, [{"description": "Deposit", "quantity": 1, "unit_price": "500.00"}],
+        dt.date(2026, 11, 10), actor="test",
+    )
+    mark_invoice_sent(db, invoice, actor="test")
+
+    winner = _rival(db, contact, lounge, name="Lounge Winner", email="lounge@example.com")
+    _confirm(db, winner)
+
+    db.refresh(rival_parent)
+    db.refresh(rival_child)
+    db.refresh(invoice)
+    assert rival_parent.status == BookingStatus.dead
+    assert rival_child.status == BookingStatus.dead
+    assert invoice.status == InvoiceStatus.cancelled
+
+
+def test_a_superseded_rival_dies_whole_including_its_other_rooms(db, loft, lounge, mezzanine, contact):
+    # Aaron's call, 2026-09-05: the event is not happening, so the loser's
+    # OTHER rooms must not linger on the calendar as live interest.
+    rival_parent = _booking_on(db, loft, contact, name="Three Room Party")
+    rival_lounge = add_linked_space(db, rival_parent, space_id=lounge.id, actor="staff:test")
+    rival_mezz = add_linked_space(db, rival_parent, space_id=mezzanine.id, actor="staff:test")
+    transition_status(db, rival_parent, BookingStatus.offered, actor="staff:test")
+
+    winner = _rival(db, contact, loft, name="Loft Winner", email="loftwin@example.com")
+    _confirm(db, winner)
+
+    for b in (rival_parent, rival_lounge, rival_mezz):
+        db.refresh(b)
+        assert b.status == BookingStatus.dead, b.event_name
+
+
+def test_the_winners_own_second_room_is_not_treated_as_a_rival(db, loft, lounge, contact):
+    # A two-room winner's child sits `offered` on the Lounge while the
+    # parent confirms. It must not be mistaken for a rival and killed.
     parent = _booking_on(db, loft, contact, name="Two Room Party")
     child = add_linked_space(db, parent, space_id=lounge.id, actor="staff:test")
     transition_status(db, parent, BookingStatus.offered, actor="staff:test")
+    _confirm(db, parent)
+
     db.refresh(child)
+    assert child.status == BookingStatus.confirmed
 
-    rival_contact = contact.__class__(name="Rival Client", email="rival@example.com")
-    db.add(rival_contact)
-    db.flush()
-    rival = _booking_on(db, lounge, rival_contact, name="Rival on the Lounge")
-    transition_status(db, rival, BookingStatus.offered, actor="staff:test")
-    # The child (parent_booking_id set) moving into tentative must not
-    # attempt to supersede anything, and must not itself be a valid rival.
-    transition_status(db, rival, BookingStatus.tentative, actor="staff:test")
 
-    db.refresh(rival)
-    assert rival.status == BookingStatus.tentative  # the linked child was never a contender to knock out
+def test_completing_a_booking_does_not_rerun_the_supersede(db, loft, contact):
+    # Only the move INTO confirmed supersedes. A later rival offer on the
+    # same slot (staff re-offering a completed date, say) is untouched by
+    # the winner being ticked completed.
+    winner = _booking_on(db, loft, contact, name="Winner")
+    transition_status(db, winner, BookingStatus.offered, actor="staff:test")
+    _confirm(db, winner)
+
+    late = _rival(db, contact, loft, name="Late Offer", email="late@example.com")
+    transition_status(db, winner, BookingStatus.completed, actor="staff:test")
+
+    db.refresh(late)
+    assert late.status == BookingStatus.offered
 
 
 # --- public document routes gate on booking status and document currency ---
