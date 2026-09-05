@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models.invoice import InvoiceStatus
 from app.services import invoicing, policy, stripe_integration
-from app.services.booking import TERMINAL_STATUSES
+from app.services.booking import VOIDED_STATUSES
 from app.services.pdf import render_html_to_pdf
 from app.templating import templates
 from app.utils import looks_like_a_token
@@ -19,13 +19,20 @@ logger = logging.getLogger(__name__)
 
 
 def _unavailable_response(request: Request, invoice) -> HTMLResponse:
-    # Reached once a booking has moved to a terminal status (see
-    # app.services.booking.change_status, which cancels every live
-    # invoice on the way) or an invoice was cancelled directly -- either
-    # way, nothing on it is payable any more. A real incident, 2026-09-04:
+    # Reached once the event is off (see app.services.booking's
+    # VOIDED_STATUSES and change_status, which cancels every live invoice
+    # on the way) or an invoice was cancelled directly -- either way,
+    # nothing on it is payable any more. A real incident, 2026-09-04:
     # Sophie Mavridis still had a working card link after her offer on the
     # Loft was superseded. 410, not 404: this token is not unknown, it is
     # deliberately no longer live.
+    #
+    # Deliberately NOT reached for a completed booking. Gating this on the
+    # wider TERMINAL_STATUSES made an outstanding balance unpayable the
+    # moment staff ticked the event off, and re-issuing did not help
+    # because the replacement invoice 410'd too -- so the money could only
+    # be chased outside the system, while a client who HAD paid lost
+    # access to their own receipt (review finding, 2026-09-04).
     return templates.TemplateResponse(
         request, "link_unavailable.html",
         {
@@ -103,7 +110,7 @@ def _build_invoice_context(db: Session, invoice, *, include_card_payment: bool) 
 @router.get("/i/{token}", response_class=HTMLResponse)
 def view_invoice(token: str, request: Request, db: Session = Depends(get_db)):
     invoice = _get_viewable_invoice_or_404(db, token)
-    if invoice.status == InvoiceStatus.cancelled or invoice.booking.status in TERMINAL_STATUSES:
+    if invoice.status == InvoiceStatus.cancelled or invoice.booking.status in VOIDED_STATUSES:
         return _unavailable_response(request, invoice)
     invoice = invoicing.record_view(db, invoice)
     context = _build_invoice_context(db, invoice, include_card_payment=True)
@@ -113,7 +120,7 @@ def view_invoice(token: str, request: Request, db: Session = Depends(get_db)):
 @router.get("/i/{token}/pdf")
 def download_invoice_pdf(token: str, request: Request, db: Session = Depends(get_db)):
     invoice = _get_viewable_invoice_or_404(db, token)
-    if invoice.status == InvoiceStatus.cancelled or invoice.booking.status in TERMINAL_STATUSES:
+    if invoice.status == InvoiceStatus.cancelled or invoice.booking.status in VOIDED_STATUSES:
         return _unavailable_response(request, invoice)
     # The PDF carries the same working card link as the web invoice -- a
     # client sent the PDF can pay by card straight from it, rather than being

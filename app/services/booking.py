@@ -208,9 +208,17 @@ def change_status(
             )
         )
 
-    if new_status in TERMINAL_STATUSES and old_status not in TERMINAL_STATUSES:
+    if new_status in VOIDED_STATUSES and old_status not in VOIDED_STATUSES:
         _invalidate_client_facing_tokens(db, booking, actor=actor)
-    if new_status in BLOCKING_STATUSES:
+    # Only a CONFIRMATION supersedes rivals -- never a hold. Sending
+    # paperwork is an offer, not a commitment, and offering one date to
+    # several parties is deliberately how Meantime works (Aaron's call,
+    # 2026-09-05). This used to fire on every entry into a blocking
+    # status, so the automatic tentative from auto_hold_on_send -- set the
+    # moment staff marked an invoice sent -- permanently killed a rival's
+    # live offer with no notification and no way back, decided by whose
+    # paperwork went out second rather than who had actually paid.
+    if new_status == BookingStatus.confirmed and old_status != BookingStatus.confirmed:
         _supersede_losing_offers(db, booking, actor=actor)
 
     db.commit()
@@ -248,51 +256,110 @@ def _invalidate_client_facing_tokens(db: Session, booking: Booking, *, actor: st
 
 
 def _supersede_losing_offers(db: Session, booking: Booking, *, actor: str) -> None:
-    """A booking becoming tentative or confirmed wins its slot outright --
-    the exclusion constraint already guarantees no OTHER blocking booking
-    can share it. What that constraint does NOT cover is a rival `offered`
-    booking on the same space and overlapping time: nothing stops staff
-    sending an agreement to two parties for one date, and the loser's
-    agreement and invoice links must not stay live once someone else has
-    won it. A real case, 2026-09-04: Sophie Mavridis (offered, the Loft,
-    21 November) against Chanai Duncombe confirming the same room and
-    night.
+    """A booking becoming CONFIRMED wins every room it takes, outright.
 
-    Killing the rival goes through change_status, so it gets the exact
-    same terminal-status treatment as any other move to dead --
-    invoices cancelled, Stripe links deactivated, links gated off. Scoped
-    to `offered` PARENT bookings only: a linked child never carries its
-    own offer (the parent owns it), and this runs on every entry into a
-    blocking status, including tentative -> confirmed, which is always a
-    harmless no-op by then since any real rival already died at the
-    tentative step."""
+    The exclusion constraint already guarantees no OTHER blocking booking
+    can share a room. What it does not cover is a rival `offered` booking
+    on the same room and overlapping time: nothing stops staff sending an
+    agreement to two parties for one date, and the loser's agreement and
+    invoice links must not stay live once someone else has actually
+    committed. A real case, 2026-09-04: Sophie Mavridis (offered, the
+    Loft, 21 November) against Chanai Duncombe confirming the same room
+    and night.
+
+    Two rules, both from the 2026-09-05 review of the first version:
+
+    - Every room the winner occupies counts: its own space AND each linked
+      second room. The first version checked only the parent's own space,
+      so a rival holding the contested room as ITS second space -- or a
+      winner taking a room it held as a second space -- was missed
+      entirely, and the Sophie incident stayed open for any multi-room
+      booking.
+    - The loser dies whole: the rival's parent and every linked child.
+      Killing only the row that matched left a two-room loser's other
+      room sitting on the calendar as live interest for an event that was
+      not happening, unfixable because dead has no legal exit (Aaron's
+      call: kill the linked child rooms too).
+
+    Killing goes through change_status, so the loser gets the exact same
+    voided-status treatment as any other move to dead -- invoices
+    cancelled, Stripe links deactivated, public links gated off -- and
+    because dead is not confirmed, nothing recurses.
+
+    A rival's status pin is deliberately IGNORED here. The pin stops the
+    forward automations (auto-hold, auto-confirm) from advancing a
+    hand-set booking; it must never keep a booking's links alive after
+    it has lost its date to someone who actually paid. See the note on
+    Booking.status_pinned_at. Children are queried
+    directly rather than through booking.linked_bookings, for the reason
+    transition_status gives: that relationship is stale right after
+    add_linked_space creates one."""
     if booking.parent_booking_id is not None:
-        return
-    space = booking.space
-    if space is None or not space.is_bookable or booking.event_date is None:
-        return
-    if None in (booking.start_time, booking.end_time):
+        return  # the parent's run covers every room, this one included
+    if booking.event_date is None:
         return
 
-    rivals = db.scalars(
-        select(Booking).where(
-            Booking.id != booking.id,
-            Booking.space_id == booking.space_id,
-            Booking.event_date == booking.event_date,
-            Booking.status == BookingStatus.offered,
-            Booking.parent_booking_id.is_(None),
-        )
-    ).all()
-    for rival in rivals:
-        if not times_overlap(booking, rival):
+    # Every room this confirmation occupies. A child that already ended on
+    # its own (a released second room) is no longer ours to defend.
+    children = db.scalars(select(Booking).where(Booking.parent_booking_id == booking.id)).all()
+    occupying = [booking] + [c for c in children if c.status not in TERMINAL_STATUSES]
+
+    losing_roots: dict[uuid.UUID, Booking] = {}
+    for winner_room in occupying:
+        space = winner_room.space
+        if space is None or not space.is_bookable:
             continue
-        change_status(
-            db, rival, BookingStatus.dead, actor=actor,
-            reason=f"Superseded: {booking.reference_code} was confirmed for the same room and time.",
-        )
+        if None in (winner_room.start_time, winner_room.end_time):
+            continue
+        rows = db.scalars(
+            select(Booking).where(
+                Booking.space_id == winner_room.space_id,
+                Booking.event_date == winner_room.event_date,
+                Booking.status == BookingStatus.offered,
+            )
+        ).all()
+        for row in rows:
+            if not times_overlap(winner_room, row):
+                continue
+            # A matching row may be a rival's own booking or a rival's
+            # second room -- either way the thing to kill is the whole
+            # deal, which is the parent.
+            root = row.parent_booking if row.parent_booking_id is not None else row
+            if root.id == booking.id:
+                continue  # one of our own rooms, not a rival
+            if root.status != BookingStatus.offered:
+                continue  # blocking is the constraint's job; terminal is already gone
+            losing_roots.setdefault(root.id, root)
+
+    for root in losing_roots.values():
+        reason = f"Superseded: {booking.reference_code} was confirmed for the same room and time."
+        change_status(db, root, BookingStatus.dead, actor=actor, reason=reason)
+        for child in db.scalars(select(Booking).where(Booking.parent_booking_id == root.id)).all():
+            if child.status not in TERMINAL_STATUSES:
+                change_status(db, child, BookingStatus.dead, actor=actor, reason=reason)
 
 
 TERMINAL_STATUSES = (BookingStatus.completed, BookingStatus.cancelled, BookingStatus.dead, BookingStatus.archived)
+
+# The event is NOT happening -- as distinct from TERMINAL_STATUSES, which
+# only means "no further transition is legal" and includes the two ways a
+# booking ends *successfully* (completed, and archived for the historical
+# bulk-archive).
+#
+# Only these two kill a client's live paths: the agreement they could
+# still sign, the invoice they could still pay. Completing an event must
+# not, and that distinction is the whole point of this tuple existing
+# separately (review finding, 2026-09-04): treating `completed` as void
+# cancelled the client's unpaid balance and 410'd the link, so the normal
+# post-event step made the money uncollectable, while a client who had
+# fully paid lost access to their own receipt and signed contract the
+# moment the event was ticked off.
+#
+# Completion is a statement about the event having happened, not about
+# the money being settled (Aaron's call, 2026-09-05): a completed
+# booking's documents stay readable and an outstanding balance stays
+# payable until that invoice is itself settled or cancelled.
+VOIDED_STATUSES = (BookingStatus.cancelled, BookingStatus.dead)
 
 
 def _pin_status(db: Session, booking: Booking, *, actor: str) -> None:
