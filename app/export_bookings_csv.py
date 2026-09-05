@@ -14,8 +14,8 @@ python -m app.export_bookings_csv bookings_export.csv`). A plain local run
 hits the dev database.
 
 Notes on a few derived columns (see also the accompanying field notes):
-- `min_food_spend` is the SPACE default -- there is NO per-booking food-spend
-  override in the schema. `space_standard_min_adults` is included alongside
+- `space_min_food_spend` is the SPACE default; `agreed_min_food_spend` is what
+  this booking actually agreed to and is the figure on its contract. `space_standard_min_adults` is included alongside
   `agreed_min_adults` so a negotiated-down minimum is visible at a glance
   (agreed < standard). The negotiated lever is the adult MINIMUM, not a
   dollar figure.
@@ -44,7 +44,7 @@ COLUMNS = [
     "space", "linked_spaces", "status", "event_type",
     "adults", "children",
     "agreed_min_adults", "agreed_min_reduction_reason",
-    "space_standard_min_adults", "min_food_spend",
+    "space_standard_min_adults", "space_min_food_spend", "agreed_min_food_spend", "bar_credit",
     "contact_name", "contact_email", "contact_phone", "company",
     "agreement_status", "agreement_signed_at",
     "deposit_invoice_status", "deposit_amount", "deposit_paid_at",
@@ -149,7 +149,9 @@ def row_for(booking) -> dict:
         "agreed_min_reduction_reason": booking.agreed_min_reduction_reason.value
         if booking.agreed_min_reduction_reason else "",
         "space_standard_min_adults": booking.space.standard_min_adults if booking.space else "",
-        "min_food_spend": str(booking.space.min_food_spend) if booking.space else "",
+        "space_min_food_spend": str(booking.space.min_food_spend) if booking.space else "",
+        "agreed_min_food_spend": str(booking.agreed_min_food_spend),
+        "bar_credit": str(booking.bar_credit),
         "contact_name": contact.name if contact else "",
         "contact_email": contact.email if contact else "",
         "contact_phone": (contact.phone or "") if contact else "",

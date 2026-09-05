@@ -383,7 +383,10 @@ def save_food_step(
     total_guest_count = booking.adult_count + booking.child_count
     guidance = generate_food_guidance(
         subtotal=subtotal,
-        min_food_spend=booking.space.min_food_spend,
+        # The agreed figure, not the space standard: telling a client
+        # they are $500 short of a minimum they were never given is how
+        # this gap shows up on the client's own screen.
+        min_food_spend=booking.agreed_min_food_spend,
         platter_count=total_platter_count,
         total_guest_count=total_guest_count,
     )

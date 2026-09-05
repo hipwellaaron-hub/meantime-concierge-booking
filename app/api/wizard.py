@@ -158,7 +158,7 @@ def view_wizard(token: str, request: Request, db: Session = Depends(get_db)):
             "cakes": _catalogue_payload(db, booking, MenuItemCategory.cake),
         },
         "policy": {
-            "min_food_spend": str(booking.space.min_food_spend),
+            "min_food_spend": str(booking.agreed_min_food_spend),
             "platter_guests_per_platter": PLATTER_GUESTS_PER_PLATTER,
             "setup_access_standard_time": str(SETUP_ACCESS_STANDARD_TIME),
             "music_off_time": str(MUSIC_OFF_TIME),

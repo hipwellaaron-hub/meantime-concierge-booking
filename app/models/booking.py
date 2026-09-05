@@ -1,6 +1,7 @@
 import datetime as dt
 import enum
 import uuid
+from decimal import Decimal
 
 from sqlalchemy import (
     Boolean,
@@ -10,6 +11,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Integer,
+    Numeric,
     String,
     Text,
     Time,
@@ -50,6 +52,9 @@ class MinReductionReasonCode(str, enum.Enum):
     returning_client = "returning_client"
     spend_clears_anyway = "spend_clears_anyway"
     aaron_discretion = "aaron_discretion"
+    # Most food-spend reductions are a Friday inducement rather than any of
+    # the above -- recording them as aaron_discretion lost that pattern.
+    friday_incentive = "friday_incentive"
 
 
 min_reduction_reason_enum = SAEnum(MinReductionReasonCode, name="min_reduction_reason", native_enum=True)
@@ -206,6 +211,51 @@ class Booking(Base):
     agreed_min_reduction_reason: Mapped[MinReductionReasonCode | None] = mapped_column(
         min_reduction_reason_enum, nullable=True
     )
+
+    # The food minimum this client actually agreed to, in dollars. NOT NULL
+    # for exactly the reason agreed_min_adults above is: the Master Policy
+    # rule is "never read the minimum from the space when producing a
+    # contract, invoice, Event Order or shortfall calculation. Only ever
+    # from the booking", and a nullable
+    # "override-if-set-else-space-default" leaves every consumer free to
+    # reach for Space.min_food_spend on its own and get a different answer.
+    #
+    # That is not hypothetical: it is the bug this column was added to
+    # close. A signed agreement went to a client (HAM-20261024-M1QZQ,
+    # 2026-09-05) carrying $1,000 in the header summary and $500 in the
+    # Minimum Spend clause, because the header read the space default and
+    # the clause had been hand-edited. Two figures for one contractual
+    # term, on a document with a signature block.
+    #
+    # Copied from the space at creation, then only ever changed
+    # deliberately (see booking.set_agreed_food_minimum). Like the guest
+    # minimum, the figure agreed at the time is what binds, so a later
+    # change to the space's standard must not rewrite an existing
+    # agreement.
+    #
+    # $0 is a real, meaningful value -- a waived minimum -- and is NOT the
+    # same as "unset". Consumers must test `is not None`, never truthiness.
+    agreed_min_food_spend: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
+    # NULL unless the food minimum differs from the space standard, set
+    # together with agreed_min_food_spend. Separate from
+    # agreed_min_reduction_reason above: the two minimums move
+    # independently, and sharing one reason column would silently
+    # overwrite the other override's justification.
+    agreed_min_food_spend_reason: Mapped[MinReductionReasonCode | None] = mapped_column(
+        min_reduction_reason_enum, nullable=True
+    )
+
+    # A dollar bar credit included in the deal ("$250 bar credit"). Was
+    # being typed as free text into the Minimum Spend clause, which meant
+    # it never reached the Event Order or the floor -- so the team pouring
+    # drinks on the night had no idea it had been promised. Held as a
+    # figure so it can print on the agreement, the Event Order and the bar
+    # structure section from one source.
+    #
+    # Operational, not billing: this is drink value the client is entitled
+    # to on the night, applied at the till. It deliberately does not alter
+    # any invoice total.
+    bar_credit: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False, default=Decimal("0.00"))
 
     # Staff-write-only (no route in this codebase lets a client set this).
     # Master Policy v1.3: new bookings get no outside food/cakes by default;
