@@ -300,6 +300,17 @@ class Booking(Base):
     # "manual override always wins" -- a deliberately confirmed, deposit-
     # waived booking must never be walked anywhere by automation. Cleared by
     # clear_status_pin ("hand back to automation"). NULL = automation may act.
+    #
+    # The pin guards FORWARD automation only -- nothing will advance a
+    # pinned booking on staff's behalf. It does NOT shield a booking from
+    # being superseded when a rival CONFIRMS its date
+    # (booking._supersede_losing_offers deliberately ignores it): a pinned
+    # `offered` booking that loses its date still dies and still has its
+    # links closed. Extending the pin to cover supersession would let any
+    # booking staff had touched by hand keep a live sign link and pay link
+    # after losing the date -- the 2026-09-04 incident, reachable from
+    # every booking in the admin. Pinned by test_a_pinned_offer_still_dies_
+    # when_a_rival_confirms.
     status_pinned_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     @property

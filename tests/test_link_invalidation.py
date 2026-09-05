@@ -306,6 +306,41 @@ def test_completing_a_booking_does_not_rerun_the_supersede(db, loft, contact):
     assert late.status == BookingStatus.offered
 
 
+def test_a_pinned_offer_still_dies_when_a_rival_confirms(db, loft, contact):
+    """A status pin guards the two FORWARD automations -- auto-hold and
+    auto-confirm must not walk a hand-set booking anywhere. It must never
+    shield a booking from being superseded. If it did, any booking staff
+    had touched by hand would keep a live sign link and a live pay link
+    after losing its date to a rival who actually paid -- the Sophie
+    incident, reachable from every booking touched in the admin.
+
+    Stated as its own invariant because the same-room test above only
+    proves it by accident (transition_status happens to pin), and a
+    later "make supersede respect the pin" would read as consistent with
+    the model comment while reopening the incident.
+    """
+    sophie = _booking_on(db, loft, contact, name="Sophie's Party")
+    transition_status(db, sophie, BookingStatus.offered, actor="staff:aaron")  # by hand -> pinned
+    invoice = create_invoice(
+        db, sophie, InvoiceType.deposit, [{"description": "Deposit", "quantity": 1, "unit_price": "500.00"}],
+        dt.date(2026, 11, 10), actor="test",
+    )
+    mark_invoice_sent(db, invoice, actor="test")
+    record_payment_link(db, invoice, "plink_pinned")
+    db.refresh(sophie)
+    assert sophie.status_pinned_at is not None, "precondition: this booking was set by hand"
+
+    chanai = _rival(db, contact, loft, name="Chanai's Party", email="chanai@example.com")
+    with patch.object(stripe_integration, "deactivate_payment_links") as mock_deactivate:
+        _confirm(db, chanai)
+
+    db.refresh(sophie)
+    db.refresh(invoice)
+    assert sophie.status == BookingStatus.dead
+    assert invoice.status == InvoiceStatus.cancelled
+    mock_deactivate.assert_called_once_with(["plink_pinned"])
+
+
 # --- public document routes gate on booking status and document currency ---
 
 

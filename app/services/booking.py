@@ -284,7 +284,13 @@ def _supersede_losing_offers(db: Session, booking: Booking, *, actor: str) -> No
     Killing goes through change_status, so the loser gets the exact same
     voided-status treatment as any other move to dead -- invoices
     cancelled, Stripe links deactivated, public links gated off -- and
-    because dead is not confirmed, nothing recurses. Children are queried
+    because dead is not confirmed, nothing recurses.
+
+    A rival's status pin is deliberately IGNORED here. The pin stops the
+    forward automations (auto-hold, auto-confirm) from advancing a
+    hand-set booking; it must never keep a booking's links alive after
+    it has lost its date to someone who actually paid. See the note on
+    Booking.status_pinned_at. Children are queried
     directly rather than through booking.linked_bookings, for the reason
     transition_status gives: that relationship is stale right after
     add_linked_space creates one."""
