@@ -206,3 +206,58 @@ def test_no_bar_credit_leaves_the_bar_structure_untouched(db, loft, contact):
     )
     content = document_generation.generate_beo_content(booking, [], bar_structure="Bar tab on the night")
     assert content["bar_structure"] == "Bar tab on the night"
+
+
+# --- triage must carry the food minimum across, like the guest one ------
+#
+# Shipped broken and caught by review hours later: every enquiry is created
+# on the non-bookable "Unassigned (pending triage)" placeholder, whose
+# min_food_spend is $0, so agreed_min_food_spend seeded to $0. Triage moved
+# agreed_min_adults but not this, and since a $0 minimum correctly emits no
+# clause, the client's agreement had no minimum in it at all.
+
+
+def test_triaging_an_enquiry_into_a_real_room_brings_the_food_minimum_with_it(
+    db, hamilton, loft, unassigned_space, contact
+):
+    from app.services.booking import assign_space_and_time
+    booking = create_booking(
+        db, space_id=unassigned_space.id, contact_id=contact.id, event_date=dt.date(2026, 12, 12),
+        start_time=None, end_time=None, event_name="Web enquiry", event_type="birthday",
+        adult_count=70, child_count=0, notes=None, actor="web",
+    )
+    assert booking.agreed_min_food_spend == Decimal("0.00"), "placeholder seeds zero"
+
+    assign_space_and_time(
+        db, booking, space_id=loft.id, start_time=dt.time(18, 0), end_time=dt.time(23, 0), actor="staff:test"
+    )
+    db.refresh(booking)
+
+    assert booking.agreed_min_food_spend == loft.min_food_spend
+    content = document_generation.generate_agreement_content(booking)
+    headings = [s["heading"] for s in content["terms_sections"]]
+    assert "Minimum Spend" in headings, "a triaged Loft booking must carry the Loft's minimum"
+    assert content["min_food_spend"] == str(loft.min_food_spend)
+
+
+def test_triage_does_not_overwrite_a_deliberately_agreed_food_minimum(
+    db, hamilton, loft, mezzanine, unassigned_space, contact
+):
+    # A recorded reason means a human chose the figure; moving rooms must
+    # not silently undo that.
+    booking = create_booking(
+        db, space_id=mezzanine.id, contact_id=contact.id, event_date=dt.date(2026, 12, 12),
+        start_time=dt.time(18, 0), end_time=dt.time(23, 0), event_name="Negotiated",
+        event_type="birthday", adult_count=70, child_count=0, notes=None, actor="staff:test",
+    )
+    set_agreed_food_minimum(
+        db, booking, agreed_min_food_spend=Decimal("300.00"),
+        reason=MinReductionReasonCode.friday_incentive, actor="staff:test",
+    )
+    from app.services.booking import assign_space_and_time
+    assign_space_and_time(
+        db, booking, space_id=loft.id, start_time=dt.time(18, 0), end_time=dt.time(23, 0), actor="staff:test"
+    )
+    db.refresh(booking)
+    assert booking.agreed_min_food_spend == Decimal("300.00")
+    assert booking.agreed_min_food_spend_reason == MinReductionReasonCode.friday_incentive
