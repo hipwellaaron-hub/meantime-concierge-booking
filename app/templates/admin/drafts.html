@@ -63,6 +63,7 @@
       {% if check.appeared %}<span class="muted">Appeared: {{ check.appeared | join(', ') }}.</span>{% endif %}
       {% if check.gone %}<span class="muted">Left: {{ check.gone | join(', ') }}.</span>{% endif %}
       {% if check.changed %}<span class="muted">Changed: {% for c in check.changed %}{{ c.reference }} ({{ c.from }} &rarr; {{ c.to }}){% if not loop.last %}, {% endif %}{% endfor %}.</span>{% endif %}
+      {% if not check.status_verified %}<span class="muted">Reference-only check: a rival changing status, room or time would not show here.</span>{% endif %}
       <span class="muted">Do not send as written.</span></p>
     {% endif %}
   {% endif %}

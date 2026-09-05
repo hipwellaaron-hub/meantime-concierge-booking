@@ -55,11 +55,11 @@ def _saturday(weeks_ahead: int = 6) -> dt.date:
 
 
 def _enquiry(db, hamilton, *, comments="Work dinner for 80, could we look at the Loft?", adults=80, when=None,
-             event_type="corporate", event_name="Rivers work dinner"):
+             event_type="corporate", event_name="Rivers work dinner", proposed_time="Saturday evening"):
     booking, _dups, created = create_enquiry_booking(
         db, venue=hamilton, full_name="Sam Rivers", email="sam@example.com", phone="0400000000",
         event_name=event_name, event_type=event_type, event_date=when or _saturday(),
-        proposed_time_slot="Saturday evening", attendee_count=adults, adult_count=adults,
+        proposed_time_slot=proposed_time, attendee_count=adults, adult_count=adults,
         company_name=None, dates_flexible=False, comments=comments, lead_source="website",
         lead_referrer=None, actor="test", first_touch_attribution=None, last_touch_attribution=None,
     )
@@ -499,7 +499,7 @@ def test_freshness_flags_a_rival_that_changed_status(db, hamilton, loft, unassig
     check = drafting.freshness(db, row)
     assert check["fresh"] is False
     assert check["status_verified"] is True
-    assert any(c["reference"] == rival.reference_code and c["to"] == "confirmed" for c in check["changed"])
+    assert any(c["reference"] == rival.reference_code and c["to"].startswith("confirmed") for c in check["changed"])
 
 
 def test_freshness_flags_a_new_unassigned_enquiry_on_the_date(db, hamilton, unassigned_space, drafting_on, model):
@@ -540,7 +540,7 @@ def test_freshness_on_a_draft_without_stored_statuses_is_labelled_unverified(
 
     facts = dict(row.facts)
     cross = dict(facts["cross_check"])
-    cross.pop("path_a_buckets")
+    cross.pop("occupants")
     facts["cross_check"] = cross
     row.facts = facts
     db.commit()
@@ -549,3 +549,185 @@ def test_freshness_on_a_draft_without_stored_statuses_is_labelled_unverified(
     assert check["fresh"] is True
     assert check["status_verified"] is False
     assert "reference only" in check["reason"]
+
+
+# --- wave 2 review fixes -------------------------------------------------
+
+
+def _rival_on(db, space, when, *, start=dt.time(18, 0), end=dt.time(23, 0), adults=60, name="Rival dinner"):
+    from app.services.booking import create_booking
+    return create_booking(
+        db, space_id=space.id, contact_id=None, event_date=when,
+        start_time=start, end_time=end, event_name=name, event_type="corporate",
+        adult_count=adults, child_count=0, notes=None, actor="test",
+    )
+
+
+def test_freshness_flags_a_rival_that_moved_rooms(db, hamilton, loft, mezzanine, unassigned_space, drafting_on, model):
+    # Rival R confirmed on the Mezzanine; the draft offers the Loft. Staff
+    # move R into the Loft with its status unchanged. A (reference, status)
+    # comparison rendered green over a draft offering a room now taken
+    # (wave 2 review).
+    from app.models.booking import BookingStatus
+    from app.services.booking import assign_space_and_time, change_status
+    when = _saturday(7)
+    rival = _rival_on(db, mezzanine, when)
+    change_status(db, rival, BookingStatus.confirmed, actor="test")
+    booking = _enquiry(db, hamilton, comments="Dinner for 80", adults=80, when=when,
+                       event_type="corporate", event_name="Our dinner")
+    row = drafting.draft_for_booking(db, booking.id)
+    assert row.status == STATUS_GENERATED, row.failure_reason
+    assert drafting.freshness(db, row)["fresh"] is True
+
+    assign_space_and_time(db, rival, space_id=loft.id, start_time=dt.time(18, 0), end_time=dt.time(23, 0), actor="test")
+
+    check = drafting.freshness(db, row)
+    assert check["fresh"] is False
+    assert check["status_verified"] is True
+    moved = [c for c in check["changed"] if c["reference"] == rival.reference_code]
+    assert moved and "The Mezzanine" in moved[0]["from"] and "The Loft" in moved[0]["to"]
+
+
+def test_freshness_flags_a_rival_that_moved_times(db, hamilton, loft, unassigned_space, drafting_on, model):
+    from app.models.booking import BookingStatus
+    from app.services.booking import assign_space_and_time, change_status
+    when = _saturday(7)
+    rival = _rival_on(db, loft, when, start=dt.time(11, 0), end=dt.time(15, 0))
+    change_status(db, rival, BookingStatus.confirmed, actor="test")
+    # The form's Proposed Time gives the gate an evening, so the lunch on
+    # the Loft does not contend and the draft goes out offering the Loft.
+    booking = _enquiry(db, hamilton, comments="Evening dinner for 80", adults=80, when=when,
+                       event_type="corporate", event_name="Our dinner", proposed_time="6pm to 11pm")
+    row = drafting.draft_for_booking(db, booking.id)
+    assert row.status == STATUS_GENERATED, row.failure_reason
+
+    assign_space_and_time(db, rival, space_id=loft.id, start_time=dt.time(18, 0), end_time=dt.time(23, 0), actor="test")
+
+    check = drafting.freshness(db, row)
+    assert check["fresh"] is False
+    assert any("18:00-23:00" in c["to"] for c in check["changed"])
+
+
+def test_a_legacy_draft_does_not_report_a_preexisting_unassigned_enquiry_as_new(
+    db, hamilton, unassigned_space, drafting_on, model
+):
+    # A pre-status-tracking draft never stored placeholder enquiries, so
+    # the reference-only re-check must not count one that was there all
+    # along as "appeared" (wave 2 review).
+    when = _saturday(7)
+    _enquiry(db, hamilton, when=when, event_name="First dinner")
+    booking = _enquiry(db, hamilton, when=when, event_name="Second dinner")
+    row = drafting.draft_for_booking(db, booking.id)
+    # The gate blocks this one (two unassigned on a date), so build the
+    # legacy row by hand from a blocked row's facts.
+    facts = dict(row.facts or {})
+    facts["event"] = {"date": when.isoformat()}
+    facts["cross_check"] = {"agrees": True, "path_a": [], "path_b": []}
+    row.facts = facts
+    db.commit()
+
+    check = drafting.freshness(db, row)
+    assert check["fresh"] is True
+    assert check["status_verified"] is False
+    assert check["appeared"] == []
+
+
+def test_a_legacy_draft_that_is_stale_still_says_reference_only(
+    db, hamilton, loft, unassigned_space, drafting_on, model
+):
+    booking = _enquiry(db, hamilton, comments="Dinner for 40", adults=40, when=_saturday(7),
+                       event_type="corporate", event_name="Our dinner")
+    row = drafting.draft_for_booking(db, booking.id)
+    assert row.status == STATUS_GENERATED, row.failure_reason
+    facts = dict(row.facts)
+    cross = dict(facts["cross_check"])
+    cross.pop("occupants")
+    facts["cross_check"] = cross
+    row.facts = facts
+    db.commit()
+
+    from app.models.booking import BookingStatus
+    from app.services.booking import change_status
+    rival = _rival_on(db, loft, booking.event_date)
+    change_status(db, rival, BookingStatus.tentative, actor="test")
+
+    check = drafting.freshness(db, row)
+    assert check["fresh"] is False
+    assert check["status_verified"] is False
+    assert "reference only" in check["reason"].lower()
+
+
+def test_review_page_labels_a_stale_legacy_draft_as_reference_only(
+    admin_client, db, hamilton, loft, unassigned_space, drafting_on, model
+):
+    booking = _enquiry(db, hamilton, comments="Dinner for 40", adults=40, when=_saturday(7),
+                       event_type="corporate", event_name="Our dinner")
+    row = drafting.draft_for_booking(db, booking.id)
+    facts = dict(row.facts)
+    cross = dict(facts["cross_check"])
+    cross.pop("occupants")
+    facts["cross_check"] = cross
+    row.facts = facts
+    db.commit()
+    from app.models.booking import BookingStatus
+    from app.services.booking import change_status
+    change_status(db, _rival_on(db, loft, booking.event_date), BookingStatus.tentative, actor="test")
+
+    page = admin_client.get("/admin/drafts").text
+    assert "stale" in page
+    assert "Reference-only check" in page
+
+
+def test_the_prompt_marks_which_rooms_the_gate_lets_it_offer(db, hamilton, loft, mezzanine, unassigned_space, drafting_on, model):
+    # An offered rival on the Loft: the gate rules the Loft out, the
+    # availability view lists it as merely contested, and the prompt's
+    # disclosure rule read that as "available with other interest" (wave
+    # 2 review). Now the gate's verdict is stamped on each room.
+    from app.models.booking import BookingStatus
+    from app.services.booking import change_status
+    when = _saturday(7)
+    rival = _rival_on(db, loft, when)
+    change_status(db, rival, BookingStatus.offered, actor="test")
+    booking = _enquiry(db, hamilton, comments="Dinner for 70", adults=70, when=when,
+                       event_type="corporate", event_name="Our dinner")
+    row = drafting.draft_for_booking(db, booking.id)
+    assert row.status == STATUS_GENERATED, row.failure_reason
+
+    offerable = {r["room"]: r["offerable"] for r in row.facts["availability"]}
+    assert offerable["The Loft"] is False
+    assert offerable["The Mezzanine"] is True
+    assert row.prompt_version == "p2.2"
+    assert "ROOMS. Offer only a room whose availability entry says" in drafting.SYSTEM_PROMPT
+    assert row.facts["event"]["room"] is None
+
+
+def test_grounding_on_an_assigned_booking_agrees_with_itself(db, hamilton, loft, unassigned_space, drafting_on, model):
+    # path_a used to include the booking's own reference while path_b
+    # excluded it, so a booking already on a room always read as a data
+    # mismatch (wave 2 review; latent, no caller drafts assigned bookings yet).
+    from app.services import venue_profile
+    from app.services.booking import assign_space_and_time
+    booking = _enquiry(db, hamilton, when=_saturday(7), event_name="Assigned dinner")
+    assign_space_and_time(db, booking, space_id=loft.id, start_time=dt.time(18, 0), end_time=dt.time(23, 0), actor="test")
+
+    facts, ok = drafting._ground(db, booking, venue_profile.for_booking(booking))
+
+    assert ok is True, facts["cross_check"]
+    assert booking.reference_code not in facts["cross_check"]["path_a"]
+    assert facts["event"]["room"] == "The Loft"
+
+
+def test_a_confirmed_booking_with_no_room_is_not_called_an_enquiry(db, hamilton, unassigned_space, drafting_on, model):
+    from app.models.booking import BookingStatus
+    from app.services import venue_profile
+    from app.services.booking import change_status
+    when = _saturday(7)
+    imported = _enquiry(db, hamilton, when=when, event_name="Imported confirmed")
+    change_status(db, imported, BookingStatus.confirmed, actor="test")
+    booking = _enquiry(db, hamilton, when=when, event_name="Our dinner")
+
+    facts, _ok = drafting._ground(db, booking, venue_profile.for_booking(booking))
+
+    entry = next(e for e in facts["cross_check"]["occupants"] if e[0] == imported.reference_code)
+    assert entry[1] == "confirmed" and entry[2] is None
+    assert drafting._describe(entry[1:]) == "confirmed, no room yet"

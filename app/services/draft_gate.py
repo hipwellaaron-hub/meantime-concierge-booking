@@ -29,12 +29,14 @@ import datetime as dt
 import logging
 import re
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models import Booking, Space
-from app.services import availability, policy
+from app.models.booking import BLOCKING_STATUSES
+from app.services import policy
 from app.services.ai_availability import TOUCHING_STATUSES
 from app.services.booking import times_overlap
 from app.services.enquiry_classification import GENERIC_EVENT_TYPES, looks_like_18th
@@ -102,7 +104,12 @@ _DAYTIME_PATTERN = re.compile(
     # "morning" is not -- it matched the greeting "Good morning!" on an
     # evening enquiry and blocked it as a daytime event with a factually
     # wrong staff note (2026-09-05 review).
-    r"\blunch|\bdaytime\b|\bafternoon\b|\bbrunch\b|\bmorning\s+tea\b|\bmid-?morning\b|"
+    # The first tightening lost "mid morning" (space), "morning teas" and
+    # "Sunday morning" (wave 2 review); the day-of-week and "in the" forms
+    # bring back the real daytime uses of "morning" without the greeting.
+    r"\blunch|\bdaytime\b|\bafternoon\b|\bbrunch\b|\bbreakfast\b|"
+    r"\bmorning[\s-]+teas?\b|\bmid[\s-]?morning\b|"
+    r"\b(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|in\s+the)\s+morning\b|"
     r"high\s+tea|baby\s+shower|christening"
 )
 
@@ -150,7 +157,8 @@ def _held_for_restaurant(space: Space, booking: Booking) -> bool:
         return False
     if booking.event_date.weekday() != SATURDAY:
         return False
-    if booking.end_time is not None and booking.end_time <= DAYTIME_CUTOFF:
+    _start, end, _from_form = _effective_times(booking)
+    if end is not None and end <= DAYTIME_CUTOFF:
         return False
     return space.name in policy.RESTAURANT_HELD_SATURDAY_EVENING
 
@@ -177,9 +185,81 @@ def _milestone_age(event_name: str) -> int | None:
 def _haystack(booking: Booking, extra: str = "") -> str:
     return " ".join(
         part
-        for part in [booking.event_name, booking.event_type, booking.enquiry_text, booking.notes, extra]
+        for part in [
+            booking.event_name, booking.event_type, booking.enquiry_text, booking.notes,
+            booking.proposed_time_slot, extra,
+        ]
         if part
     ).lower()
+
+
+# The form's "Proposed Time" is free text ("6pm to 11pm", "12:00 PM - 5:00
+# PM"). Until 2026-09-05 the gate never read it, so an enquiry that named
+# its hours was still treated as taking the whole day. Aaron's call: use
+# it when it parses, fall back to the whole day when it is empty or
+# unreadable. Only a clear two-ended range counts; "6pm till late",
+# "evening", "lunch" and a bare "6 to 11" all fall back.
+_TIME_TOKEN = re.compile(r"(?<![\d:])(\d{1,2})(?:[:.](\d{2}))?\s*(am|pm|a\.m\.|p\.m\.)?(?![\d:])", re.I)
+_RANGE_SEPARATOR = re.compile(r"\s*(?:-|\u2013|\u2014|to|till|til|until)\s*", re.I)
+
+
+def parse_time_range(text: str | None) -> tuple[dt.time, dt.time] | None:
+    """A (start, end) pair from free text, or None when it is not clearly
+    a two-ended range. Bare numbers with no am/pm are trusted only when
+    one of them is past 12 (a 24-hour clock); "6 to 11" is ambiguous."""
+    if not text:
+        return None
+    tokens = list(_TIME_TOKEN.finditer(text))
+    if len(tokens) != 2:
+        return None
+    first, second = tokens
+    if not _RANGE_SEPARATOR.fullmatch(text[first.end():second.start()]):
+        return None
+
+    def meridiem(match):
+        raw = match.group(3)
+        return raw.lower().replace(".", "")[:2] if raw else None
+
+    def build(match, ampm):
+        hour, minute = int(match.group(1)), int(match.group(2) or 0)
+        if minute > 59:
+            return None
+        if ampm:
+            if not 1 <= hour <= 12:
+                return None
+            hour = hour % 12 + (12 if ampm == "pm" else 0)
+        elif hour > 23:
+            return None
+        return dt.time(hour, minute)
+
+    m1, m2 = meridiem(first), meridiem(second)
+    if m1 is None and m2 is None:
+        if int(first.group(1)) <= 12 and int(second.group(1)) <= 12:
+            return None
+        candidates = [(None, None)]
+    elif m1 is None:
+        candidates = [(m2, m2), ("am" if m2 == "pm" else "pm", m2)]
+    elif m2 is None:
+        candidates = [(m1, m1), (m1, "am" if m1 == "pm" else "pm")]
+    else:
+        candidates = [(m1, m2)]
+    for a, b in candidates:
+        start, end = build(first, a), build(second, b)
+        if start is not None and end is not None and start < end:
+            return start, end
+    return None
+
+
+def _effective_times(booking: Booking) -> tuple[dt.time | None, dt.time | None, bool]:
+    """The times the gate reasons with: the booking's own when set,
+    otherwise the form's Proposed Time when it parses. The flag says
+    which. (None, None, False) means the whole day."""
+    if booking.start_time is not None and booking.end_time is not None:
+        return booking.start_time, booking.end_time, False
+    parsed = parse_time_range(booking.proposed_time_slot)
+    if parsed is not None:
+        return parsed[0], parsed[1], True
+    return booking.start_time, booking.end_time, False
 
 
 def _gate_overlaps(a: Booking, b: Booking) -> bool:
@@ -195,10 +275,20 @@ def _gate_overlaps(a: Booking, b: Booking) -> bool:
     the same Saturday were each told the date was clear (2026-09-05
     review). Overstating contention costs a human ten minutes;
     understating it sells the same night twice. Aaron's call: contend on
-    date and space, and a missing time means the whole day."""
-    if None in (a.start_time, a.end_time, b.start_time, b.end_time):
+    date and space, and a missing time means the whole day -- where "time"
+    includes the form's Proposed Time when it parses (_effective_times).
+
+    The overlap arithmetic itself is still times_overlap's, handed the
+    effective times, so there is one definition of "overlap" in the
+    system and only the "no time" rule differs."""
+    a_start, a_end, _ = _effective_times(a)
+    b_start, b_end, _ = _effective_times(b)
+    if None in (a_start, a_end, b_start, b_end):
         return True
-    return times_overlap(a, b)
+    return times_overlap(
+        SimpleNamespace(start_time=a_start, end_time=a_end),
+        SimpleNamespace(start_time=b_start, end_time=b_end),
+    )
 
 
 def _contention(db: Session, booking: Booking) -> list[Booking]:
@@ -228,7 +318,34 @@ def _contention(db: Session, booking: Booking) -> list[Booking]:
     return [o for o in others if _gate_overlaps(booking, o)]
 
 
-def _evaluate_candidate_rooms(db: Session, booking: Booking, guests: int, facts: dict) -> list[GateBlock]:
+def _unassigned_holds(db: Session, booking: Booking) -> list[Booking]:
+    """Confirmed or tentative bookings on this date that still have no
+    room -- an iVvy import not yet triaged, or a hold walked to tentative
+    from the placeholder. They hold no room, but they WILL take one.
+    Aaron's call (2026-09-05): a confirmed booking with no room is a data
+    problem to fix, not a case to reason around; until it is assigned it
+    holds the whole day, so no draft goes out for that date."""
+    if booking.event_date is None:
+        return []
+    return list(
+        db.scalars(
+            select(Booking)
+            .join(Space, Booking.space_id == Space.id)
+            .where(
+                Space.venue_id == booking.space.venue_id,
+                Space.is_bookable.is_(False),
+                Booking.event_date == booking.event_date,
+                Booking.id != booking.id,
+                Booking.status.in_(BLOCKING_STATUSES),
+            )
+            .execution_options(populate_existing=True)
+        ).all()
+    )
+
+
+def _evaluate_candidate_rooms(
+    db: Session, booking: Booking, guests: int, adults: int, facts: dict
+) -> list[GateBlock]:
     """Which real rooms could take this enquiry, and is any of them free.
 
     Used only when no room has been chosen yet. A form enquiry arrives with
@@ -261,10 +378,15 @@ def _evaluate_candidate_rooms(db: Session, booking: Booking, guests: int, facts:
             )
         ]
 
-    free = []
+    if booking.event_date is None:
+        # UNCLEAR already says there is no date. Falling through used to
+        # leave `free` empty and invent "every room is already booked that
+        # day" for a date that does not exist (wave 2 review).
+        return []
+
+    free: list[Space] = []
+    occupied: dict[str, list[str]] = {}
     for room in fitting:
-        if booking.event_date is None:
-            continue
         # One path for timed and untimed alike. The untimed case used to
         # fall back to availability.is_space_free, which counts only
         # BLOCKING statuses -- so an `offered` or open `enquiry` already
@@ -283,26 +405,38 @@ def _evaluate_candidate_rooms(db: Session, booking: Booking, guests: int, facts:
             )
             .execution_options(populate_existing=True)
         ).all()
-        if not any(_gate_overlaps(booking, o) for o in clash):
+        clashing = [o for o in clash if _gate_overlaps(booking, o)]
+        if clashing:
+            occupied[room.name] = [f"{o.reference_code} ({o.status.value})" for o in clashing]
+        else:
             free.append(room)
 
     facts["rooms_free"] = [r.name for r in free]
 
     if not free:
+        # Say what is actually on the rooms. An open enquiry occupying a
+        # room is not "booked", and the note was claiming it was (wave 2
+        # review); staff also need the references to look up.
+        facts["rooms_occupied_by"] = occupied
+        detail = "; ".join(f"{room}: {', '.join(refs)}" for room, refs in occupied.items())
         return [
             GateBlock(
                 DATE_TAKEN,
-                f"Every room that fits {guests} ({', '.join(r.name for r in fitting)}) is already booked "
-                "that day. Which alternative to lead with, and whether to incentivise, is a sales call.",
+                f"Every room that fits {guests} ({', '.join(r.name for r in fitting)}) already has a "
+                f"booking, hold or open enquiry on it that day ({detail}). "
+                "Which alternative to lead with, and whether to incentivise, is a sales call.",
             )
         ]
 
-    if all(guests < r.standard_min_adults for r in free):
+    # Minimums are ADULT minimums; capacity counts everyone. Comparing the
+    # total headcount against the adult minimum let 35 adults and 10
+    # children through a 40-adult minimum (wave 2 review).
+    if all(adults < r.standard_min_adults for r in free):
         smallest_minimum = min(r.standard_min_adults for r in free)
         return [
             GateBlock(
                 BELOW_MINIMUM,
-                f"{guests} guests is under the minimum of every free room (lowest is {smallest_minimum}). "
+                f"{adults} adults is under the minimum of every free room (lowest is {smallest_minimum}). "
                 "Whether to flex is commercial, and a reduced figure has to go into the agreement.",
             )
         ]
@@ -349,6 +483,7 @@ def _evaluate(
     facts: dict = {}
     text = _haystack(booking, enquiry_text)
     guests = attendee_count if attendee_count is not None else adult_count
+    adults = adult_count if adult_count is not None else guests
     space = booking.space
 
     # --- unclear: never guess an ambiguous request ----------------------
@@ -373,16 +508,28 @@ def _evaluate(
     # Aaron's call: any child on the booking blocks. If the rate goes up,
     # that is the honest rate.
     children = booking.child_count or 0
+    eighteenth = looks_like_18th(booking.event_type or "", booking.event_name or "", booking.notes)
+    # "Eva's 18th" with type "birthday" is caught by the milestone rule
+    # further down, which only runs when nothing above has said UNDER_18.
+    milestone = (
+        _milestone_age(booking.event_name or "")
+        if (booking.event_type or "").strip().lower() == "birthday"
+        else None
+    )
     if children > 0:
         noun = "child" if children == 1 else "children"
-        blocks.append(
-            GateBlock(
-                UNDER_18,
-                f"{children} {noun} on the booking, so guests are under 18 and the RSA conversation "
-                "has to happen in person.",
-            )
+        reason = (
+            f"{children} {noun} on the booking, so guests are under 18 and the RSA conversation "
+            "has to happen in person."
         )
-    elif looks_like_18th(booking.event_type or "", booking.event_name or "", booking.notes) or _UNDER_18_PATTERN.search(text):
+        # Both signals at once: the 18th is the fact staff act on (the
+        # 18th appendix), so it must not be lost behind the headcount.
+        if eighteenth or milestone == 18:
+            reason += " It also reads as an 18th."
+        elif milestone is not None and milestone < 18:
+            reason += f" It also reads as a {milestone}th birthday."
+        blocks.append(GateBlock(UNDER_18, reason))
+    elif eighteenth or _UNDER_18_PATTERN.search(text):
         blocks.append(
             GateBlock(UNDER_18, "An 18th, or guests under 18, so the RSA conversation has to happen in person.")
         )
@@ -460,19 +607,22 @@ def _evaluate(
                 blocks.append(
                     GateBlock(OVER_CAPACITY, f"{guests} guests is beyond every space (largest holds {largest}), so this needs declining well.")
                 )
-            elif guests < booking.agreed_min_adults:
+            elif adults < booking.agreed_min_adults:
                 # The AGREED minimum, never the space default: a booking
                 # Aaron has already flexed must not be blocked as "below
                 # minimum" against a figure that no longer applies to it
                 # (agreed_min_adults defaults to the space standard on
                 # creation, so an unflexed booking compares the same way).
+                # And ADULTS against an adult minimum: the total headcount
+                # was letting 35 adults and 10 children through a 40-adult
+                # minimum (wave 2 review).
                 facts["space_minimum"] = space.standard_min_adults
                 facts["agreed_minimum"] = booking.agreed_min_adults
                 flexed = booking.agreed_min_adults != space.standard_min_adults
                 blocks.append(
                     GateBlock(
                         BELOW_MINIMUM,
-                        f"{guests} guests against {space.name}'s "
+                        f"{adults} adults against {space.name}'s "
                         f"{'agreed' if flexed else 'standard'} minimum of {booking.agreed_min_adults}. "
                         "Whether to flex is commercial, and a reduced figure has to go into the agreement.",
                     )
@@ -484,14 +634,18 @@ def _evaluate(
             # everything, and checking contention against it would compare
             # one unassigned enquiry with another instead of with the real
             # rooms. Evaluate against the rooms that could actually take it.
-            blocks.extend(_evaluate_candidate_rooms(db, booking, guests, facts))
+            blocks.extend(_evaluate_candidate_rooms(db, booking, guests, adults, facts))
 
     # --- daytime --------------------------------------------------------
     # Turnaround rules and the "stay later if nothing's booked" caveat are
     # a judgement call, so any daytime shape is a human's.
-    if booking.end_time is not None and booking.end_time <= DAYTIME_CUTOFF:
-        blocks.append(GateBlock(DAYTIME, "A daytime event, where turnaround and the stay-later caveat are a judgement call."))
-    elif booking.start_time is None and _DAYTIME_PATTERN.search(text):
+    start, end, from_form = _effective_times(booking)
+    if from_form:
+        facts["times_from_form"] = f"{start:%H:%M}-{end:%H:%M}"
+    if end is not None and end <= DAYTIME_CUTOFF:
+        source = " (from the form's proposed time)" if from_form else ""
+        blocks.append(GateBlock(DAYTIME, f"A daytime event{source}, where turnaround and the stay-later caveat are a judgement call."))
+    elif start is None and _DAYTIME_PATTERN.search(text):
         blocks.append(GateBlock(DAYTIME, "Reads as a daytime event, where turnaround and the stay-later caveat are a judgement call."))
 
     # --- a room held back for the restaurant ------------------------------
@@ -507,35 +661,51 @@ def _evaluate(
     # --- the date itself ------------------------------------------------
     rivals = _contention(db, booking)
     facts["contested_by"] = [o.reference_code for o in rivals]
-    taken = [o for o in rivals if o.status.value in ("tentative", "confirmed", "completed")]
-    if taken:
-        facts["taken_by"] = [o.reference_code for o in taken]
-        blocks.append(
-            GateBlock(
-                DATE_TAKEN,
-                f"{space.name} is already held that night ({len(taken)} booking(s)). "
-                "Which alternative to lead with, and whether to incentivise, is a sales call.",
+    if space.is_bookable:
+        taken = [o for o in rivals if o.status in BLOCKING_STATUSES]
+        if taken:
+            facts["taken_by"] = [o.reference_code for o in taken]
+            blocks.append(
+                GateBlock(
+                    DATE_TAKEN,
+                    f"{space.name} is already held that night ({len(taken)} booking(s)). "
+                    "Which alternative to lead with, and whether to incentivise, is a sales call.",
+                )
             )
-        )
-    elif rivals:
-        facts["open_enquiry_count"] = len(rivals)
-        if not space.is_bookable:
-            # Two or more unassigned enquiries chasing the same date. No
-            # room reads as taken, because none of them holds one -- but
-            # they are competing for the same pool, and which one gets
-            # which room is a sales call, not a draft. Aaron's call
-            # (2026-09-05): block, do not disclose. Until then each was
-            # told the date was clear with no other interest.
-            noun = "enquiry" if len(rivals) == 1 else "enquiries"
+        elif rivals:
+            # A contested but free slot may still be drafted, and the
+            # draft must disclose the other interest (brief section 4).
+            facts["open_enquiry_count"] = len(rivals)
+        holds = _unassigned_holds(db, booking)
+        if holds:
+            facts["unassigned_holds"] = [o.reference_code for o in holds]
+            listed = ", ".join(f"{o.reference_code} ({o.status.value})" for o in holds)
+            verb = "has" if len(holds) == 1 else "have"
             blocks.append(
                 GateBlock(
                     CONTESTED,
-                    f"{len(rivals)} other open {noun} for this date with no room assigned yet "
-                    f"({', '.join(o.reference_code for o in rivals)}). Which one gets which room is a sales call.",
+                    f"{len(holds)} confirmed or tentative booking(s) on this date still {verb} no room "
+                    f"assigned ({listed}). Assign {'it' if len(holds) == 1 else 'them'} before offering {space.name}.",
                 )
             )
-        # For an assigned room a contested but free slot may still be
-        # drafted, and the draft must disclose the other interest (brief
-        # section 4).
+    elif rivals:
+        # Two or more unassigned enquiries chasing the same date. No room
+        # reads as taken, because none of them holds one -- but they are
+        # competing for the same pool, and which one gets which room is a
+        # sales call, not a draft. Aaron's call (2026-09-05): block, do not
+        # disclose, and contention is contention whatever the rival's
+        # status -- an offered or tentative one on the placeholder is
+        # still competing for a room, and DATE_TAKEN "Unassigned is already
+        # held" named the placeholder as if it were a room (wave 2 review).
+        facts["open_enquiry_count"] = len(rivals)
+        noun = "enquiry or hold" if len(rivals) == 1 else "enquiries or holds"
+        listed = ", ".join(f"{o.reference_code} ({o.status.value})" for o in rivals)
+        blocks.append(
+            GateBlock(
+                CONTESTED,
+                f"{len(rivals)} other {noun} for this date with no room assigned yet ({listed}). "
+                "Which one gets which room is a sales call.",
+            )
+        )
 
     return GateDecision(should_draft=not blocks, blocks=blocks, facts=facts)

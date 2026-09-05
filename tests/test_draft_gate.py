@@ -18,14 +18,16 @@ FUTURE = dt.date.today() + dt.timedelta(days=70)  # a Saturday-agnostic future d
 
 
 def _booking(db, space, *, name="Sarah's 30th", event_type="birthday", when=FUTURE,
-             start=dt.time(18, 0), end=dt.time(23, 0), notes=None, adults=80):
+             start=dt.time(18, 0), end=dt.time(23, 0), notes=None, adults=80, children=0,
+             proposed_time=None):
     contact = Contact(name="Gate Client", email=f"gate.{name.replace(' ', '.').replace(chr(39), '').lower()}@example.com")
     db.add(contact)
     db.flush()
     return create_booking(
         db, space_id=space.id, contact_id=contact.id, event_date=when,
         start_time=start, end_time=end, event_name=name, event_type=event_type,
-        adult_count=adults, child_count=0, notes=notes, actor="staff:test",
+        adult_count=adults, child_count=children, notes=notes, actor="staff:test",
+        proposed_time_slot=proposed_time,
     )
 
 
@@ -185,14 +187,16 @@ def test_a_blocked_decision_produces_a_usable_note(db, hamilton, loft):
 # that found that.
 
 
-def _unassigned(db, unassigned_space, *, name, when, adults, event_type="birthday"):
+def _unassigned(db, unassigned_space, *, name, when, adults, event_type="birthday", children=0,
+                proposed_time=None):
     contact = Contact(name=f"{name} Client", email=f"{name.replace(' ', '.').replace(chr(39), '').lower()}@example.com")
     db.add(contact)
     db.flush()
     return create_booking(
         db, space_id=unassigned_space.id, contact_id=contact.id, event_date=when,
         start_time=None, end_time=None, event_name=name, event_type=event_type,
-        adult_count=adults, child_count=0, notes=None, actor="staff:test",
+        adult_count=adults, child_count=children, notes=None, actor="staff:test",
+        proposed_time_slot=proposed_time,
     )
 
 
@@ -373,6 +377,12 @@ def test_real_negotiation_and_real_daytime_still_block(db, hamilton, loft):
     # unrelated rules.
     b = _booking(db, loft, name="Team catch-up", event_type="corporate", adults=60, start=None, end=None)
     assert "negotiation" in _decide(db, b, guests=60, text="We are on a tight budget, is there a deal on a Friday?").codes
+    # "deal" on its own: the line above also says "budget", which fires the
+    # rule by itself, so it never proved the \bdeal\b anchor (wave 2 review).
+    assert "negotiation" in _decide(db, b, guests=60, text="Is there a deal on a Friday?").codes
+    assert "negotiation" not in _decide(db, b, guests=60, text="The Loft would be ideal for us").codes
+    # And "Good morning" on an UNTIMED booking, where the text rule can run.
+    assert "daytime" not in _decide(db, b, guests=60, text="Good morning! The Loft would be ideal for our team dinner").codes
     assert "daytime" in _decide(db, b, guests=60, text="A morning tea for 40 people").codes
     assert "daytime" in _decide(db, b, guests=60, text="A lunch for 30 on the Sunday").codes
     # And the one the fix is for still passes clean on the same booking.
@@ -464,3 +474,230 @@ def test_a_timed_lunch_and_a_timed_evening_still_do_not_contend(db, hamilton, lo
 
     assert decision.facts["contested_by"] == []
     assert draft_gate.DATE_TAKEN not in decision.codes
+
+
+# --- wave 2 review fixes -------------------------------------------------
+
+
+def test_a_placeholder_rival_on_hold_is_contested_not_date_taken(
+    db, hamilton, loft, mezzanine, lounge, unassigned_space
+):
+    # A booking walked to tentative while still on the placeholder (the
+    # dropdown has no bookable-space guard; iVvy imports land confirmed
+    # there too). It holds no room, so "Unassigned is already held that
+    # night" named the placeholder as a room. Aaron: contention is
+    # contention whatever the rival's status -- CONTESTED, and DATE_TAKEN
+    # only ever names a real room.
+    when = _saturday(11)
+    rival = _unassigned(db, unassigned_space, name="Held on placeholder", when=when, adults=40, event_type="corporate")
+    change_status(db, rival, BookingStatus.tentative, actor="test")
+    enquiry = _unassigned(db, unassigned_space, name="Fresh enquiry", when=when, adults=40, event_type="corporate")
+
+    decision = draft_gate.evaluate(db, enquiry, adult_count=40, attendee_count=40)
+
+    assert draft_gate.CONTESTED in decision.codes
+    assert draft_gate.DATE_TAKEN not in decision.codes
+    assert decision.codes.count(draft_gate.CONTESTED) == 1
+    assert rival.reference_code in decision.facts["contested_by"]
+    assert "tentative" in decision.as_note()
+    assert "Unassigned" not in decision.as_note()
+
+
+def test_an_assigned_booking_is_blocked_by_a_confirmed_booking_with_no_room(
+    db, hamilton, loft, mezzanine, lounge, unassigned_space
+):
+    # A confirmed booking still on the placeholder is a data problem that
+    # will take a room; until it is assigned it holds the whole day
+    # (Aaron, 2026-09-05). Before this it was invisible to a booking
+    # already on a real room, because contention is scoped to the room.
+    when = _saturday(11)
+    homeless = _unassigned(db, unassigned_space, name="Imported confirmed", when=when, adults=60, event_type="corporate")
+    change_status(db, homeless, BookingStatus.confirmed, actor="test")
+    b = _booking(db, loft, name="Team night", event_type="corporate", when=when, adults=80, start=None, end=None)
+
+    decision = draft_gate.evaluate(db, b, adult_count=80, attendee_count=80)
+
+    assert decision.should_draft is False
+    assert draft_gate.CONTESTED in decision.codes
+    assert homeless.reference_code in decision.facts["unassigned_holds"]
+    assert "Assign it before offering The Loft" in decision.as_note()
+
+
+def test_an_assigned_booking_is_not_blocked_by_an_open_enquiry_with_no_room(
+    db, hamilton, loft, mezzanine, lounge, unassigned_space
+):
+    # Only holds block an assigned room; an open placeholder enquiry is
+    # other interest the draft discloses, not a block.
+    when = _saturday(11)
+    _unassigned(db, unassigned_space, name="Open placeholder", when=when, adults=40, event_type="corporate")
+    b = _booking(db, loft, name="Team night", event_type="corporate", when=when, adults=80, start=None, end=None)
+
+    decision = draft_gate.evaluate(db, b, adult_count=80, attendee_count=80)
+
+    assert draft_gate.CONTESTED not in decision.codes
+    assert "unassigned_holds" not in decision.facts
+
+
+def test_the_adult_minimum_is_judged_on_adults_not_the_whole_headcount(db, hamilton, mezzanine):
+    # 35 adults + 10 children on the Mezzanine (minimum 40 adults). The
+    # total of 45 cleared the adult minimum and the BELOW_MINIMUM note
+    # vanished (wave 2 review). Capacity still counts everyone.
+    b = _booking(db, mezzanine, name="Family do", event_type="corporate", adults=35, children=10, start=None, end=None)
+
+    decision = draft_gate.evaluate(db, b, adult_count=35, attendee_count=45)
+
+    assert draft_gate.BELOW_MINIMUM in decision.codes
+    assert decision.facts["agreed_minimum"] == 40
+    assert "35 adults" in decision.as_note()
+
+
+def test_the_adult_minimum_of_candidate_rooms_is_judged_on_adults(
+    db, hamilton, loft, mezzanine, lounge, unassigned_space
+):
+    # Unassigned, a Friday (the Lounge is not held back): 30 adults + 15
+    # children. The Lounge (35 capacity) cannot take 45, and 30 adults is
+    # under the Mezzanine's 40 and the Loft's 60.
+    when = _saturday(11) - dt.timedelta(days=1)
+    b = _unassigned(db, unassigned_space, name="Family party", when=when, adults=30, children=15, event_type="corporate")
+
+    decision = draft_gate.evaluate(db, b, adult_count=30, attendee_count=45)
+
+    assert draft_gate.BELOW_MINIMUM in decision.codes
+    assert "The Lounge" not in decision.facts["rooms_that_fit"]
+
+
+def test_daytime_phrasings_the_tightened_regex_lost(db, hamilton, loft):
+    b = _booking(db, loft, name="Team catch-up", event_type="corporate", adults=60, start=None, end=None)
+    for phrase in (
+        "a mid morning catch-up for the team",
+        "morning teas for the office",
+        "a morning-tea for 40",
+        "Sunday morning breakfast for 40",
+        "something in the morning if possible",
+    ):
+        assert "daytime" in _decide(db, b, guests=60, text=phrase).codes, phrase
+    assert "daytime" not in _decide(db, b, guests=60, text="Good morning! Keen on the Loft for evening drinks").codes
+
+
+def test_a_dateless_enquiry_is_unclear_not_date_taken(db, hamilton, loft, mezzanine, lounge, unassigned_space):
+    # The room loop skipped every room when there was no date, left
+    # "free" empty, and invented "every room is already booked that day".
+    b = _unassigned(db, unassigned_space, name="No date yet", when=None, adults=50, event_type="corporate")
+
+    decision = draft_gate.evaluate(db, b, adult_count=50, attendee_count=50)
+
+    assert draft_gate.UNCLEAR in decision.codes
+    assert draft_gate.DATE_TAKEN not in decision.codes
+    assert "already" not in decision.as_note()
+
+
+def test_every_room_under_enquiry_is_not_described_as_booked(
+    db, hamilton, loft, mezzanine, lounge, unassigned_space
+):
+    # Three open enquiries, one per room, all untimed. The fourth enquiry
+    # is right to block, but the note said the rooms were "already
+    # booked" and gave staff nothing to look up.
+    when = _saturday(11) - dt.timedelta(days=1)
+    rivals = [
+        _booking(db, room, name=f"Open on {room.name}", event_type="corporate", when=when, adults=20, start=None, end=None)
+        for room in (loft, mezzanine, lounge)
+    ]
+    b = _unassigned(db, unassigned_space, name="Fourth party", when=when, adults=20, event_type="corporate")
+
+    decision = draft_gate.evaluate(db, b, adult_count=20, attendee_count=20)
+
+    assert draft_gate.DATE_TAKEN in decision.codes
+    note = decision.as_note()
+    assert "already booked" not in note
+    assert "open enquiry" in note
+    for rival in rivals:
+        assert rival.reference_code in note
+    assert set(decision.facts["rooms_occupied_by"]) == {"The Loft", "The Mezzanine", "The Lounge"}
+
+
+def test_an_18th_with_children_on_the_booking_still_says_18th(db, hamilton, loft):
+    b = _booking(db, loft, name="Eva's 18th", event_type="birthday", adults=30, children=5)
+    decision = draft_gate.evaluate(db, b, adult_count=30, attendee_count=35)
+    assert decision.codes.count(draft_gate.UNDER_18) == 1
+    assert "5 children" in decision.as_note()
+    assert "18th" in decision.as_note()
+
+
+# --- the form's Proposed Time feeds the gate ------------------------------
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("6pm to 11pm", (dt.time(18, 0), dt.time(23, 0))),
+    ("12:00 PM - 5:00 PM", (dt.time(12, 0), dt.time(17, 0))),
+    ("6-11pm", (dt.time(18, 0), dt.time(23, 0))),
+    ("10-2pm", (dt.time(10, 0), dt.time(14, 0))),
+    ("6.30pm till 11.30pm", (dt.time(18, 30), dt.time(23, 30))),
+    ("18:00-23:00", (dt.time(18, 0), dt.time(23, 0))),
+    ("11am until 3pm", (dt.time(11, 0), dt.time(15, 0))),
+    ("Saturday evening", None),
+    ("6pm till late", None),
+    ("6 to 11", None),
+    ("lunch", None),
+    ("", None),
+    (None, None),
+    ("23/10/2026", None),
+    ("11pm to 6pm", None),
+])
+def test_parse_time_range(text, expected):
+    assert draft_gate.parse_time_range(text) == expected
+
+
+def test_a_proposed_evening_does_not_contend_with_a_lunch_on_the_room(
+    db, hamilton, loft, mezzanine, lounge, unassigned_space
+):
+    # The client wrote "6pm to 11pm" on the form. Until 2026-09-05 the gate
+    # ignored the field and treated the enquiry as all-day, so a lunch
+    # already on the Loft made the Loft read as taken.
+    when = _saturday(12)
+    lunch = _booking(db, loft, name="Lunch", event_type="corporate", when=when, adults=40,
+                     start=dt.time(11, 0), end=dt.time(15, 0))
+    change_status(db, lunch, BookingStatus.confirmed, actor="test")
+    b = _unassigned(db, unassigned_space, name="Evening drinks", when=when, adults=60, event_type="corporate",
+                    proposed_time="6pm to 11pm")
+
+    decision = draft_gate.evaluate(db, b, adult_count=60, attendee_count=60)
+
+    assert "The Loft" in decision.facts["rooms_free"]
+    assert decision.facts["times_from_form"] == "18:00-23:00"
+
+
+def test_an_unreadable_proposed_time_still_means_the_whole_day(
+    db, hamilton, loft, mezzanine, lounge, unassigned_space
+):
+    when = _saturday(12)
+    lunch = _booking(db, loft, name="Lunch", event_type="corporate", when=when, adults=40,
+                     start=dt.time(11, 0), end=dt.time(15, 0))
+    change_status(db, lunch, BookingStatus.confirmed, actor="test")
+    b = _unassigned(db, unassigned_space, name="Sometime drinks", when=when, adults=60, event_type="corporate",
+                    proposed_time="Saturday evening")
+
+    decision = draft_gate.evaluate(db, b, adult_count=60, attendee_count=60)
+
+    assert "The Loft" not in decision.facts["rooms_free"]
+    assert "times_from_form" not in decision.facts
+
+
+def test_a_proposed_daytime_slot_blocks_as_daytime(db, hamilton, loft):
+    b = _booking(db, loft, name="Team catch-up", event_type="corporate", adults=60, start=None, end=None,
+                 proposed_time="12pm - 4pm")
+    decision = _decide(db, b, guests=60, text="Keen to book the Loft")
+    assert draft_gate.DAYTIME in decision.codes
+    assert "proposed time" in decision.as_note()
+
+
+def test_a_proposed_daytime_slot_is_not_the_saturday_restaurant_hold(db, hamilton, lounge):
+    b = _booking(db, lounge, name="Team lunch", event_type="corporate", when=_saturday(12), adults=30,
+                 start=None, end=None, proposed_time="12pm - 4pm")
+    assert draft_gate.ROOM_HELD not in _decide(db, b, guests=30).codes
+
+
+def test_a_proposed_time_in_the_field_reaches_the_text_rules(db, hamilton, loft):
+    # "lunch" typed into Proposed Time rather than the comments.
+    b = _booking(db, loft, name="Team catch-up", event_type="corporate", adults=60, start=None, end=None,
+                 proposed_time="lunch")
+    assert draft_gate.DAYTIME in _decide(db, b, guests=60).codes
