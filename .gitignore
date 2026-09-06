@@ -10,3 +10,6 @@ htmlcov/
 
 # Marketing-site build (static generator + output); separate from the Concierge app
 website/
+
+# Static-site build archives (34MB each; build output, never source)
+meantime-website-*.zip
