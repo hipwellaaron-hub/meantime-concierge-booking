@@ -11,9 +11,6 @@
 
 <form method="post" action="/admin/bookings/{{ booking.id }}/documents/{{ document.id }}/edit">
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-  {# What this page was rendered from: the save refuses if the document
-     moved while the form was open (2026-09-07 review). #}
-  <input type="hidden" name="content_expect" value="{{ content_expect }}">
 
   <div class="card">
     <h2>Terms</h2>

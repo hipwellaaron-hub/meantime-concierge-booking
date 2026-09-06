@@ -15,7 +15,6 @@ from sqlalchemy.orm import Session
 from app.models import Booking, BookingEvent, Document
 from app.models.document import DocumentStatus, DocumentType
 from app.services import booking as booking_service
-from app.services.document_generation import mark_authored
 from app.utils import is_valid_email, truncate
 
 logger = logging.getLogger(__name__)
@@ -33,25 +32,6 @@ def get_current(db: Session, booking_id: uuid.UUID, doc_type: DocumentType) -> D
     ).scalar_one_or_none()
 
 
-def content_fingerprint(content: dict | None) -> str:
-    """Identifies the editable values a form was rendered from.
-
-    The hand-edit form posts a whole content dict built from a read taken
-    when the page was rendered, so it silently reverts anything written in
-    between -- an approval landing on a field the editor never touched. The
-    row lock does not help: by then the stale dict is already in hand. So
-    the form carries this back and the save refuses if the document has
-    moved, the same compare-and-set the regenerate screen uses
-    (2026-09-07 review).
-    """
-    import hashlib
-    import json
-
-    payload = {k: v for k, v in (content or {}).items() if not k.startswith("_")}
-    digest = hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode("utf-8"))
-    return digest.hexdigest()[:32]
-
-
 def lock_current_for_update(db: Session, booking_id: uuid.UUID, doc_type: DocumentType) -> Document | None:
     """The current document, locked FOR UPDATE.
 
@@ -62,35 +42,15 @@ def lock_current_for_update(db: Session, booking_id: uuid.UUID, doc_type: Docume
     the value was kept (proved live with two sessions, 2026-09-06). The
     same shape update_content_fields already uses for the same reason.
     """
-    for _ in range(2):
-        document = db.execute(
-            select(Document)
-            .where(
-                Document.booking_id == booking_id,
-                Document.type == doc_type,
-                Document.is_current.is_(True),
-            )
-            .with_for_update()
-            # populate_existing: without it the ORM hands back whatever is
-            # already in this Session's identity map -- the attributes as
-            # they were BEFORE the lock was granted. The wizard path always
-            # primes it (get_prior_beo_internal_notes reads this very row
-            # unlocked), and expire_on_commit is off, so the lock was
-            # granted and the caller still read the pre-lock content: the
-            # approval it was meant to protect was invisible, and the
-            # regenerate ran straight through (2026-09-07 review).
-            .execution_options(populate_existing=True)
-        ).scalar_one_or_none()
-        if document is not None:
-            return document
-        # None can also mean a concurrent regenerate: this statement waited
-        # on the old row's lock, and when that transaction committed, the row
-        # no longer satisfied is_current -- so Postgres skipped it and the
-        # replacement version was never considered. Looking again is enough:
-        # the connection is READ COMMITTED, so the next statement takes a
-        # fresh snapshot and sees the new current version. Deliberately NOT
-        # a commit -- a lock helper must not end its caller's transaction.
-    return None
+    return db.execute(
+        select(Document)
+        .where(
+            Document.booking_id == booking_id,
+            Document.type == doc_type,
+            Document.is_current.is_(True),
+        )
+        .with_for_update()
+    ).scalar_one_or_none()
 
 
 def get_by_token(db: Session, token: str) -> Document | None:
@@ -186,23 +146,14 @@ def update_content(db: Session, document: Document, content: dict, *, actor: str
 
     Deliberately NOT a new version per save: one audit event per edit is
     enough to know it was hand-edited, by whom and when, without spawning
-    a version per keystroke.
-
-    Regenerating afterward no longer discards the edit. It used to, which
-    is the bug this feature was extended to close: the keys this save
-    changed stop being the generator's, so a later regenerate stops and
-    asks about them instead of rebuilding over them.
+    a version per keystroke. Regenerating afterward still discards the
+    edit and re-derives from the booking, exactly as before.
     """
     db.refresh(document, with_for_update=True)
     if document.status != DocumentStatus.draft:
         raise ValueError(f"cannot edit a document that is already {document.status.value} -- only a draft can be edited")
 
-    # Whatever this save changed, a person wrote -- so it is no longer the
-    # generator's to rebuild. Computed against what is stored rather than
-    # trusting the caller to say (see document_generation.stamp_derived).
-    previous = document.content or {}
-    changed = [k for k in content if not k.startswith("_") and content.get(k) != previous.get(k)]
-    document.content = mark_authored(dict(content), changed)
+    document.content = content
     db.add(
         BookingEvent(
             booking_id=document.booking_id,
@@ -242,8 +193,7 @@ def update_content_fields(
 
     content = dict(document.content)
     content.update(changes)
-    # An approval is a person's words too: these keys stop being derived.
-    document.content = mark_authored(content, [k for k in changes if not k.startswith("_")])
+    document.content = content
     db.add(
         BookingEvent(
             booking_id=document.booking_id,

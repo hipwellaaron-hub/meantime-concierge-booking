@@ -22,7 +22,6 @@ from app.models import (
     Space,
     Venue,
 )
-from app.models.beo_proposal import FIELD_PENDING
 from app.models.booking_vendor import VendorType
 from app.models.booking import BookingStatus, MinReductionReasonCode
 from app.models.document import DocumentStatus, DocumentType
@@ -601,7 +600,7 @@ def _render_regenerate_confirmation(request, db, booking, doc_type, current, los
             "document": current,
             "losses": losses,
             "pending_proposal_rows": pending,
-            "expect": document_regeneration.fingerprint(losses, pending),
+            "expect": document_regeneration.fingerprint(losses),
             "hand_edit": document_regeneration.was_hand_edited(db, current),
         },
         status_code=409,
@@ -634,28 +633,18 @@ def generate_document_confirmed(
     # (proved live with two sessions, 2026-09-06 review).
     current = documents_service.lock_current_for_update(db, booking.id, doc_type)
     losses = document_regeneration.losses(db, current, content)
-    pending = _pending_proposal_rows(db, booking, doc_type, current)
-    if not losses and not pending:
-        # Nothing at risk at all: whatever prompted the screen is gone.
+    if not losses:
+        # Nothing to lose. Any pending proposal was named on the screen the
+        # human just came from, so this is them saying go ahead.
         documents_service.create_new_version(db, booking, doc_type, content, actor=_actor(staff))
         return _redirect_to_detail(booking_id)
-    # The compare-and-set runs on EVERY path that writes, and covers the
-    # pending proposals as well as the losses -- both were shown, and a
-    # proposal arriving while the screen was open used to be invalidated
-    # without anyone being told, which is the thing the screen exists to
-    # prevent (2026-09-07 review). It also used to be skipped entirely when
-    # there were no losses.
-    if document_regeneration.fingerprint(losses, pending) != expect:
+    if document_regeneration.fingerprint(losses) != expect:
         # Nothing is written; the lock is released when the request ends
         # and get_db closes the session.
+        pending = _pending_proposal_rows(db, booking, doc_type, current)
         return _render_regenerate_confirmation(request, db, booking, doc_type, current, losses, staff, pending)
 
-    # Intersected with what was SHOWN, not merely with the protected names:
-    # a submitted keep naming a field that was never offered used to
-    # overwrite freshly generated content with the old value and leave no
-    # trace in the audit note (2026-09-07 review).
-    offered = {loss.field for loss in losses}
-    keep_fields = {name for name in keep if name in offered}
+    keep_fields = {name for name in keep if name in document_regeneration.PROTECTED_FIELD_NAMES}
     merged = document_regeneration.apply_choices(content, current, keep_fields)
     documents_service.create_new_version(
         db, booking, doc_type, merged, actor=_actor(staff),
@@ -752,9 +741,6 @@ def edit_document_form(
             staff,
             document=document,
             booking=document.booking,
-            # What this page was rendered from, carried back on save so an
-            # approval landing while the form was open is not reverted.
-            content_expect=documents_service.content_fingerprint(document.content),
             vendor_types=[vt.value for vt in VendorType],
             # What the AI has proposed for this Event Order and has not yet
             # had approved -- shown against the value each would replace.
@@ -807,7 +793,6 @@ def save_document_edit(
     item_quantities: list[str] = Form(default=[]),
     item_unit_prices: list[str] = Form(default=[]),
     item_categories: list[str] = Form(default=[]),
-    content_expect: str = Form(default=""),
     db: Session = Depends(get_db),
     staff: StaffUser = Depends(require_staff),
 ):
@@ -971,18 +956,6 @@ def save_document_edit(
             Decimal(existing_deposit) if existing_deposit is not None else None,
         )
 
-    # Compare-and-set on what the page was rendered from. Without it this
-    # save silently reverts anything written while the form was open --
-    # including an approval applying a declared allergy to a field the
-    # editor never touched (2026-09-07 review).
-    if content_expect and content_expect != documents_service.content_fingerprint(document.content):
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "This document changed while you had it open -- most likely a proposal was approved on "
-                "it. Reload the page and make your edit again, so you are editing what it says now."
-            ),
-        )
     documents_service.update_content(db, document, content, actor=_actor(staff))
     return _redirect_to_detail(booking_id)
 
@@ -1003,16 +976,10 @@ def review_beo_proposal(
     proposal_id: uuid.UUID,
     request: Request,
     action: str = Form(...),
-    # Which textareas the form actually rendered. See the note below.
-    submitted_fields: list[str] = Form(default=[]),
-    # FastAPI turns an empty form value into the field's default, so ""
-    # and "absent" arrive here identically as None. The review form renders
-    # a textarea for EVERY pending field of the proposal and submits them
-    # all on any action, so for those fields None can only mean the box was
-    # emptied -- and the code below reads it that way. Treating None as
-    # "keep what was proposed" wrote the AI's text when a staff member had
-    # deliberately cleared the box, and recorded it as approved-unedited
-    # (2026-09-07 review).
+    # None, not "": a field whose box was not submitted keeps what was
+    # proposed, while a box someone actually emptied is a real change the
+    # house rules then refuse (2026-09-06 review -- defaulting these to ""
+    # let a request with no textarea blank a declared allergy).
     value_catering_order_and_service_style: str | None = Form(default=None),
     value_bar_structure: str | None = Form(default=None),
     value_room_layout_notes: str | None = Form(default=None),
@@ -1031,7 +998,8 @@ def review_beo_proposal(
     if proposal is None or proposal.booking_id != booking_id:
         raise HTTPException(status_code=404, detail="Proposal not found on this booking")
 
-    raw_values = {
+    submitted = {
+        k: v for k, v in {
         "catering_order_and_service_style": value_catering_order_and_service_style,
         "bar_structure": value_bar_structure,
         "room_layout_notes": value_room_layout_notes,
@@ -1042,23 +1010,8 @@ def review_beo_proposal(
         "decorations": value_decorations,
         "special_notes": value_special_notes,
         "onsite_contact": value_onsite_contact,
+        }.items() if v is not None
     }
-    # A box the form says it rendered was submitted, so None means it was
-    # EMPTIED -- write the blank and let the house rules refuse it. A field
-    # with no box at all is simply absent, and approve_field falls back to
-    # the proposed value. Both matter: the first was writing the AI's text
-    # over a deliberate blank (2026-09-07), the second was blanking a
-    # declared allergy from a request with no textarea (2026-09-06).
-    pending = {f.field for f in proposal.fields if f.state == FIELD_PENDING}
-    rendered = {name for name in submitted_fields if name in pending}
-    submitted: dict[str, str] = {}
-    for name in pending:
-        value = raw_values.get(name)
-        if value is not None:
-            submitted[name] = value          # sent, with text in it
-        elif name in rendered:
-            submitted[name] = ""             # the box was there and emptied
-        # otherwise: no box at all, so approve_field keeps what was proposed
 
     verb, _, target = action.partition(":")
     try:

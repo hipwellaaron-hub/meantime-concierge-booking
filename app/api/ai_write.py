@@ -125,13 +125,7 @@ def read_event_order_proposal(reference: str, ctx: AiContext = Depends(require_a
     natural behaviour.
     """
     booking = _booking_by_reference(ctx, reference)
-    # The NEWEST proposal, whatever its state -- not only a pending one.
-    # Once every field is decided the proposal resolves, so a pending-only
-    # read went null exactly when the calibration signal became available,
-    # and the model was told to read `applied_value` against
-    # `proposed_value` before proposing. It could never see either, so it
-    # re-proposed wording a human had already rewritten (2026-09-07 review).
-    proposal = beo_proposals.latest_proposal(ctx.db, booking.id)
+    proposal = beo_proposals.pending_proposal(ctx.db, booking.id)
     if proposal is None:
         return {"reference": booking.reference_code, "proposal": None, "as_of": ctx.as_of_iso}
     return {
