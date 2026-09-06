@@ -13,11 +13,39 @@
 #}
 <p><a href="/admin/bookings/{{ booking.id }}">&larr; {{ booking.event_name }}</a></p>
 
+{% if losses %}
 <h1>Regenerating would overwrite {{ losses | length }} field{{ "" if losses | length == 1 else "s" }}</h1>
+{% else %}
+<h1>Regenerating would invalidate work you have not reviewed yet</h1>
+{% endif %}
 <p class="muted">{{ booking.reference_code }} &middot;
   {{ "Event Order" if doc_type.value == "beo" else "Agreement" }} v{{ document.version }}
   &middot; {{ booking.event_date | aus_date if booking.event_date else "Date TBD" }}</p>
 
+{% if pending_proposal_rows %}
+{#
+  Told BEFORE, not after. Regenerating makes a new version, and a proposal
+  reviewed against this one then has to be approved again -- approving it
+  afterwards fails with "replaced by a newer version". Hitting that error
+  without knowing why is the thing this block prevents.
+#}
+<div class="card" style="border-color: var(--ember);">
+  <p style="margin:0 0 0.5rem;"><strong>{{ pending_proposal_rows | length }} proposed
+    field{{ "" if pending_proposal_rows | length == 1 else "s" }} on this Event Order
+    {{ "has" if pending_proposal_rows | length == 1 else "have" }} not been reviewed yet.</strong></p>
+  <p style="margin:0 0 0.5rem; font-size:0.9rem;">Regenerating replaces the Event Order they were
+    proposed against. They are not lost, but they will need approving again on the new version, and
+    approving one now would fail. Review them first if you want them on this version.</p>
+  <ul style="margin:0 0 0.5rem; font-size:0.9rem;">
+    {% for row in pending_proposal_rows %}
+    <li><strong>{{ row.label }}</strong>{% if row.replaces_text %} &mdash; would replace text already there{% endif %}</li>
+    {% endfor %}
+  </ul>
+  <p style="margin:0;"><a href="/admin/bookings/{{ booking.id }}/documents/{{ document.id }}/edit">Review the proposal first &rarr;</a></p>
+</div>
+{% endif %}
+
+{% if losses %}
 <div class="card" style="border-color: var(--gold);">
   <p style="margin:0 0 0.5rem;"><strong>These values were written by a person. Rebuilding from the
     booking cannot produce them again.</strong></p>
@@ -29,6 +57,13 @@
     {% endif %}
   </p>
 </div>
+{% else %}
+<div class="card">
+  <p style="margin:0; font-size:0.9rem;">Nothing else on this
+    {{ "Event Order" if doc_type.value == "beo" else "Agreement" }} would be lost &mdash; every other
+    field is either unchanged or holds only a generated placeholder.</p>
+</div>
+{% endif %}
 
 <form method="post" action="/admin/bookings/{{ booking.id }}/documents/{{ doc_type.value }}/generate/confirm">
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -53,7 +88,7 @@
   {% endfor %}
 
   <div class="card">
-    <button class="btn" type="submit">Regenerate with these choices</button>
+    <button class="btn" type="submit">{{ "Regenerate with these choices" if losses else "Regenerate anyway" }}</button>
     <a class="btn secondary" href="/admin/bookings/{{ booking.id }}">Cancel</a>
   </div>
 </form>

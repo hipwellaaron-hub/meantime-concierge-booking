@@ -80,6 +80,14 @@ Design choices worth not undoing:
   and report success. `beo_proposals._locked_draft` therefore re-checks
   `is_current` after acquiring the lock and refuses, telling the approver
   to reload. Both halves were proved live with two real sessions.
+- **A pending proposal stops a regenerate too, and says why.** A
+  proposal is reviewed against one version; regenerating makes a new one,
+  so the proposal survives but must be approved again, and approving it in
+  the meantime now fails with the message above. The screen names the
+  pending fields and links to the review BEFORE anything is written --
+  including on the path with nothing else to lose, which shows no screen
+  at all otherwise and so was the one place pending work would have been
+  invalidated in silence. Aaron: "Tell me before, not after."
 - **A generated placeholder is not a loss, matched EXACTLY.** Notably
   `No dietary requirements declared` is never treated as worth protecting:
   it is the sentence that overwrote a real allergy. The match is exact and

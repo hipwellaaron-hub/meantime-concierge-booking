@@ -567,13 +567,28 @@ def generate_document(
     # succeeded (proved live, 2026-09-06 re-review).
     current = documents_service.lock_current_for_update(db, booking.id, doc_type)
     losses = document_regeneration.losses(db, current, content)
-    if losses:
-        return _render_regenerate_confirmation(request, db, booking, doc_type, current, losses, staff)
+    pending = _pending_proposal_rows(db, booking, doc_type, current)
+    # Pending work counts even with nothing to lose: otherwise the one case
+    # that shows no screen at all is the one that silently invalidates it.
+    if losses or pending:
+        return _render_regenerate_confirmation(request, db, booking, doc_type, current, losses, staff, pending)
     documents_service.create_new_version(db, booking, doc_type, content, actor=_actor(staff))
     return _redirect_to_detail(booking_id)
 
 
-def _render_regenerate_confirmation(request, db, booking, doc_type, current, losses, staff):
+def _pending_proposal_rows(db, booking, doc_type, current) -> list[dict]:
+    """A pending proposal is reviewed against a specific version. Creating a
+    new one leaves it needing re-approval, and approving it afterwards now
+    fails with "replaced by a newer version" (beo_proposals._locked_draft).
+    Aaron: "If a regenerate silently invalidates pending work, I will hit
+    exactly that error without knowing why. Tell me before, not after."
+    """
+    if doc_type != DocumentType.beo or current is None:
+        return []
+    return beo_proposals_service.review_rows(db, booking.id, document=current)
+
+
+def _render_regenerate_confirmation(request, db, booking, doc_type, current, losses, staff, pending):
     return templates.TemplateResponse(
         request,
         "admin/regenerate_confirm.html",
@@ -583,6 +598,7 @@ def _render_regenerate_confirmation(request, db, booking, doc_type, current, los
             "doc_type": doc_type,
             "document": current,
             "losses": losses,
+            "pending_proposal_rows": pending,
             "expect": document_regeneration.fingerprint(losses),
             "hand_edit": document_regeneration.was_hand_edited(db, current),
         },
@@ -617,13 +633,15 @@ def generate_document_confirmed(
     current = documents_service.lock_current_for_update(db, booking.id, doc_type)
     losses = document_regeneration.losses(db, current, content)
     if not losses:
-        # Whatever was at risk is no longer at risk. Nothing to decide.
+        # Nothing to lose. Any pending proposal was named on the screen the
+        # human just came from, so this is them saying go ahead.
         documents_service.create_new_version(db, booking, doc_type, content, actor=_actor(staff))
         return _redirect_to_detail(booking_id)
     if document_regeneration.fingerprint(losses) != expect:
         # Nothing is written; the lock is released when the request ends
         # and get_db closes the session.
-        return _render_regenerate_confirmation(request, db, booking, doc_type, current, losses, staff)
+        pending = _pending_proposal_rows(db, booking, doc_type, current)
+        return _render_regenerate_confirmation(request, db, booking, doc_type, current, losses, staff, pending)
 
     keep_fields = {name for name in keep if name in document_regeneration.PROTECTED_FIELD_NAMES}
     merged = document_regeneration.apply_choices(content, current, keep_fields)

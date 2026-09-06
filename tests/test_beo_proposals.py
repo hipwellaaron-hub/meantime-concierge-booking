@@ -1611,3 +1611,83 @@ def test_both_regenerate_routes_read_the_document_under_a_lock():
             f"{fn.__name__} decides from the document and then writes; an unlocked read there "
             "destroys an approval that lands in between"
         )
+
+
+# --- a regenerate says so BEFORE it invalidates pending work -------------------
+#
+# Aaron, 2026-09-06: "If a regenerate silently invalidates pending work,
+# I'll hit exactly the error you just built, without knowing why. Tell me
+# before, not after."
+
+
+def test_a_regenerate_warns_that_a_pending_proposal_will_need_re_approving(admin_client, db, loft):
+    booking = _booking(db, loft, name="Pending Warn")
+    _beo(db, booking, dietaries="1x severe nut allergy (table 4).")
+    beo_proposals.propose(
+        db, booking, fields={"room_layout_notes": "Rounds of 8, dance floor centre."},
+        source="client email 6 Sep", actor="ai:claude",
+    )
+    db.expire_all()
+
+    resp = _regenerate(admin_client, booking.id, _csrf(admin_client, booking.id))
+
+    assert resp.status_code == 409
+    assert "not been reviewed yet" in resp.text
+    assert "Room layout notes" in resp.text
+    assert "approving one now would fail" in resp.text.lower()
+
+
+def test_pending_work_alone_is_enough_to_stop_a_regenerate(admin_client, db, loft):
+    """The case with nothing to lose shows no screen at all, so without this
+    it is the ONE path that invalidates pending work in total silence."""
+    booking = _booking(db, loft, name="Pending Only")
+    _beo(db, booking)  # placeholders only -- no losses
+    beo_proposals.propose(
+        db, booking, fields={"dietaries": "1x severe nut allergy (table 4)."},
+        source="client email 6 Sep", actor="ai:claude",
+    )
+    db.expire_all()
+
+    resp = _regenerate(admin_client, booking.id, _csrf(admin_client, booking.id))
+
+    assert resp.status_code == 409
+    assert "would invalidate work you have not reviewed yet" in resp.text
+    assert "Regenerate anyway" in resp.text
+    db.expire_all()
+    assert documents_service.get_current(db, booking.id, DocumentType.beo).version == 1
+
+
+def test_regenerating_anyway_goes_through_and_leaves_the_proposal_to_re_approve(admin_client, db, loft):
+    booking = _booking(db, loft, name="Pending Through")
+    _beo(db, booking)
+    proposal, _ = beo_proposals.propose(
+        db, booking, fields={"dietaries": "1x severe nut allergy (table 4)."},
+        source="client email 6 Sep", actor="ai:claude",
+    )
+    db.expire_all()
+    csrf = _csrf(admin_client, booking.id)
+    shown = _regenerate(admin_client, booking.id, csrf)
+    expect = re.search(r'name="expect" value="([^"]+)"', shown.text).group(1)
+
+    resp = admin_client.post(
+        f"/admin/bookings/{booking.id}/documents/beo/generate/confirm",
+        data={"csrf_token": csrf, "expect": expect},
+    )
+
+    assert resp.status_code in (200, 303)
+    db.expire_all()
+    assert documents_service.get_current(db, booking.id, DocumentType.beo).version == 2
+    # Not lost -- still there, still pending, to be approved against v2.
+    row = db.query(BeoProposalField).filter_by(proposal_id=proposal.id).one()
+    assert row.state == FIELD_PENDING
+    assert beo_proposals.approve_field(db, row, actor="staff:aaron") is not None
+
+
+def test_a_booking_with_no_proposal_sees_no_warning(admin_client, db, loft):
+    booking = _booking(db, loft, name="No Proposal")
+    _beo(db, booking, dietaries="1x severe nut allergy (table 4).")
+
+    resp = _regenerate(admin_client, booking.id, _csrf(admin_client, booking.id))
+
+    assert resp.status_code == 409
+    assert "not been reviewed yet" not in resp.text
