@@ -30,7 +30,10 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 SERVER_NAME = "meantime-concierge"
-SERVER_VERSION = "1.0.0"
+# 1.1.0: the Event Order proposal tools (one read, one write). The version
+# is reported by /health and by initialize, so a redeploy can be verified
+# from the connector side without guessing.
+SERVER_VERSION = "1.1.0"
 SUPPORTED_PROTOCOLS = ("2025-06-18", "2025-03-26", "2024-11-05")
 DEFAULT_PROTOCOL = "2025-06-18"
 
@@ -106,7 +109,9 @@ _SIGN_IN_PAGE = """<!doctype html>
 <body><form class="card" method="post" action="/authorize">
   <h1>Meantime Concierge</h1>
   <p>Sign in to connect Claude to Concierge. This grants read access to bookings,
-     availability and the menu. It cannot change anything.</p>
+     availability and the menu, and lets Claude <em>propose</em> Event Order wording
+     for staff to approve. It cannot change a booking, a document, a status or a
+     figure, and nothing it proposes is applied until a staff member approves it.</p>
   {error}
   <input type="hidden" name="client_id" value="{client_id}">
   <input type="hidden" name="redirect_uri" value="{redirect_uri}">
@@ -262,11 +267,15 @@ def _handle(message: dict) -> dict | None:
                 "capabilities": {"tools": {"listChanged": False}},
                 "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
                 "instructions": (
-                    "Read-only access to Meantime Concierge. Always call a tool rather than "
-                    "answering from memory when the question is about availability, a price, "
-                    "a payment or a booking's stage. Before saying a date is free, check "
-                    "`availability` -- a slot with nothing confirmed may still have open "
-                    "enquiries or a tentative hold, and a reply must disclose that."
+                    "Access to Meantime Concierge: every tool reads, except "
+                    "`propose_event_order_values`, which writes a PROPOSAL that a staff member "
+                    "must approve field by field before anything reaches the Event Order. "
+                    "Always call a tool rather than answering from memory when the question "
+                    "is about availability, a price, a payment or a booking's stage. Before "
+                    "saying a date is free, check `availability` -- a slot with nothing "
+                    "confirmed may still have open enquiries or a tentative hold, and a reply "
+                    "must disclose that. Before proposing, read `event_order_proposal` and "
+                    "the current Event Order so nothing already declared is dropped."
                 ),
             },
         )

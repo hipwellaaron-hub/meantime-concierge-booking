@@ -32,7 +32,13 @@ ALLOWED_PATHS = frozenset(
 )
 
 # Per-booking detail paths, matched by shape rather than literal.
-ALLOWED_PATH_SUFFIXES = ("/documents", "/invoices", "/events")
+ALLOWED_PATH_SUFFIXES = ("/documents", "/invoices", "/events", "/event-order-proposal")
+
+# The write surface, kept separate from the read one on purpose: post_ai
+# checks this list and call_ai checks the one above, so a read tool cannot
+# be talked into performing a write and a write tool cannot quietly widen
+# into anything else. Exactly one entry today.
+ALLOWED_POST_SUFFIXES = ("/event-order-proposal",)
 
 
 class ConciergeError(Exception):
@@ -46,6 +52,40 @@ def _path_allowed(path: str) -> bool:
     if path.startswith("/api/ai/bookings/") and path.endswith(ALLOWED_PATH_SUFFIXES):
         return True
     return False
+
+
+def _post_path_allowed(path: str) -> bool:
+    return path.startswith("/api/ai/bookings/") and path.endswith(ALLOWED_POST_SUFFIXES)
+
+
+def _raise_for_status(response, path: str) -> None:
+    """Concierge's own words, passed through. A model that is told "the
+    proposal failed the house rules, here are the codes" can fix it; one
+    that is told "something went wrong" retries blind."""
+    if response.status_code == 401:
+        raise ConciergeError(
+            "Concierge rejected this server's credential. The AI token is missing, wrong, or rotated."
+        )
+    if response.status_code == 503:
+        raise ConciergeError(
+            "Concierge has AI access switched off. This is the kill switch; nothing can be read or "
+            "proposed until a staff member re-enables it in Concierge."
+        )
+    if response.status_code == 429:
+        raise ConciergeError(
+            "Concierge rate limit or AI write budget reached. Writes may have been disabled "
+            "automatically; a staff member re-enables them. Do not retry."
+        )
+    if response.status_code == 404:
+        raise ConciergeError("Not found in Concierge.")
+    if response.status_code >= 400:
+        detail = ""
+        try:
+            body = response.json()
+            detail = body.get("detail", body)
+        except Exception:  # noqa: BLE001 -- a non-JSON error body is not worth crashing on
+            detail = response.text[:500]
+        raise ConciergeError(f"Concierge returned {response.status_code}: {detail}")
 
 
 def call_ai(path: str, params: dict | None = None) -> dict:
@@ -79,26 +119,46 @@ def call_ai(path: str, params: dict | None = None) -> dict:
         logger.exception("Concierge request failed: %s", path)
         raise ConciergeError(f"Could not reach Concierge ({exc.__class__.__name__}).") from exc
 
-    if response.status_code == 401:
+    _raise_for_status(response, path)
+
+    try:
+        return response.json()
+    except ValueError as exc:
+        raise ConciergeError("Concierge returned a response that was not JSON.") from exc
+
+
+def post_ai(path: str, body: dict) -> dict:
+    """POST a Concierge AI write endpoint and return the parsed JSON.
+
+    Deliberately a separate function from call_ai with a separate
+    allowlist. The only write Concierge exposes is proposing Event Order
+    values, and a proposal applies nothing: every field waits for a staff
+    approval on the Event Order form. There is no endpoint that approves,
+    and none is wrapped here.
+    """
+    if not _post_path_allowed(path):
+        raise ConciergeError(f"Refused: {path} is not a permitted Concierge write")
+    if not settings.ai_api_token:
         raise ConciergeError(
-            "Concierge rejected this server's credential. The AI token is missing, wrong, or rotated."
+            "This MCP server has no Concierge credential configured, so it cannot propose anything."
         )
-    if response.status_code == 503:
-        raise ConciergeError(
-            "Concierge has AI access switched off. This is the kill switch; nothing can be read until "
-            "a staff member re-enables it in Concierge."
+
+    url = settings.concierge_base_url.rstrip("/") + path
+    try:
+        response = httpx.post(
+            url,
+            json=body,
+            headers={
+                "Authorization": f"Bearer {settings.ai_api_token}",
+                "Accept": "application/json",
+            },
+            timeout=settings.concierge_timeout_seconds,
         )
-    if response.status_code == 429:
-        raise ConciergeError("Concierge rate limit reached. Wait before querying again.")
-    if response.status_code == 404:
-        raise ConciergeError("Not found in Concierge.")
-    if response.status_code >= 400:
-        detail = ""
-        try:
-            detail = response.json().get("detail", "")
-        except Exception:  # noqa: BLE001 -- a non-JSON error body is not worth crashing on
-            detail = response.text[:200]
-        raise ConciergeError(f"Concierge returned {response.status_code}: {detail}")
+    except httpx.RequestError as exc:
+        logger.exception("Concierge write failed: %s", path)
+        raise ConciergeError(f"Could not reach Concierge ({exc.__class__.__name__}).") from exc
+
+    _raise_for_status(response, path)
 
     try:
         return response.json()

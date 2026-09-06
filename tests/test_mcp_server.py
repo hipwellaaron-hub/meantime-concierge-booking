@@ -18,7 +18,7 @@ from fastapi.testclient import TestClient
 
 from mcp_server import oauth
 from mcp_server.app import app
-from mcp_server.concierge import ConciergeError, call_ai
+from mcp_server.concierge import ConciergeError, call_ai, post_ai
 from mcp_server.config import settings
 
 PASSWORD = "test-mcp-password"
@@ -304,17 +304,129 @@ def test_paths_outside_the_ai_surface_are_refused_before_any_request():
             call_ai(path)
 
 
-def test_no_write_tool_exists_yet(client):
-    """Writes land when the Concierge endpoints do -- not before."""
+def test_the_only_write_is_a_proposal(client):
+    """Concierge exposes exactly one write -- proposing Event Order values,
+    which applies nothing -- and this server wraps exactly that. No tool
+    sends, creates, approves, applies, pays or changes a status, and there
+    is no approve endpoint to wrap even if one were wanted."""
+    from mcp_server import tools as tools_module
+
     token = _connect(client)
     tools = _rpc(client, token, "tools/list").json()["result"]["tools"]
-    forbidden = {"send", "create", "update", "delete", "record_payment", "status"}
+    forbidden = {"send", "create", "update", "delete", "record_payment", "status", "approve", "apply"}
     for tool in tools:
         assert not any(word in tool["name"] for word in forbidden), tool["name"]
+
+    writers = [t["name"] for t in tools_module.TOOLS if "post_ai" in t["_call"].__code__.co_names]
+    assert writers == ["propose_event_order_values"]
+
+
+def test_a_proposal_is_posted_to_concierge_with_its_source(client):
+    token = _connect(client)
+    with patch("mcp_server.concierge.httpx.post") as mocked:
+        mocked.return_value = httpx.Response(
+            201, json={"proposal_id": "p1", "status": "pending", "awaiting_approval": ["dietaries"]}
+        )
+        body = _rpc(
+            client, token, "tools/call",
+            {
+                "name": "propose_event_order_values",
+                "arguments": {
+                    "reference": "HAM-20271114-AB12C",
+                    "source": "client email 6 Sep, final details",
+                    "fields": {"dietaries": "1x severe nut allergy (table 4)."},
+                },
+            },
+        ).json()
+
+    assert body["result"]["isError"] is False
+    assert json.loads(body["result"]["content"][0]["text"])["awaiting_approval"] == ["dietaries"]
+    assert mocked.call_args[0][0] == "https://book.meantime.com.au/api/ai/bookings/HAM-20271114-AB12C/event-order-proposal"
+    sent = mocked.call_args.kwargs["json"]
+    assert sent["source"] == "client email 6 Sep, final details"
+    assert sent["fields"] == {"dietaries": "1x severe nut allergy (table 4)."}
+    assert mocked.call_args.kwargs["headers"]["Authorization"].startswith("Bearer ")
+    assert settings.ai_api_token not in body["result"]["content"][0]["text"]
+
+
+def test_a_refused_proposal_hands_the_model_the_rule_codes(client):
+    """A 422 is Concierge saying which house rule failed. The model must see
+    the codes -- "something went wrong" makes it retry blind, and a refused
+    proposal is never shown to staff, so blind retries help nobody."""
+    token = _connect(client)
+    with patch("mcp_server.concierge.httpx.post") as mocked:
+        mocked.return_value = httpx.Response(
+            422,
+            json={"detail": {
+                "error": "the proposal failed the Event Order house rules",
+                "rule_codes": ["dietary_contamination"],
+                "violations": [{"code": "dietary_contamination", "field": "dietaries",
+                                "message": "Dietaries carries decoration language.", "excerpt": "balloon arch"}],
+            }},
+        )
+        body = _rpc(
+            client, token, "tools/call",
+            {"name": "propose_event_order_values", "arguments": {
+                "reference": "HAM-1", "source": "client email", "fields": {"dietaries": "Balloon arch, no nuts"},
+            }},
+        ).json()
+
+    assert body["result"]["isError"] is True
+    text = body["result"]["content"][0]["text"]
+    assert "dietary_contamination" in text
+    assert "balloon arch" in text
+
+
+def test_a_tripped_write_budget_tells_the_model_not_to_retry(client):
+    token = _connect(client)
+    with patch("mcp_server.concierge.httpx.post") as mocked:
+        mocked.return_value = httpx.Response(429, json={"detail": "AI write budget exceeded"})
+        body = _rpc(
+            client, token, "tools/call",
+            {"name": "propose_event_order_values", "arguments": {
+                "reference": "HAM-1", "source": "client email", "fields": {"music": "DJ."},
+            }},
+        ).json()
+    assert body["result"]["isError"] is True
+    text = body["result"]["content"][0]["text"].lower()
+    assert "budget" in text and "do not retry" in text
+
+
+def test_the_read_of_a_proposal_uses_get_not_post(client):
+    token = _connect(client)
+    with patch("mcp_server.concierge.httpx.get") as get, patch("mcp_server.concierge.httpx.post") as post:
+        get.return_value = httpx.Response(200, json={"reference": "HAM-1", "proposal": None})
+        body = _rpc(client, token, "tools/call",
+                    {"name": "event_order_proposal", "arguments": {"reference": "HAM-1"}}).json()
+    assert body["result"]["isError"] is False
+    assert get.call_args[0][0].endswith("/api/ai/bookings/HAM-1/event-order-proposal")
+    post.assert_not_called()
+
+
+def test_post_refuses_every_path_but_the_proposal_before_any_request():
+    """The write allowlist is separate from the read one, so widening one
+    cannot widen the other. An approve path does not exist in Concierge and
+    must be refused here too, so a future careless tool fails loudly."""
+    with patch("mcp_server.concierge.httpx.post") as mocked:
+        for path in [
+            "/api/ai/pipeline",
+            "/api/ai/bookings/HAM-1/event-order-proposal/approve",
+            "/api/ai/bookings/HAM-1/status",
+            "/admin/bookings/HAM-1/documents/beo/generate",
+        ]:
+            with pytest.raises(ConciergeError, match="not a permitted Concierge write"):
+                post_ai(path, {})
+        mocked.assert_not_called()
+
+    # And the read function still cannot be pointed at the write.
+    with patch("mcp_server.concierge.httpx.get") as mocked:
+        mocked.return_value = httpx.Response(200, json={})
+        call_ai("/api/ai/bookings/HAM-1/event-order-proposal")  # the GET is a real read
+        assert mocked.call_args.kwargs.get("json") is None
 
 
 def test_health_reports_configuration_without_leaking_it(client):
     body = client.get("/health").json()
     assert body["status"] == "ok"
     assert body["configured"] is True
-    assert body["tools"] == 7
+    assert body["tools"] == 9  # seven reads, the proposal read, and the one write
