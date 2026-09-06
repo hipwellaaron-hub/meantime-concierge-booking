@@ -1517,3 +1517,97 @@ def test_an_approval_that_lands_first_makes_the_regenerate_re_ask():
             second.close()
     finally:
         _purge(booking_type, booking_id)
+
+
+@pytest.mark.usefixtures("hamilton")
+def test_an_approval_is_not_destroyed_by_a_regenerate_that_saw_nothing_at_risk():
+    """The other half of the same window, found on re-review. When the
+    current document holds nothing human, the regenerate takes the
+    straight-through branch -- and that branch was reading without a lock
+    and then writing on what it read. An approval landing in between was
+    destroyed with NO confirmation screen shown and the approver told it
+    had succeeded, which is worse than the case the screen was built for.
+    """
+    import time as _time
+
+    from app.services import document_regeneration as dr
+    from tests.conftest import TestSessionLocal
+
+    booking_id, field_id, booking_type = _race_setup("Race Clean")
+    # A current Event Order holding only generated placeholders: losses == [].
+    setup = TestSessionLocal()
+    try:
+        bk = setup.get(booking_type, booking_id)
+        documents_service.create_new_version(
+            setup, bk, DocumentType.beo, generate_beo_content(bk), actor="staff:test"
+        )
+    finally:
+        setup.close()
+
+    barrier = threading.Barrier(2)
+    errors = {}
+
+    def regenerate():
+        session = TestSessionLocal()
+        try:
+            bk = session.get(booking_type, booking_id)
+            fresh = generate_beo_content(bk)
+            current = documents_service.lock_current_for_update(session, booking_id, DocumentType.beo)
+            assert not dr.losses(session, current, fresh)
+            barrier.wait(timeout=5)
+            _time.sleep(0.4)
+            documents_service.create_new_version(session, bk, DocumentType.beo, fresh, actor="staff:aaron")
+        except Exception as exc:  # noqa: BLE001
+            errors["regen"] = exc
+        finally:
+            session.close()
+
+    def approve():
+        session = TestSessionLocal()
+        try:
+            row = session.get(BeoProposalField, field_id)
+            barrier.wait(timeout=5)
+            beo_proposals.approve_field(session, row, actor="staff:liz")
+        except Exception as exc:  # noqa: BLE001
+            errors["approve"] = exc
+        finally:
+            session.close()
+
+    threads = [threading.Thread(target=regenerate), threading.Thread(target=approve)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    try:
+        assert "regen" not in errors, errors
+        # The approval must be refused out loud, never silently dropped.
+        assert isinstance(errors.get("approve"), beo_proposals.ProposalError), errors
+        assert "replaced by a newer version" in str(errors["approve"])
+        check = TestSessionLocal()
+        try:
+            row = check.get(BeoProposalField, field_id)
+            assert row.state == FIELD_PENDING, "still there to approve against the new version"
+        finally:
+            check.close()
+    finally:
+        _purge(booking_type, booking_id)
+
+
+def test_both_regenerate_routes_read_the_document_under_a_lock():
+    """The race tests above call the locking helper directly, so they prove
+    the pattern but would not notice the ROUTE going back to an unlocked
+    read -- which is exactly the regression that caused both silent losses.
+    Read it out of the source rather than retyping the rule (the same shape
+    as the event-type literal test)."""
+    import inspect
+
+    from app.api import admin_bookings
+
+    for fn in (admin_bookings.generate_document, admin_bookings.generate_document_confirmed):
+        source = inspect.getsource(fn)
+        assert "lock_current_for_update" in source, fn.__name__
+        assert "documents_service.get_current(" not in source, (
+            f"{fn.__name__} decides from the document and then writes; an unlocked read there "
+            "destroys an approval that lands in between"
+        )

@@ -560,7 +560,12 @@ def generate_document(
     it has always been."""
     booking = _get_booking_or_404(db, booking_id)
     content = _fresh_document_content(db, booking, doc_type)
-    current = documents_service.get_current(db, booking.id, doc_type)
+    # Locked, not merely read: this path decides "nothing is at risk" and
+    # then WRITES on that decision, so it needs the same window closed as
+    # the confirm path below. An approval landing between the two used to
+    # be destroyed with no confirmation shown and the approver told it had
+    # succeeded (proved live, 2026-09-06 re-review).
+    current = documents_service.lock_current_for_update(db, booking.id, doc_type)
     losses = document_regeneration.losses(db, current, content)
     if losses:
         return _render_regenerate_confirmation(request, db, booking, doc_type, current, losses, staff)
