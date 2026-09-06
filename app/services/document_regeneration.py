@@ -7,24 +7,29 @@ the whole reason the button exists.
 
 For the fields a person writes in their own words it is not. Those values
 are not derivable from anything: an approved allergy note, a hand-edited
-layout instruction. Regenerating discarded them silently, and silence is
-the worst property that failure could have. Proved on 2026-09-06:
-generate_beo_content defaults Dietaries to "No dietary requirements
-declared", so one click of Regenerate replaced a declared nut allergy with
-that sentence and made it version 2 -- Aaron's original incident, in a new
-costume, with no human in the loop at all.
+contract clause. Regenerating discarded them silently, and silence is the
+worst property that failure could have. Proved on 2026-09-06, twice:
+
+  - generate_beo_content defaults Dietaries to "No dietary requirements
+    declared", so one click of Regenerate replaced a declared nut allergy
+    with that sentence and made it version 2 -- Aaron's original incident,
+    in a new costume, with no human in the loop at all;
+  - regenerating an AGREEMENT discarded a hand-edited special condition
+    ("Client may bring their own celebrant. Agreed by Aaron.") the same
+    way. That one is the contract.
 
 So a regenerate that would destroy a human value now stops and says
 exactly what it is about to discard, and the human decides per field.
 Nothing here decides for them; it only refuses to decide silently.
 
-Scope, deliberately: only the free-text fields below. Diffing the derived
+Scope, deliberately: the fields below and no others. Diffing the derived
 structures too would produce a screen nobody reads, and a screen nobody
 reads is the silence this module exists to end.
 """
 
 import hashlib
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from sqlalchemy import select
@@ -37,49 +42,84 @@ from app.services.document_generation import REVIEW
 
 logger = logging.getLogger(__name__)
 
-# The fields a person writes in their own words. The ten a proposal may
-# touch (beo_rules.PROPOSABLE_FIELDS), plus the two free-text fields that
-# predate proposals and the legacy merged music field. Asserted against
-# PROPOSABLE_FIELDS by test, so the two lists cannot drift apart.
-PROTECTED_TEXT_FIELDS: tuple[str, ...] = beo_rules.PROPOSABLE_FIELDS + (
-    "music_entertainment",
-    "internal_notes",
-    "status_text",
-)
 
-FIELD_LABELS = {
+def _render_text(value: object) -> str:
+    """One spelling for comparison. A CRLF/LF difference is not an edit --
+    the same lesson as the approval box (2026-09-06 review)."""
+    if not isinstance(value, str):
+        return ""
+    return value.replace("\r\n", "\n").replace("\r", "\n").strip()
+
+
+def _render_sections(value: object) -> str:
+    """An agreement's terms are a list of {heading, body}, not a string.
+    Rendered to text so the same comparison and the same screen work for
+    them -- without this they compared as "" and the contract's own clauses
+    were the one thing the guard could not see (2026-09-06 review)."""
+    if not isinstance(value, list):
+        return ""
+    blocks = []
+    for section in value:
+        if not isinstance(section, dict):
+            continue
+        heading = _render_text(section.get("heading"))
+        body = _render_text(section.get("body"))
+        if heading or body:
+            blocks.append(f"{heading}\n{body}".strip())
+    return "\n\n".join(blocks)
+
+
+@dataclass(frozen=True)
+class ProtectedField:
+    name: str
+    label: str
+    render: Callable[[object], str] = _render_text
+    # Fields derived from this one, which must travel with it. An
+    # agreement's terms_text is rebuilt from terms_sections, so keeping the
+    # sections while letting the text regenerate would leave the document
+    # stating two different sets of terms.
+    companions: tuple[str, ...] = ()
+
+
+_TEXT_FIELD_LABELS = {
     **beo_rules.FIELD_LABELS,
     "music_entertainment": "Music & entertainment",
     "internal_notes": "Internal notes (staff/kitchen)",
     "status_text": "Status text",
 }
 
-# Values that are not a loss: a generated prompt or the generated default.
-# Replacing one of these with a fresh one destroys nothing a human wrote.
-# The dietaries default is listed by value because that is what the
-# generator emits when nothing was captured -- and it is precisely the
-# sentence that overwrote a real allergy, so it must never itself count as
-# something worth keeping.
-_GENERATED_DEFAULTS = ("No dietary requirements declared",)
+# The Event Order's ten proposable fields, the two free-text fields that
+# predate proposals, the legacy merged music field -- and the agreement's
+# terms, which are the contract itself.
+PROTECTED_FIELDS: tuple[ProtectedField, ...] = tuple(
+    ProtectedField(name, _TEXT_FIELD_LABELS.get(name, name.replace("_", " ").capitalize()))
+    for name in beo_rules.PROPOSABLE_FIELDS + ("music_entertainment", "internal_notes", "status_text")
+) + (
+    ProtectedField("terms_sections", "Agreement terms", render=_render_sections, companions=("terms_text",)),
+)
+
+PROTECTED_FIELD_NAMES: tuple[str, ...] = tuple(f.name for f in PROTECTED_FIELDS)
+_BY_NAME = {f.name: f for f in PROTECTED_FIELDS}
+
+# Values the GENERATOR produces when nothing was captured. Matched exactly,
+# never as a substring: staff reuse the [REVIEW] convention in their own
+# notes, and "Client bringing cake. [REVIEW] confirm nut-free with kitchen"
+# is a human sentence carrying an allergy follow-up, not a placeholder
+# (2026-09-06 review -- a substring test silently regenerated over it).
+# test_every_generated_placeholder_is_recognised keeps this in step with
+# the generator.
+_GENERATED_PLACEHOLDERS = frozenset({
+    f"{REVIEW} add catering order and service style",
+    f"{REVIEW} add bar structure",
+    f"{REVIEW} add room layout notes",
+    f"{REVIEW} add music/entertainment detail",
+    "No dietary requirements declared",
+})
 
 
-def _text(value: object) -> str:
-    """One spelling for comparison. A CRLF/LF difference is not an edit --
-    the same lesson as the approval box (2026-09-06 review)."""
-    if value is None:
-        return ""
-    if not isinstance(value, str):
-        return ""
-    return value.replace("\r\n", "\n").replace("\r", "\n").strip()
-
-
-def _is_disposable(value: str) -> bool:
+def _is_disposable(rendered: str) -> bool:
     """True when the current value holds nothing a human would miss."""
-    if not value:
-        return True
-    if value in _GENERATED_DEFAULTS:
-        return True
-    return REVIEW in value
+    return not rendered or rendered in _GENERATED_PLACEHOLDERS
 
 
 @dataclass(frozen=True)
@@ -116,7 +156,7 @@ def _approved_values(db: Session, booking_id) -> dict[str, list[BeoProposalField
 
 def _approval_note(rows: list[BeoProposalField], current: str) -> str | None:
     for row in reversed(rows):
-        if _text(row.applied_value) == current:
+        if _render_text(row.applied_value) == current:
             # No %-d: it is a glibc extension and raises on Windows, where
             # the tests run.
             when = row.decided_at.strftime("%d %b %Y").lstrip("0") if row.decided_at else "an earlier date"
@@ -149,6 +189,11 @@ def losses(db: Session, document: Document | None, fresh: dict) -> list[ContentL
     protected field either unchanged or holding only a generated
     placeholder. An empty result means a regenerate is safe to run
     straight through, which is the ordinary case.
+
+    This is a READ. A caller that intends to write must hold the document's
+    row lock across both, or another approval can land in between and be
+    reverted (proved live, 2026-09-06) -- see
+    documents.lock_current_for_update.
     """
     if document is None:
         return []
@@ -156,18 +201,18 @@ def losses(db: Session, document: Document | None, fresh: dict) -> list[ContentL
     approved = _approved_values(db, document.booking_id)
 
     found: list[ContentLoss] = []
-    for name in PROTECTED_TEXT_FIELDS:
-        current = _text(current_content.get(name))
-        incoming = _text(fresh.get(name))
+    for spec in PROTECTED_FIELDS:
+        current = spec.render(current_content.get(spec.name))
+        incoming = spec.render(fresh.get(spec.name))
         if current == incoming or _is_disposable(current):
             continue
         found.append(
             ContentLoss(
-                field=name,
-                label=FIELD_LABELS.get(name, name.replace("_", " ").capitalize()),
+                field=spec.name,
+                label=spec.label,
                 current=current,
                 incoming=incoming,
-                approved_note=_approval_note(approved.get(name, []), current),
+                approved_note=_approval_note(approved.get(spec.name, []), current),
             )
         )
     return found
@@ -178,10 +223,9 @@ def fingerprint(found: list[ContentLoss]) -> str:
 
     The confirmation screen carries this back, and the write refuses if it
     no longer matches -- a compare-and-set, the same shape as every other
-    toggle in this codebase. Between the screen and the submit, another
-    approval can land or the booking can change; without this the human
-    would be answering a question about values that are no longer the ones
-    being destroyed.
+    toggle in this codebase. It guards against answering a question about
+    values that have since changed; it is NOT a substitute for the row
+    lock, because on its own it leaves a window between check and write.
     """
     digest = hashlib.sha256()
     for loss in found:
@@ -200,8 +244,14 @@ def apply_choices(fresh: dict, document: Document, keep_fields: set[str]) -> dic
     content = dict(fresh)
     current_content = document.content or {}
     for name in keep_fields:
-        if name in PROTECTED_TEXT_FIELDS:
-            content[name] = current_content.get(name)
+        spec = _BY_NAME.get(name)
+        if spec is None:
+            continue
+        content[spec.name] = current_content.get(spec.name)
+        for companion in spec.companions:
+            # Derived from the kept value; letting it regenerate would
+            # leave the document asserting two different things.
+            content[companion] = current_content.get(companion)
     return content
 
 

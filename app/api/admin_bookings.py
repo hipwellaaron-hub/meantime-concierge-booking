@@ -605,29 +605,27 @@ def generate_document_confirmed(
     values: re-ask rather than write."""
     booking = _get_booking_or_404(db, booking_id)
     content = _fresh_document_content(db, booking, doc_type)
-    current = documents_service.get_current(db, booking.id, doc_type)
+    # Locked before the losses are read and held until the version is
+    # written: an approval landing in that window used to be silently
+    # reverted, with the audit line still claiming the value was kept
+    # (proved live with two sessions, 2026-09-06 review).
+    current = documents_service.lock_current_for_update(db, booking.id, doc_type)
     losses = document_regeneration.losses(db, current, content)
     if not losses:
         # Whatever was at risk is no longer at risk. Nothing to decide.
         documents_service.create_new_version(db, booking, doc_type, content, actor=_actor(staff))
         return _redirect_to_detail(booking_id)
     if document_regeneration.fingerprint(losses) != expect:
+        # Nothing is written; the lock is released when the request ends
+        # and get_db closes the session.
         return _render_regenerate_confirmation(request, db, booking, doc_type, current, losses, staff)
 
-    keep_fields = {name for name in keep if name in document_regeneration.PROTECTED_TEXT_FIELDS}
+    keep_fields = {name for name in keep if name in document_regeneration.PROTECTED_FIELD_NAMES}
     merged = document_regeneration.apply_choices(content, current, keep_fields)
-    document = documents_service.create_new_version(db, booking, doc_type, merged, actor=_actor(staff))
-    db.add(
-        BookingEvent(
-            booking_id=booking.id,
-            event_type="document_regenerated",
-            field_name=f"{doc_type.value}_version",
-            old_value=str(current.version),
-            new_value=truncate(f"v{document.version}: " + document_regeneration.summarise(losses, keep_fields), 500),
-            actor=_actor(staff),
-        )
+    documents_service.create_new_version(
+        db, booking, doc_type, merged, actor=_actor(staff),
+        regenerated_note=document_regeneration.summarise(losses, keep_fields),
     )
-    db.commit()
     return _redirect_to_detail(booking_id)
 
 

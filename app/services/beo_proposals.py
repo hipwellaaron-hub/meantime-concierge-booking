@@ -280,6 +280,16 @@ def _locked_draft(db: Session, booking_id: uuid.UUID) -> Document:
     db.refresh(document, with_for_update=True)
     if document.status != DocumentStatus.draft:
         raise ProposalError(f"this Event Order is {document.status.value} and can no longer be edited")
+    if not document.is_current:
+        # The draft was resolved BEFORE the lock, so between those two a
+        # regenerate can supersede it -- and this row is locked by id, so
+        # the lock is granted on a version that is no longer the live one.
+        # Applying here would write the approval onto a document nobody
+        # will ever read, and report success (proved live, 2026-09-06).
+        raise ProposalError(
+            "this Event Order was replaced by a newer version while you were approving -- reload the "
+            "booking and review the proposal against the current Event Order"
+        )
     return document
 
 

@@ -32,11 +32,46 @@ def get_current(db: Session, booking_id: uuid.UUID, doc_type: DocumentType) -> D
     ).scalar_one_or_none()
 
 
+def lock_current_for_update(db: Session, booking_id: uuid.UUID, doc_type: DocumentType) -> Document | None:
+    """The current document, locked FOR UPDATE.
+
+    For a caller that reads the content, decides something from it, and
+    then writes -- regenerating with a human's keep/replace choices is the
+    one that exists. Without the lock, an approval committing between the
+    read and the write is silently reverted and the audit line still says
+    the value was kept (proved live with two sessions, 2026-09-06). The
+    same shape update_content_fields already uses for the same reason.
+    """
+    return db.execute(
+        select(Document)
+        .where(
+            Document.booking_id == booking_id,
+            Document.type == doc_type,
+            Document.is_current.is_(True),
+        )
+        .with_for_update()
+    ).scalar_one_or_none()
+
+
 def get_by_token(db: Session, token: str) -> Document | None:
     return db.execute(select(Document).where(Document.access_token == token)).scalar_one_or_none()
 
 
-def create_new_version(db: Session, booking: Booking, doc_type: DocumentType, content: dict, *, actor: str) -> Document:
+def create_new_version(
+    db: Session,
+    booking: Booking,
+    doc_type: DocumentType,
+    content: dict,
+    *,
+    actor: str,
+    regenerated_note: str | None = None,
+) -> Document:
+    """`regenerated_note` records what a human chose to keep and what they
+    let go when this version replaced one carrying their own words. It is
+    written in the SAME transaction as the version: committing the version
+    first and the note afterwards would let a crash in between leave the
+    values discarded with no record of the decision -- and that record is
+    Aaron's stated measure of whether the feature is working."""
     if booking.parent_booking_id is not None:
         # A linked child (see app.services.booking.add_linked_space) is
         # just a second room for the parent's event -- its own documents
@@ -79,6 +114,17 @@ def create_new_version(db: Session, booking: Booking, doc_type: DocumentType, co
             actor=actor,
         )
     )
+    if regenerated_note is not None:
+        db.add(
+            BookingEvent(
+                booking_id=booking.id,
+                event_type="document_regenerated",
+                field_name=f"{doc_type.value}_version",
+                old_value=str(previous.version) if previous else None,
+                new_value=truncate(f"v{next_version}: {regenerated_note}", 500),
+                actor=actor,
+            )
+        )
     db.commit()
     db.refresh(document)
 

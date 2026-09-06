@@ -38,7 +38,7 @@ from app.models.document import DocumentStatus, DocumentType
 from app.services import beo_proposals, beo_rules
 from app.services import documents as documents_service
 from app.services.booking import create_booking
-from app.services.document_generation import generate_beo_content
+from app.services.document_generation import generate_beo_content, rebuild_terms_text
 
 TOKEN = "test-ai-token-do-not-use-in-production"
 
@@ -1183,7 +1183,7 @@ def test_the_protected_fields_cover_every_proposable_field():
     a regenerate must not silently destroy."""
     from app.services import document_regeneration
 
-    assert set(beo_rules.PROPOSABLE_FIELDS) <= set(document_regeneration.PROTECTED_TEXT_FIELDS)
+    assert set(beo_rules.PROPOSABLE_FIELDS) <= set(document_regeneration.PROTECTED_FIELD_NAMES)
 
 
 def test_a_generated_placeholder_is_not_treated_as_something_to_lose():
@@ -1197,3 +1197,323 @@ def test_a_generated_placeholder_is_not_treated_as_something_to_lose():
     assert dr._is_disposable("No dietary requirements declared")
     assert dr._is_disposable("")
     assert not dr._is_disposable("1x severe nut allergy (table 4).")
+
+
+@pytest.mark.parametrize("value", [
+    "Client bringing cake. [REVIEW] confirm nut-free with kitchen",
+    "[REVIEW] with Aaron: client wants the nut allergy read back to the kitchen",
+    "Rounds of 8. [REVIEW]",
+])
+def test_a_staff_note_that_mentions_the_review_marker_is_still_protected(value):
+    """Staff reuse the [REVIEW] convention in their own notes. A substring
+    test classed those as placeholders and regenerated over them without
+    asking -- including one carrying an allergy follow-up (2026-09-06
+    review). Only an exact generated placeholder is disposable."""
+    from app.services import document_regeneration as dr
+
+    assert not dr._is_disposable(value)
+
+
+def test_every_generated_placeholder_is_recognised(db, loft):
+    """Keeps the exact-match set in step with the generator. A bare booking
+    produces only placeholders, so every protected field it fills must be
+    disposable -- otherwise a first regenerate would ask about fields no
+    human has ever touched, and staff would learn to click through."""
+    from app.services import document_regeneration as dr
+
+    booking = _booking(db, loft, name="Placeholder Drift")
+    content = generate_beo_content(booking)
+    for spec in dr.PROTECTED_FIELDS:
+        rendered = spec.render(content.get(spec.name))
+        assert dr._is_disposable(rendered), (spec.name, rendered)
+
+
+# --- the agreement is the contract, and it is protected too --------------------
+
+
+def _agreement(db, booking, **overrides):
+    from app.services.document_generation import generate_agreement_content
+
+    content = generate_agreement_content(booking)
+    content.update(overrides)
+    return documents_service.create_new_version(
+        db, booking, DocumentType.agreement, content, actor="staff:test"
+    )
+
+
+CLAUSE = "Client may bring their own celebrant. Agreed by Aaron."
+
+
+def test_regenerating_an_agreement_refuses_to_discard_a_hand_edited_clause(admin_client, db, loft):
+    """Proved live before the fix: the clause was gone at version 2 with no
+    confirmation. terms_sections is a list of dicts, so the text-only
+    comparison could not even see it."""
+    booking = _booking(db, loft, name="Agreement Clause")
+    doc = _agreement(db, booking)
+    edited = dict(doc.content)
+    edited["terms_sections"] = [{"heading": "Special condition", "body": CLAUSE}]
+    documents_service.update_content(db, doc, edited, actor="staff:aaron")
+    db.expire_all()
+
+    resp = _regenerate(admin_client, booking.id, _csrf(admin_client, booking.id), doc_type="agreement")
+
+    assert resp.status_code == 409
+    assert "Special condition" in resp.text
+    assert CLAUSE in resp.text
+    db.expire_all()
+    current = documents_service.get_current(db, booking.id, DocumentType.agreement)
+    assert current.version == 1
+    assert any(CLAUSE in (s.get("body") or "") for s in current.content["terms_sections"])
+
+
+def test_keeping_the_agreement_terms_keeps_the_text_rebuilt_from_them(admin_client, db, loft):
+    """terms_text is derived from terms_sections. Keeping one and
+    regenerating the other would leave the contract stating two different
+    sets of terms."""
+    booking = _booking(db, loft, name="Agreement Companion")
+    doc = _agreement(db, booking)
+    edited = dict(doc.content)
+    edited["terms_sections"] = [{"heading": "Special condition", "body": CLAUSE}]
+    edited["terms_text"] = rebuild_terms_text(edited["terms_sections"])
+    documents_service.update_content(db, doc, edited, actor="staff:aaron")
+    db.expire_all()
+
+    csrf = _csrf(admin_client, booking.id)
+    shown = _regenerate(admin_client, booking.id, csrf, doc_type="agreement")
+    expect = re.search(r'name="expect" value="([^"]+)"', shown.text).group(1)
+    resp = admin_client.post(
+        f"/admin/bookings/{booking.id}/documents/agreement/generate/confirm",
+        data={"csrf_token": csrf, "expect": expect, "keep": ["terms_sections"]},
+    )
+    assert resp.status_code in (200, 303)
+    db.expire_all()
+    current = documents_service.get_current(db, booking.id, DocumentType.agreement)
+    assert any(CLAUSE in (s.get("body") or "") for s in current.content["terms_sections"])
+    assert CLAUSE in current.content["terms_text"], "the derived text travelled with the sections"
+
+
+def test_an_untouched_agreement_still_regenerates_in_one_click(admin_client, db, loft):
+    booking = _booking(db, loft, name="Agreement Clean")
+    _agreement(db, booking)
+
+    resp = _regenerate(admin_client, booking.id, _csrf(admin_client, booking.id), doc_type="agreement")
+
+    assert resp.status_code in (200, 303)
+    db.expire_all()
+    assert documents_service.get_current(db, booking.id, DocumentType.agreement).version == 2
+
+
+# --- the decision and the version are one transaction --------------------------
+
+
+def test_the_audit_note_is_written_with_the_version_not_after_it(admin_client, db, loft):
+    """create_new_version commits. Adding the note afterwards meant a crash
+    in between left the values discarded with no record of the decision --
+    and that record is the measure of whether this feature works."""
+    booking = _booking(db, loft, name="Regenerate One Txn")
+    _beo(db, booking, dietaries="1x severe nut allergy (table 4).", room_layout_notes="Rounds of 8.")
+    csrf = _csrf(admin_client, booking.id)
+    shown = _regenerate(admin_client, booking.id, csrf)
+    expect = re.search(r'name="expect" value="([^"]+)"', shown.text).group(1)
+    admin_client.post(
+        f"/admin/bookings/{booking.id}/documents/beo/generate/confirm",
+        data={"csrf_token": csrf, "expect": expect, "keep": ["dietaries"]},
+    )
+    db.expire_all()
+    regenerated = db.query(BookingEvent).filter_by(booking_id=booking.id, event_type="document_regenerated").one()
+    assert "kept Dietaries" in regenerated.new_value
+    assert "replaced Room layout notes" in regenerated.new_value
+
+
+def test_the_note_is_written_by_create_new_version_itself(db, loft):
+    """The route used to add the note AFTER create_new_version had already
+    committed, so a crash in between left the values discarded with no
+    record of the decision. The note is now an argument to the call that
+    creates the version, which is what makes them one transaction."""
+    booking = _booking(db, loft, name="One Transaction")
+    documents_service.create_new_version(
+        db, booking, DocumentType.beo, generate_beo_content(booking), actor="staff:test",
+        regenerated_note="kept Dietaries; replaced Room layout notes",
+    )
+    events = db.query(BookingEvent).filter_by(booking_id=booking.id).all()
+    types = {e.event_type for e in events}
+    assert "document_created" in types and "document_regenerated" in types
+    note = next(e for e in events if e.event_type == "document_regenerated")
+    assert note.new_value.startswith("v1: kept Dietaries")
+
+
+def test_an_ordinary_regenerate_writes_no_regenerated_note(db, loft):
+    """The note exists to record a human's keep/replace decision. A
+    regenerate with nothing at risk made no decision, so it must not claim
+    one."""
+    booking = _booking(db, loft, name="No Note")
+    documents_service.create_new_version(
+        db, booking, DocumentType.beo, generate_beo_content(booking), actor="staff:test"
+    )
+    assert db.query(BookingEvent).filter_by(
+        booking_id=booking.id, event_type="document_regenerated"
+    ).count() == 0
+
+
+
+# --- a regenerate and an approval in flight together ---------------------------
+#
+# Real sessions and real commits, so the row locks actually engage. Before
+# the fix the regenerate read the document without a lock and the approval
+# was silently reverted, with the audit line still saying "kept Dietaries"
+# (proved live, 2026-09-06 review).
+
+
+def _race_setup(name):
+    from app.models import Contact
+    from app.seed import seed as seed_hamilton
+    from app.services.booking import create_booking
+    from tests.conftest import TestSessionLocal
+
+    setup = TestSessionLocal()
+    venue = seed_hamilton(setup)
+    space = next(sp for sp in venue.spaces if sp.is_bookable)
+    contact = Contact(name=name, email=f"race.{uuid.uuid4().hex[:8]}@example.com")
+    setup.add(contact)
+    setup.flush()
+    booking = create_booking(
+        setup, space_id=space.id, contact_id=contact.id, event_date=dt.date(2027, 5, 14),
+        start_time=dt.time(18, 0), end_time=dt.time(23, 0), event_name=f"{name} {uuid.uuid4().hex[:6]}",
+        event_type="corporate", adult_count=40, child_count=0, notes=None, actor="test",
+    )
+    content = generate_beo_content(booking)
+    content["dietaries"] = "1x severe nut allergy (table 4)."
+    documents_service.create_new_version(setup, booking, DocumentType.beo, content, actor="staff:test")
+    proposal, _ = beo_proposals.propose(
+        setup, booking, fields={"dietaries": "1x severe nut allergy (table 4). 2x coeliac."},
+        source="second email", actor="ai:claude",
+    )
+    ids = (booking.id, proposal.fields[0].id, type(booking))
+    setup.close()
+    return ids
+
+
+def _purge(booking_type, booking_id):
+    from sqlalchemy import text as sql_text
+
+    from app.services.booking import delete_booking_and_dependents
+    from tests.conftest import TestSessionLocal
+
+    check = TestSessionLocal()
+    try:
+        check.execute(sql_text("SET LOCAL app.allow_booking_purge='on'"))
+        target = check.get(booking_type, booking_id)
+        if target is not None:
+            delete_booking_and_dependents(check, target, actor="staff:test")
+    finally:
+        check.close()
+
+
+@pytest.mark.usefixtures("hamilton")
+def test_an_approval_landing_during_a_regenerate_is_never_silently_reverted():
+    """Regenerate holds the lock first. The approval must NOT quietly write
+    itself onto the superseded version and report success -- it must fail
+    loudly so the human knows their approval did not apply."""
+    import time as _time
+
+    from app.services import document_regeneration as dr
+    from tests.conftest import TestSessionLocal
+
+    booking_id, field_id, booking_type = _race_setup("Race Regen")
+    barrier = threading.Barrier(2)
+    errors = {}
+
+    def regenerate():
+        session = TestSessionLocal()
+        try:
+            bk = session.get(booking_type, booking_id)
+            fresh = generate_beo_content(bk)
+            current = documents_service.lock_current_for_update(session, booking_id, DocumentType.beo)
+            found = dr.losses(session, current, fresh)
+            barrier.wait(timeout=5)
+            _time.sleep(0.4)
+            merged = dr.apply_choices(fresh, current, {"dietaries"})
+            documents_service.create_new_version(
+                session, bk, DocumentType.beo, merged, actor="staff:aaron",
+                regenerated_note=dr.summarise(found, {"dietaries"}),
+            )
+        except Exception as exc:  # noqa: BLE001
+            errors["regen"] = exc
+        finally:
+            session.close()
+
+    def approve():
+        session = TestSessionLocal()
+        try:
+            row = session.get(BeoProposalField, field_id)
+            barrier.wait(timeout=5)
+            beo_proposals.approve_field(session, row, actor="staff:liz")
+        except Exception as exc:  # noqa: BLE001
+            errors["approve"] = exc
+        finally:
+            session.close()
+
+    threads = [threading.Thread(target=regenerate), threading.Thread(target=approve)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    try:
+        assert "regen" not in errors, errors
+        # The approval is refused, in words that say what to do next.
+        assert isinstance(errors.get("approve"), beo_proposals.ProposalError), errors
+        assert "replaced by a newer version" in str(errors["approve"])
+
+        check = TestSessionLocal()
+        try:
+            document = beo_proposals.current_draft_beo(check, booking_id)
+            # The allergy the human chose to keep is on the live version...
+            assert document.content["dietaries"] == "1x severe nut allergy (table 4)."
+            # ...and the refused approval left no mark anywhere.
+            row = check.get(BeoProposalField, field_id)
+            assert row.state == FIELD_PENDING
+            assert row.applied_value is None
+        finally:
+            check.close()
+    finally:
+        _purge(booking_type, booking_id)
+
+
+@pytest.mark.usefixtures("hamilton")
+def test_an_approval_that_lands_first_makes_the_regenerate_re_ask():
+    """The other ordering. The approval commits, so the values the human was
+    shown are no longer the ones at risk: the fingerprint must not match and
+    the decision must not be applied."""
+    from app.services import document_regeneration as dr
+    from tests.conftest import TestSessionLocal
+
+    booking_id, field_id, booking_type = _race_setup("Race Approve")
+    try:
+        first = TestSessionLocal()
+        try:
+            bk = first.get(booking_type, booking_id)
+            fresh = generate_beo_content(bk)
+            shown = dr.losses(first, documents_service.get_current(first, booking_id, DocumentType.beo), fresh)
+            expect = dr.fingerprint(shown)
+        finally:
+            first.close()
+
+        approver = TestSessionLocal()
+        try:
+            beo_proposals.approve_field(approver, approver.get(BeoProposalField, field_id), actor="staff:liz")
+        finally:
+            approver.close()
+
+        second = TestSessionLocal()
+        try:
+            bk = second.get(booking_type, booking_id)
+            fresh = generate_beo_content(bk)
+            current = documents_service.lock_current_for_update(second, booking_id, DocumentType.beo)
+            now = dr.losses(second, current, fresh)
+            assert dr.fingerprint(now) != expect, "the stale decision must be refused"
+            assert "coeliac" in current.content["dietaries"]
+        finally:
+            second.close()
+    finally:
+        _purge(booking_type, booking_id)

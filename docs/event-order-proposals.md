@@ -60,21 +60,39 @@ Design choices worth not undoing:
   shown. If another approval lands in between, the screen is re-shown
   rather than a stale decision applied — the same hidden-`expect` shape
   used elsewhere in the codebase.
-- **Scope is the free-text fields only** (`PROTECTED_TEXT_FIELDS` — the
-  ten proposable fields plus `internal_notes`, `status_text`, and the
-  legacy merged music field). Derived content — the timeline, food order,
-  totals, room — regenerates as before, because rebuilding it is the
-  entire point of the button. Diffing everything would produce a screen
-  nobody reads, and a screen nobody reads is the original silence with
-  extra clicks.
-- **A `[REVIEW]` prompt or the dietaries default is not a loss.** Notably
+- **Scope is `PROTECTED_FIELDS`** — the ten proposable fields, plus
+  `internal_notes`, `status_text` and the legacy merged music field, plus
+  the agreement's `terms_sections`. Derived content — the timeline, food
+  order, totals, room — regenerates as before, because rebuilding it is
+  the entire point of the button. Diffing everything would produce a
+  screen nobody reads, and a screen nobody reads is the original silence
+  with extra clicks.
+- **The agreement's terms are a list of {heading, body}, not a string**, so
+  they are rendered to text for comparison and display. `terms_text` is
+  rebuilt from them, so it is a *companion*: kept or replaced with the
+  sections, never separately, or the contract would state two different
+  sets of terms.
+- **A row lock is held across the read and the write.** Without it an
+  approval landing in between was silently reverted while the audit line
+  still said the value was kept. The lock alone was not enough: because a
+  regenerate creates a NEW version, an approval that had been waiting on
+  the lock would then apply to the row it had locked — now superseded —
+  and report success. `beo_proposals._locked_draft` therefore re-checks
+  `is_current` after acquiring the lock and refuses, telling the approver
+  to reload. Both halves were proved live with two real sessions.
+- **A generated placeholder is not a loss, matched EXACTLY.** Notably
   `No dietary requirements declared` is never treated as worth protecting:
-  it is the sentence that overwrote a real allergy.
+  it is the sentence that overwrote a real allergy. The match is exact and
+  never a substring — staff reuse the `[REVIEW]` convention in their own
+  notes, and a substring test silently regenerated over "Client bringing
+  cake. [REVIEW] confirm nut-free with kitchen".
 - The decision is recorded as a `document_regenerated` booking event
   naming what was kept and what was replaced.
 
-Applies to **agreements as well as Event Orders** — it is one code path
-and narrowing it to Event Orders would have been arbitrary.
+Applies to **agreements as well as Event Orders**. The first cut claimed
+that and did not deliver it: every protected name was an Event Order
+field, so a hand-edited contract clause was still discarded silently. The
+agreement is the contract, so that was the more serious half.
 
 ## 3. Open, deliberately — logged 2026-09-06, not yet scheduled
 
