@@ -151,6 +151,58 @@ def test_meta_click_cookie_and_malformed_cookies():
     assert touches[0]["fbclid"] == "FBCLICKID"
 
 
+# --- the mt_touch_* contract: captured_at is required and must be real ---------
+#
+# The cookie contract (docs/tracking-handover.md 2.2) makes captured_at a
+# required ISO 8601 field. These four tests are what "required" means:
+# a cookie without a usable one is ignored rather than guessed at.
+
+
+def test_a_site_touch_cookie_with_no_captured_at_is_not_a_touch():
+    # Without the rule, build_touch stamps now() -- so mt_touch_first, the
+    # OLDEST thing the website knows, would sort newest and take last touch
+    # away from the campaign that actually brought the visitor back.
+    cookies = {"mt_touch_first": _site_touch_cookie(utm_source="google", utm_medium="cpc")}
+    assert attribution.touches_from_cookies(cookies) == []
+
+    page_last = attribution.build_touch({"utm_source": "newsletter", "captured_at": "2026-09-06T10:00:00Z"})
+    first, last = attribution.reconcile_touches(page_last, page_last, attribution.touches_from_cookies(cookies))
+    assert last["utm_source"] == "newsletter"
+
+
+def test_a_site_touch_cookie_with_an_unreadable_captured_at_is_not_a_touch():
+    for bad in ("yesterday", "", "2026-13-45T99:99:99Z", 1788681860):
+        cookies = {"mt_touch_last": _site_touch_cookie(utm_source="google", captured_at=bad)}
+        assert attribution.touches_from_cookies(cookies) == [], bad
+
+
+def test_a_captured_at_in_the_future_cannot_claim_last_touch():
+    # These cookies are client-controlled and cost nothing to write. A
+    # timestamp in 2030 would otherwise win last touch on every enquiry.
+    future = (dt.datetime.now(dt.timezone.utc) + dt.timedelta(days=365)).isoformat()
+    cookies = {"mt_touch_last": _site_touch_cookie(utm_source="forged", captured_at=future)}
+    assert attribution.touches_from_cookies(cookies) == []
+
+    real = attribution.build_touch({"utm_source": "newsletter", "captured_at": "2026-09-06T10:00:00Z"})
+    first, last = attribution.reconcile_touches(real, real, attribution.touches_from_cookies(cookies))
+    assert last["utm_source"] == "newsletter"
+
+
+def test_a_linker_cookie_dated_in_the_future_is_ignored_too():
+    future_unix = int((dt.datetime.now(dt.timezone.utc) + dt.timedelta(days=30)).timestamp())
+    assert attribution.touches_from_cookies({"_gcl_aw": f"GCL.{future_unix}.FUTURECLICK"}) == []
+    ahead_ms = int((dt.datetime.now(dt.timezone.utc) + dt.timedelta(days=30)).timestamp() * 1000)
+    assert attribution.touches_from_cookies({"_fbc": f"fb.1.{ahead_ms}.FUTUREFB"}) == []
+
+
+def test_a_visitors_clock_running_an_hour_fast_is_still_a_real_visitor():
+    # The future check is a forgery bound, not a clock-accuracy demand.
+    skewed = (dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=1)).isoformat()
+    cookies = {"mt_touch_last": _site_touch_cookie(utm_source="instagram", captured_at=skewed)}
+    touches = attribution.touches_from_cookies(cookies)
+    assert len(touches) == 1 and touches[0]["utm_source"] == "instagram"
+
+
 def test_no_signal_anywhere_keeps_the_pages_own_bundles():
     page = attribution.build_touch({"referrer": "https://meantime.com.au/"})
     first, last = attribution.reconcile_touches(page, page, attribution.touches_from_cookies({"_ga": "GA1.1.1.1"}))
@@ -666,9 +718,14 @@ def test_one_bookings_failure_does_not_undo_anothers_recorded_send(client, db, s
     b = db.query(Booking).filter_by(event_name="Second Completion").one()
     calls = {"n": 0}
 
+    # Fail on the SECOND BOOKING, not on the second call. The sweep orders
+    # by created_at, and both bookings here have the same one: Postgres
+    # now() is the transaction timestamp and the test fixture is one
+    # transaction. So the tie is real and the order arbitrary -- keying on
+    # the call number made this test pass or fail on row layout.
     def post(url, **kwargs):
         calls["n"] += 1
-        if calls["n"] == 2:
+        if kwargs["json"]["data"][0]["event_id"] == b.reference_code:
             raise RuntimeError("provider library exploded")  # not an httpx error: the sweep must still survive
         return httpx.Response(200, json={"events_received": 1, "fbtrace_id": "first"})
 

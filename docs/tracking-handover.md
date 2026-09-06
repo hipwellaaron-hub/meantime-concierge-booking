@@ -33,6 +33,10 @@ placeholder.
 | Route by which Google Ads receives the conversion | **Implemented but unverified (account side)** | Concierge carries no Google Ads tag (`AW-…`) and no GTM container, so the only route is GA4 key-event import: GA4 property `G-XM8C86CGM6` → linked Google Ads account → conversion action `7725993486`. Whether that action is configured as a GA4 import of `function_enquiry_submitted` cannot be read from the application; see the reviewer tasks. Do not add a direct Ads tag: it would double count with the import. |
 | Lead persistence, reference code, UUID | **Implemented and verified** | `Booking.id` (UUIDv4) and `Booking.reference_code` (`HAM-YYYYMMDD-XXXXX`) are created in one transaction with the contact; the thank-you URL is the UUID; the analytics event id is the reference code. |
 | First-touch and last-touch storage | **Implemented and verified; now fed by parent-domain cookies** | `first_touch_attribution` / `last_touch_attribution` JSONB. Before this work the enquiry page's own capture was the only input; see section 2. |
+| `mt_touch_*` cookie contract | **Specified and enforced; awaiting the website's tag** | Section 2 is final and testable: required fields, a conformance value to paste, a four-step browser self-test, and the drop rules for a missing, unreadable or future `captured_at` — enforced by `attribution._cookie_touch` and five tests, not by convention. Concierge's side needs no further change; the website tag is stage 1 of section 10. |
+| First/last-touch definition | **Resolved and documented** | Ordering is by `captured_at` across every candidate; the cookie *names* are advisory. Concierge's window is the cookie lifetimes, not GA4's lookback, so the two will legitimately disagree — section 2, "How Concierge builds first and last touch". |
+| GA4 fallback ambiguity | **Documented, bounded and measurable** | Meta dedupes on `event_id`; GA4's Measurement Protocol cannot. The atomic claim on `ga4_conversion_dispatched_at` makes the channels exclusive when each acts; three residual duplicate paths and one opposite under-count remain, each named with its direction, likelihood, detection and reconciliation in section 4, with a SQL query that bounds the over-count. |
+| `function_enquiry_submitted` and the Ads route preserved | **Verified in the diff; account confirmation outstanding** | The branch's diff against the two browser tag partials is **empty**, so the event's name, trigger and firing are byte-for-byte what is live. Only `enquiry_type`'s value is constrained (`safe_event_type`), a no-PII measure that cannot affect a conversion counting the event. Section 5. Ads-side confirmation is task 8. |
 | Submission idempotency | **Was window-only; now identity-based** | 15-second duplicate window under a Postgres advisory lock stays. New: a per-render `submission_id` (UUIDv4, unique column) resolves the same submission to the same lead regardless of time. |
 | Independent GA4/Meta dispatch state and retry | **Was browser-only; now per platform and channel with retry** | `conversion_dispatches` table: one row per (booking, platform, channel), status, attempts, `next_attempt_at`, receipt. Sweep `python -m app.dispatch_conversions` retries failed sends with backoff (5 min, 15, 45, 2 h 15, then ~7 h, max 8 attempts). |
 | Staging suppression | **Implemented** | Browser tags render only when `GA4_MEASUREMENT_ID` / `META_PIXEL_ID` are set; server sends only when `TRACKING_SERVER_DISPATCH_ENABLED=true` and the secret is set. Staging must set none of these. There is currently no staging environment on Railway; the gate is what protects a future one or a local copy of the production database. |
@@ -115,9 +119,6 @@ JSON object keys, all optional strings:
 }
 ```
 
-`captured_at` is required and must be the UTC time the touch happened
-(ISO 8601). Concierge orders touches by it.
-
 Rules for the website's tag:
 
 - A **touch** is a page load whose URL carries any `utm_*`, `gclid`,
@@ -130,6 +131,57 @@ Rules for the website's tag:
   all.
 - Do not put anything else in the cookie. No email, no name, no page
   path with a token.
+
+**`captured_at` is required, and "required" is enforced.** It must be the
+UTC time the touch happened, as an ISO 8601 string. A cookie is **ignored
+entirely** — not repaired, not guessed at, not sorted to the end — when
+`captured_at` is:
+
+| Case | Example | Why it is dropped rather than defaulted |
+|---|---|---|
+| absent | `{"utm_source": "google"}` | Concierge would otherwise stamp the time of the POST, which makes a cookie of unknown age the *newest* touch. `mt_touch_first` — the oldest thing the website knows — would then win **last** touch. |
+| unreadable | `"yesterday"`, `""`, `"2026-13-45"` | An unreadable time is unreadable. Ordering is the cookie's only job. |
+| a unix number | `1788681860` | ISO 8601 only. Numbers are rejected on purpose, so a seconds/millis mix-up fails loudly instead of landing in 1970 or 58,600 AD. |
+| in the future | more than 12 hours ahead of server time | These cookies are client-controlled and cost nothing to forge; a date in 2030 would win last touch on every enquiry forever. 12 hours is deliberate slack: a phone with a wrong clock is a real visitor, not an attack. |
+
+Enforced by `attribution._cookie_touch`, and by
+`test_a_site_touch_cookie_with_no_captured_at_is_not_a_touch`,
+`…with_an_unreadable_captured_at…`,
+`test_a_captured_at_in_the_future_cannot_claim_last_touch`,
+`test_a_linker_cookie_dated_in_the_future_is_ignored_too` and
+`test_a_visitors_clock_running_an_hour_fast_is_still_a_real_visitor` in
+`tests/test_tracking_completion.py`. The same rule applies to Google's
+and Meta's linker cookies, so one forged `_gcl_aw` cannot take last touch
+either.
+
+**A conformance value the developer can test with.** This is the encoding
+of the JSON example above, and it is what a correct tag produces:
+
+```
+eyJ1dG1fc291cmNlIjoiZ29vZ2xlIiwidXRtX21lZGl1bSI6ImNwYyIsInV0bV9jYW1wYWlnbiI6ImZ1bmN0aW9ucy1zcHJpbmciLCJnY2xpZCI6IlRFU1RHQ0xJRDEyMyIsInJlZmVycmVyIjoiaHR0cHM6Ly93d3cuZ29vZ2xlLmNvbS8iLCJjYXB0dXJlZF9hdCI6IjIwMjYtMDktMDZUMDg6MDQ6MjBaIn0
+```
+
+Set it as `mt_touch_last` on `.meantime.com.au`, submit a test enquiry,
+and the booking's last-touch record reads `utm_source: google`,
+`utm_medium: cpc`, `utm_campaign: functions-spring`, `gclid:
+TESTGCLID123`, `referrer_category: search`, `source: cookie:mt_touch_last`.
+Padding is optional (`=` may be stripped, as here). Anything over 4 KB is
+ignored; keep it under 1 KB.
+
+**The self-test, before handing it back.** With the tag live, in a
+browser console on `meantime.com.au`:
+
+1. Land on `meantime.com.au/?utm_source=test&utm_medium=handover` in a
+   fresh profile. `document.cookie` shows both `mt_touch_first` and
+   `mt_touch_last`, and `atob(...)` of either decodes to JSON with a
+   `captured_at` within seconds of now.
+2. Navigate internally (any in-site link, no parameters). Neither cookie
+   changes — that is the "internal navigation is not a touch" rule.
+3. Land again with `?utm_source=test2`. `mt_touch_last` changes,
+   `mt_touch_first` does **not**.
+4. `document.cookie` on `book.meantime.com.au` shows the same two values.
+   If it does not, the Domain attribute is wrong (it must be the parent
+   domain, not `www.`).
 
 A minimal implementation is a GTM Custom HTML tag on All Pages, or a
 15-line script in the site template. Concierge already reads these
@@ -161,6 +213,25 @@ Rules (`app/services/attribution.py::reconcile_touches`):
 - **First touch = the earliest candidate by `captured_at`. Last touch =
   the latest.** A click recorded by the linker cookie on the website
   before the visitor reached Concierge is therefore the acquisition.
+- **The cookie names are advisory, not authoritative.** `mt_touch_first`
+  is not automatically Concierge's first touch and `mt_touch_last` is not
+  automatically its last: both are candidates, ordered by their own
+  `captured_at` against every other candidate. This is deliberate. The
+  website only sees the website; Concierge also sees the enquiry page's
+  own capture and the two ad platforms' linker cookies, so it is the only
+  place that can order the whole journey. If the website's tag ever
+  disagrees with Concierge about which touch is "first", Concierge is
+  right by construction and no fix is needed on either side.
+- **The window is the cookie lifetime, and it is not GA4's.** Concierge
+  can only order touches it can still see: 90 days for `mt_touch_first`,
+  30 for `mt_touch_last`, 90 for `_gcl_aw`, 90 for `_fbc`. A visitor whose
+  first ad click was four months ago has a first touch of whatever
+  survives, which may be a later touch. GA4 and Google Ads use their own
+  lookback windows and their own model, so **Concierge's channel report
+  and GA4's attribution will disagree, legitimately, and neither is
+  wrong**. Concierge's report answers "what did this booking's own journey
+  look like"; GA4 answers "how should credit be modelled across all
+  traffic". Do not reconcile them to each other.
 - Fields are never combined across touches. A gclid from one click and
   UTMs from another visit remain two bundles.
 - The same click seen twice (URL and cookie) is one touch.
@@ -178,8 +249,10 @@ Stored shape (both columns):
 ```
 
 `source` names the cookie a touch came from; a touch the enquiry page
-captured itself has no `source`. A touch whose `captured_at` cannot be
-read is left out of the ordering rather than guessed.
+captured itself has no `source`. A cookie-derived touch whose
+`captured_at` cannot be read, or which claims to be from the future, is
+dropped at the boundary rather than guessed at — see the contract table
+above.
 
 ### GA4 client and session continuity, separately
 
@@ -236,11 +309,62 @@ retries on its own schedule; and vice versa
 (`test_one_platform_failing_does_not_touch_the_other`). An accepted or
 sent row is never re-sent.
 
-Ambiguous outcomes: a provider that accepted before the response was lost
-is recorded `failed` with a transport error and retried; for Meta the
-retry deduplicates on `event_id`; for GA4 the fallback is only attempted
-when no send has been recorded, so a lost 204 leads to one retry and a
-possible duplicate. Both are stated in section 9.
+### The GA4 fallback ambiguity, stated exactly
+
+Meta and GA4 are not symmetric, and the asymmetry is the whole of this
+section. **Meta's Conversions API deduplicates** a browser and a server
+copy that share `event_id` *and* `event_name`, so sending both is the
+designed behaviour and a retry after a lost response costs nothing.
+**GA4's Measurement Protocol does not deduplicate at all** — there is no
+event id to match on and no receipt to check. So a GA4 server copy is a
+*fallback*, never a companion: it may only be sent when the browser
+demonstrably did not send its own.
+
+Concierge's guard is a single atomic claim on
+`bookings.ga4_conversion_dispatched_at`. The browser beacon and the sweep
+both flip it from NULL under the same `WHERE … IS NULL` update, and the
+loser sends nothing (`_claim_ga4`; the sweep claims *before* it POSTs).
+That makes the two channels mutually exclusive **at the moment each
+acts**. It cannot make them exclusive across the gap between when a page
+was rendered and when its JavaScript runs, and it cannot see inside GA4.
+Three residual paths remain. They are not equally likely and they do not
+fail in the same direction:
+
+| # | Path | Direction | Frequency | How to see it | How to reconcile |
+|---|---|---|---|---|---|
+| 1 | **Beacon lost.** `gtag` ran and GA4 counted it, but the browser's confirmation POST to Concierge never arrived — tab closed in the same instant, connection dropped. The flag stays NULL, so the sweep sends after the grace period. | **Over**-counts by one | The likeliest of the three, and still rare: the beacon is same-origin and fires immediately after `gtag`. | A `ga4 / server / sent` row on a booking with **no** `ga4 / browser` row. | Compare that count against GA4's own `function_enquiry_submitted` total for the period. Concierge's booking count is the truth; GA4 high by the number of such rows. |
+| 2 | **Lost 204.** The server POSTed, GA4 ingested it, but the response never came back. `_release_ga4` puts the flag back to NULL and the sweep retries. | **Over**-counts by one | Rare. | A `ga4 / server` row with `attempts > 1` and a `transport:` error in `last_error`, later `sent`. | Same as 1. `attempts > 1` on a `sent` row is the marker. |
+| 3 | **Stale rendered page.** The thank-you page was rendered while the flag was NULL (so it carries the snippet), the tab then sat idle past the grace period, the sweep claimed and sent, and the tab's `gtag` ran afterwards. | **Over**-counts by one | Rarest. Requires a tab open and un-executed for ≥30 minutes. | A `ga4 / browser` row whose `created_at` is later than the `ga4 / server` row's `sent_at` on the same booking. | Same as 1. Raising `GA4_SERVER_FALLBACK_AFTER_MINUTES` shrinks this path and widens no other. |
+
+The opposite error also exists and is **not** a duplicate: a browser that
+fired `gtag` and beaconed back, where GA4 itself dropped the event
+(consent mode denying storage, a blocked request after the beacon).
+Concierge records the browser send and correctly never sends a server
+copy, so GA4 is short by one. **This under-count is invisible from the
+application side** and cannot be distinguished from path 1 without GA4's
+own numbers.
+
+**Net effect and the honest bound.** All three duplicate paths need a
+failure between two systems in a window of minutes, so the expected error
+is small and one-directional (GA4 slightly high), against an under-count
+of unknown size in the other direction (consent-blocked browsers, GA4
+slightly low). **The two do not cancel and must not be reported as if
+they do.** Neither is measurable without the GA4 account, which is why
+GA4 reconciliation is an account-side task (section 8), not an
+application one.
+
+**One lever worth knowing about.** The server copy carries `session_id`
+from the `_ga_XM8C86CGM6` cookie when it is readable. If the Google Ads
+conversion action for `function_enquiry_submitted` is set to count
+**one per session** — task 8 asks the reviewer to confirm this — then a
+duplicate from paths 1–3 collapses in Ads even though GA4 still shows two
+events. That protects the number that actually drives bidding. It is
+stated here as a property to confirm, not one this work has verified:
+Concierge cannot see the Ads account.
+
+**If a duplicate is ever unacceptable**, the fallback is a single switch
+rather than a rewrite: leave `GA4_API_SECRET` unset. Meta's server copy
+is unaffected, because Meta dedupes.
 
 Reconciliation: the admin booking page lists every row; SQL for a period:
 
@@ -249,6 +373,28 @@ select b.reference_code, d.platform, d.channel, d.status, d.attempts, d.sent_at,
 from conversion_dispatches d join bookings b on b.id = d.booking_id
 where b.created_at >= now() - interval '30 days' order by b.created_at, d.platform, d.channel;
 ```
+
+The three GA4 duplicate paths above, counted for a period — run this
+before comparing anything to GA4's own totals:
+
+```sql
+-- 1: server sent with no browser row. 2: a retry that had already landed.
+-- 3: a browser row created after the server had already sent.
+select
+  count(*) filter (where srv.status = 'sent' and br.id is null)                     as path_1_beacon_lost,
+  count(*) filter (where srv.status = 'sent' and srv.attempts > 1)                  as path_2_lost_204,
+  count(*) filter (where srv.status = 'sent' and br.created_at > srv.sent_at)       as path_3_stale_page
+from bookings b
+join conversion_dispatches srv
+  on srv.booking_id = b.id and srv.platform = 'ga4' and srv.channel = 'server'
+left join conversion_dispatches br
+  on br.booking_id = b.id and br.platform = 'ga4' and br.channel = 'browser'
+where b.created_at >= now() - interval '30 days';
+```
+
+Their sum is the most GA4 can be over for the period. It says nothing
+about the under-count from consent-blocked browsers, which is not
+visible here.
 
 ---
 
@@ -284,6 +430,43 @@ Meta server copy (from the test suite's captured request; token redacted):
     "content_category": "Wedding"}}],
  "access_token": "<redacted>", "test_event_code": "<only during the controlled test>"}
 ```
+
+### `function_enquiry_submitted` is preserved, not replaced
+
+This is the event Google Ads already imports, so it is the one thing in
+this work that was not free to change. It has not been changed.
+
+| | Before this branch | After |
+|---|---|---|
+| Event name | `function_enquiry_submitted` | unchanged |
+| Where it fires | `gtag` on the thank-you page, once, after persistence | unchanged |
+| What triggers it | thank-you page load with `emit_ga4` true | unchanged |
+| GA4 property | `G-XM8C86CGM6` | unchanged |
+| Parameters | `lead_id`, `venue`, `source_system`, `enquiry_type` | unchanged **names**; `enquiry_type`'s **value** is now constrained (below) |
+| Meta's `Lead` | pixel on the thank-you page | unchanged |
+
+`git diff main…feat/tracking-completion -- app/templates/_tracking_conversion.html
+app/templates/_tracking_head.html` is **empty**. The browser tags are
+byte-for-byte what is live today, which is the mechanical proof that the
+Ads import cannot have been disturbed by this branch.
+
+The one behavioural change to the existing event is the *value* of
+`enquiry_type`: it is now passed through `conversions.safe_event_type`,
+so a value from the form's own list is sent as-is and anything else — an
+API client's free text — is sent as `"other"` rather than verbatim. This
+is a no-PII measure: the parameter could otherwise carry arbitrary
+submitted text into analytics. It cannot affect the Ads conversion, which
+counts the event, not this parameter. Google Ads reporting segmented *by*
+`enquiry_type` would show an `other` bucket where it previously showed
+free text; no such segment is known to exist, and task 8 asks the
+reviewer to confirm.
+
+Everything this work adds is **additive and namespaced away from it**: a
+GA4 server copy of the same event name only as a fallback that never runs
+beside a confirmed browser send (section 4), and Meta `Lead` server
+copies that Meta dedupes. No new GA4 event name, no new Ads conversion
+action, no Paddles & Pals event, and nothing touching Ads budgets,
+campaigns, goals or account settings.
 
 Browser snippet (rendered on the thank-you page, from `_tracking_conversion.html`):
 
@@ -369,22 +552,67 @@ side-effect and it must be agreed.
 
 ### Railway recipe for the sweep (infrastructure, not code)
 
-The digest already runs this way (`meantime-concierge-digest`: own
-service, own variables, `restartPolicyType: NEVER`, no pre-deploy). The
-sweep needs the same:
+Copy the digest service. Its live configuration was read from Railway on
+2026-09-06 and is reproduced here so the sweep can be built to match
+rather than from memory:
 
-| Setting | Value |
-|---|---|
-| Service | new, from `hipwellaaron-hub/meantime-concierge-booking`, branch `main` |
-| Start command | `python -m app.dispatch_conversions` |
-| Cron schedule | `*/15 * * * *` |
-| Restart policy | NEVER |
-| Pre-deploy command | none |
-| Variables | `DATABASE_URL`, `SECRET_KEY` (required by Settings), `GA4_MEASUREMENT_ID`, `META_PIXEL_ID`, `TRACKING_SERVER_DISPATCH_ENABLED=true`, `META_CAPI_ACCESS_TOKEN`, `GA4_API_SECRET`, `DASHBOARD_BASE_URL`, and `META_CAPI_TEST_EVENT_CODE` only during the test |
+```
+service        meantime-concierge-digest   (project a97a452b…, environment production)
+source repo    hipwellaaron-hub/meantime-concierge-booking
+builder        RAILPACK          buildEnvironment V3      runtime V2
+startCommand   python -m app.send_digest
+cronSchedule   0 21 * * *
+preDeploy      (none)
+restartPolicy  NEVER
+region         sfo × 1 replica
+variables      AI_API_TOKEN, DATABASE_URL, DIGEST_API_KEY, DIGEST_FROM_EMAIL,
+               DIGEST_GMAIL_ADDRESS, DIGEST_GMAIL_APP_PASSWORD,
+               DIGEST_RECIPIENT_EMAIL, SECRET_KEY
+```
 
-The **web** service needs the same tracking variables too: the first
-Meta copy is sent by the web process right after persistence. A push
-does not deploy either service; request a build for both.
+The sweep is the same shape with a different command, schedule and
+variable set:
+
+| Setting | Value | Why this value |
+|---|---|---|
+| Service name | `meantime-concierge-conversions` | |
+| Source | same repo, branch `main` | |
+| Builder / runtime | RAILPACK, build env V3, runtime V2 | match the digest; these are the project defaults |
+| Start command | `python -m app.dispatch_conversions` | |
+| Cron schedule | `*/15 * * * *` | The GA4 grace period is 30 minutes, so a 15-minute pass sends a fallback 30–45 minutes after the enquiry. Anything slower widens duplicate path 3. |
+| Restart policy | **NEVER** | A cron service that restarts on exit runs continuously. This is the setting that matters most; get it wrong and the sweep re-runs in a loop. |
+| Pre-deploy command | **none** | Migrations belong to the web service alone. A second service running `alembic upgrade head` would race it on deploy. |
+| Region / replicas | `sfo`, 1 | **Exactly one replica.** Two would sweep the same bookings concurrently. The per-booking claim and the unique `(booking, platform, channel)` index make that safe rather than duplicating, but it is wasted work and needless contention. |
+| Health check | none | It exits; there is nothing to check. |
+
+Variables to set on the sweep service — and only these:
+
+| Variable | Value | Note |
+|---|---|---|
+| `DATABASE_URL` | same as the web service | |
+| `SECRET_KEY` | same as the web service | required by `Settings`; unused by this command |
+| `TRACKING_SERVER_DISPATCH_ENABLED` | `true` | without it the command logs "disabled here" and exits 0 |
+| `GA4_MEASUREMENT_ID` | `G-XM8C86CGM6` | |
+| `META_PIXEL_ID` | `7461755457239404` | |
+| `META_CAPI_ACCESS_TOKEN` | secret | omit and Meta sends are simply skipped |
+| `GA4_API_SECRET` | secret | omit and the GA4 fallback never runs — the deliberate opt-out from section 4 |
+| `GA4_SERVER_FALLBACK_AFTER_MINUTES` | omit (defaults to 30) | raise it to shrink duplicate path 3 |
+| `META_CAPI_TEST_EVENT_CODE` | during the controlled test only | **unset it afterwards**; test events do not count |
+
+`RAILWAY_ENVIRONMENT_NAME` is set by Railway itself — do not set it by
+hand. It is the second gate: anything but `production` disables every
+send even with all the variables present.
+
+**Verifying the service without sending anything.** Create it with
+`TRACKING_SERVER_DISPATCH_ENABLED` unset first. The next run logs
+`Server-side conversion dispatch is disabled here; nothing to do.` and
+exits 0. That proves the schedule, the build and the database connection
+in one pass, with no possibility of a real conversion. Then set the
+variable.
+
+The **web** service needs the same tracking variables too: the first Meta
+copy is sent by the web process right after persistence. A push does not
+deploy either service; request a build for both.
 
 ---
 
@@ -415,10 +643,11 @@ does not deploy either service; request a build for both.
 ## 9. Outstanding limitations
 
 - **Server copies are dormant until the two secrets are set** and the opt-in is enabled. Until then behaviour is exactly the deployed browser-only path.
-- **GA4 fallback can double count** when the browser fired but its beacon was lost. Expected to be rare; visible as a `ga4/server/sent` row on a booking whose browser row is missing.
+- **GA4 fallback can double count.** Three paths, all rare, all in the same direction, all detectable — and one opposite under-count that is not detectable from here. Section 4 states each one with its frequency and a query that bounds the total. Unsetting `GA4_API_SECRET` removes the possibility entirely, at the cost of the fallback.
 - **GA4 fallback without a client id** (a visitor with no `_ga` cookie, e.g. a consent-blocked browser) is skipped, recorded as such, and the browser copy stays on offer.
 - **The Google Ads route is unverified from the application side.** Concierge cannot see the Ads account; task 8 closes this.
-- **UTMs from the website require the cookie contract in section 2.** Until the website sets `mt_touch_*`, only click ids cross over; UTM-only campaigns show as first touch "referral" in Concierge's own report, while GA4 attribution is unaffected.
+- **UTMs from the website require the cookie contract in section 2.** Until the website sets `mt_touch_*`, only click ids cross over; UTM-only campaigns show as first touch "referral" in Concierge's own report, while GA4 attribution is unaffected. This is a smaller answer, never a wrong one, and it needs no Concierge change when the tag ships.
+- **A cookie with no usable `captured_at` is discarded, not repaired.** That is the right trade — the alternative silently made the oldest cookie the newest touch — but it means a website tag that omits the field produces *no* attribution rather than partial attribution, and does so silently. The self-test in section 2 is what catches it; there is no server-side alarm for a tag that never ships a valid cookie.
 - **`_gcl_gb` / `_gcl_gf` names** for gbraid/wbraid are read defensively; only `_gcl_aw` was observed live.
 - **Client address and user agent** are stored in `tracking_context` for Meta matching, never shown in the UI or export, and cleared by the sweep 14 days after the enquiry (the pseudonymous cookie ids stay for reconciliation). The address is the one the trusted proxy reported and is kept only if it parses as an address. Sending them to Meta's Conversions API is a disclosure the privacy policy should name.
 - **Enquiry type** reaches a payload only when it is one of the form's own values; anything else (an API client's free text) is sent as `other`.
@@ -427,9 +656,52 @@ does not deploy either service; request a build for both.
 
 ---
 
-## 10. Rollout
+## 10. Controlled rollout
 
-1. Merge `feat/tracking-completion` to main; deploy (pre-deploy runs `alembic upgrade head`, migration `f7d2c4a9b1e3`, additive only).
-2. Behaviour after deploy with no new variables: identical to today plus cookie-derived attribution and submission identity. No server sends.
-3. Set `META_CAPI_TEST_EVENT_CODE`, `META_CAPI_ACCESS_TOKEN`, `GA4_API_SECRET`, `TRACKING_SERVER_DISPATCH_ENABLED=true`; create the cron service; run the controlled test (section 6).
-4. Unset `META_CAPI_TEST_EVENT_CODE`. Production counting begins.
+Five stages. Each one is separately reversible, and **no stage can send a
+production conversion until stage 4** — the two secrets and the opt-in
+are all absent until then, and each is a separate gate. Do not compress
+stages: the point of the order is that if something is wrong, the stage
+it is wrong in is the stage that shows it.
+
+**Stage 0 — merge and deploy the code. No behaviour change.**
+
+1. Re-parent the migration if `feat/beo-proposals` merged first: `f7d2c4a9b1e3` and `a3f6e1c7d094` both descend from `b4c1e8f27a93`, so whichever lands second needs its `down_revision` moved to the other. Two heads will fail the deploy's pre-deploy step, loudly and before serving.
+2. Merge to `main`, request a Railway build of the **web** service (a push does not deploy).
+3. Pre-deploy runs `alembic upgrade head` → `f7d2c4a9b1e3`: adds `bookings.submission_id` (+ unique index), `bookings.tracking_context`, and the `conversion_dispatches` table. Additive only; nothing is dropped or rewritten, so it is safe on a live database.
+4. **Gate:** submit one ordinary enquiry. It behaves exactly as today. Cookie-derived attribution and `submission_id` now work; `conversion_dispatches` gains only `browser` rows. **Zero server sends are possible — no secrets are set.**
+   Rollback: redeploy the previous build. The new columns are unused by the old code and can stay.
+
+**Stage 1 — the website's cookies (independent of everything else).**
+
+5. Hand section 2 to the website developer. Nothing on the Concierge side changes; Concierge has read these cookies since stage 0.
+6. **Gate:** the developer's own self-test in section 2 (four checks in a browser console), then one enquiry from a `?utm_source=…` landing shows that `utm_source` as first touch on the booking. Until this passes, only click ids cross over — a smaller result, never a wrong one.
+   Rollback: remove the tag. Concierge degrades to click-ids-only with no error.
+
+**Stage 2 — the sweep service, deliberately inert.**
+
+7. Create `meantime-concierge-conversions` per section 7 **with `TRACKING_SERVER_DISPATCH_ENABLED` unset**.
+8. **Gate:** its first scheduled run logs `Server-side conversion dispatch is disabled here; nothing to do.` and exits 0. Schedule, build, database connection and restart policy are all proven with no possibility of a send. Confirm the run **ended** — a service still running after its log line has the wrong restart policy.
+   Rollback: delete the service.
+
+**Stage 3 — the controlled live test, on test events only.**
+
+9. Agree the test identity and arrangement with Aaron first (section 6). The venue notification email is a real side-effect and must be agreed before, not explained after.
+10. Set `META_CAPI_TEST_EVENT_CODE`, `META_CAPI_ACCESS_TOKEN`, `GA4_API_SECRET`, `TRACKING_SERVER_DISPATCH_ENABLED=true` on both the web and sweep services.
+11. Run section 6's seven-step procedure.
+12. **Gate:** Meta Events Manager shows the browser and server `Lead` as **deduplicated** — that single word is what licences sending both. GA4 DebugView shows exactly one `function_enquiry_submitted`. `conversion_dispatches` matches. If dedup does not show, stop here: unset `META_CAPI_ACCESS_TOKEN` and diagnose before stage 4.
+    Rollback: unset the two secrets. Everything reverts to browser-only.
+13. Delete the test bookings; annotate the GA4 property for the date.
+
+**Stage 4 — production counting.**
+
+14. Unset `META_CAPI_TEST_EVENT_CODE` on both services. This is the moment real conversions begin; nothing before it counted.
+15. **Gate, at 24 hours and again at 7 days:** run section 4's diagnostic query. Expect `path_1_beacon_lost` to be a small fraction of enquiries and paths 2 and 3 at or near zero. A large path 1 means the beacon is not getting back — investigate before trusting the GA4 total. Compare Concierge's booking count for the period against GA4's event count and Ads conversions; they will not match exactly, and section 4 says which directions the differences run in.
+    Rollback: unset `GA4_API_SECRET` to stop GA4 fallbacks alone (Meta is unaffected, because Meta dedupes), or `TRACKING_SERVER_DISPATCH_ENABLED=false` to stop all server sends. Neither needs a deploy or a code change.
+
+**What is deliberately not in this rollout:** no change to Google Ads
+budgets, campaigns, conversion goals or account settings; no new
+conversion action; no hashed contact-data matching; no Paddles & Pals
+events; no staging analytics (there is no Railway staging environment,
+and `RAILWAY_ENVIRONMENT_NAME` gates any future one). Advertising scripts
+remain off staff pages and off tokenised host/guest wizard pages.

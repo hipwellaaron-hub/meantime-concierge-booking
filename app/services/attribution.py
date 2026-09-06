@@ -94,7 +94,13 @@ def build_touch(raw: dict) -> dict:
     who went through the public enquiry pipeline, distinct from the whole
     column being NULL for a booking that never went through it at all
     (staff-entered, iVvy-imported, phone) -- see the model's own comment
-    on Booking.first_touch_attribution for why that distinction matters."""
+    on Booking.first_touch_attribution for why that distinction matters.
+
+    A missing captured_at is stamped with now(). That is right for the
+    enquiry page's own capture -- the submission IS the moment -- and
+    wrong for anything read out of a cookie, whose age is unknown and
+    whose captured_at is what says how old it is. Cookie-derived touches
+    therefore go through _cookie_touch, which requires a real one."""
     bundle = {field: _clean(raw.get(field)) for field in UTM_FIELDS + CLICK_ID_FIELDS}
     referrer = _clean(raw.get("referrer"))
     bundle["referrer"] = referrer
@@ -191,6 +197,36 @@ def _decode_site_touch(raw: str) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
+# A cookie-derived touch must carry its own readable captured_at. Two
+# things go wrong without that rule, and both make the newest-wins
+# ordering in reconcile_touches report the opposite of the truth:
+#
+#   - no captured_at: build_touch stamps now(), so a cookie of unknown
+#     age becomes the newest touch. mt_touch_FIRST -- the oldest thing
+#     the website knows -- would win LAST touch.
+#   - a captured_at in the future: it wins last touch forever, and it
+#     costs nothing to write one. These cookies are client-controlled.
+#
+# A touch that fails either test is not a touch. It is dropped, not
+# repaired and not sorted to the end: an unreadable time is unreadable,
+# and the honest answer is that this cookie says nothing about ordering.
+#
+# The window is generous because a visitor's clock is the visitor's, and
+# a phone an hour ahead is a real browser, not an attack.
+CLOCK_SKEW_ALLOWANCE = dt.timedelta(hours=12)
+
+# The website's touch cookie is small JSON; the cap is a bound on work,
+# not a format rule. Documented in docs/tracking-handover.md 2.2.
+SITE_TOUCH_MAX_BYTES = 4096
+
+
+def _cookie_touch(raw: dict) -> dict | None:
+    when = _captured_at(raw)
+    if when is None or when > dt.datetime.now(dt.timezone.utc) + CLOCK_SKEW_ALLOWANCE:
+        return None
+    return build_touch(raw)
+
+
 def touches_from_cookies(cookies: Mapping[str, str]) -> list[dict]:
     """Each cookie that carries a campaign signal becomes its OWN touch
     bundle with its own captured_at. Bundles are never merged: a gclid from
@@ -203,21 +239,25 @@ def touches_from_cookies(cookies: Mapping[str, str]) -> list[dict]:
         if len(parts) == 3 and parts[0] == "GCL" and parts[2]:
             when = _iso(parts[1])
             if when:
-                touches.append(build_touch({field: parts[2], "captured_at": when, "source": f"cookie:{cookie}"}))
+                touch = _cookie_touch({field: parts[2], "captured_at": when, "source": f"cookie:{cookie}"})
+                if touch is not None:
+                    touches.append(touch)
     raw = (cookies.get(_META_CLICK_COOKIE) or "").strip()[:MAX_FIELD_LENGTH]
     parts = raw.split(".", 3)
     if len(parts) == 4 and parts[0] == "fb" and parts[3]:
         when = _iso(parts[2], millis=True)
         if when:
-            touches.append(build_touch({"fbclid": parts[3], "captured_at": when, "source": f"cookie:{_META_CLICK_COOKIE}"}))
+            touch = _cookie_touch({"fbclid": parts[3], "captured_at": when, "source": f"cookie:{_META_CLICK_COOKIE}"})
+            if touch is not None:
+                touches.append(touch)
     for cookie in _SITE_TOUCH_COOKIES:
         raw = (cookies.get(cookie) or "").strip()
-        if raw and len(raw) <= 4096:
+        if raw and len(raw) <= SITE_TOUCH_MAX_BYTES:
             data = _decode_site_touch(raw)
             if data:
                 data["source"] = f"cookie:{cookie}"
-                bundle = build_touch(data)
-                if has_signal(bundle):
+                bundle = _cookie_touch(data)
+                if bundle is not None and has_signal(bundle):
                     touches.append(bundle)
     return touches
 
