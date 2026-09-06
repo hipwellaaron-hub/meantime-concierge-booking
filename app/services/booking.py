@@ -117,6 +117,8 @@ def create_booking(
     agreed_min_adults: int | None = None,
     agreed_min_food_spend: Decimal | None = None,
     pricing_locked_at: dt.date | None = None,
+    submission_id: uuid.UUID | None = None,
+    tracking_context: dict | None = None,
 ) -> Booking:
     space = db.get(Space, space_id)
     if space is None:
@@ -141,6 +143,11 @@ def create_booking(
         lead_referrer=lead_referrer,
         first_touch_attribution=first_touch_attribution,
         last_touch_attribution=last_touch_attribution,
+        # In the same INSERT as everything else, so the identity is visible
+        # the instant the submission lock is released (never a second
+        # transaction that a concurrent retry could slip between -- review).
+        submission_id=submission_id,
+        tracking_context=tracking_context,
         migration_source=migration_source,
         migration_external_ref=migration_external_ref,
         migration_snapshot=migration_snapshot,

@@ -76,6 +76,19 @@
 
 <details class="card">
   <summary class="section-summary">Traffic source</summary>
+  {% if conversion_dispatches %}
+  <details style="margin:0 0 10px;"><summary style="cursor:pointer; color:var(--gold);">Conversion sends ({{ conversion_dispatches | length }})</summary>
+    <table style="font-size:0.85rem; margin-top:6px;">
+      <tr><th>Platform</th><th>Channel</th><th>Status</th><th>Sent</th><th>Attempts</th><th>Note</th></tr>
+      {% for d in conversion_dispatches %}
+      <tr><td>{{ d.platform }}</td><td>{{ d.channel }}</td><td>{{ d.status }}{% if d.channel == "server" and d.receipt and d.receipt.test_event %} (test)</td>{% else %}</td>{% endif %}
+          <td>{{ d.sent_at | sydney_time("%d %b %H:%M") if d.sent_at else "" }}</td><td>{{ d.attempts }}</td>
+          <td class="muted">{{ d.last_error or (d.receipt.fbtrace_id if d.receipt and d.receipt.fbtrace_id else "") }}</td></tr>
+      {% endfor %}
+    </table>
+    <p class="muted" style="font-size:0.8rem; margin:6px 0 0;">Browser rows are the page's own beacon (the platform's receipt is not visible). Server rows carry the provider's answer: Meta returns a trace id; GA4's Measurement Protocol accepts without one.</p>
+  </details>
+  {% endif %}
   {% if not booking.first_touch_attribution and not booking.last_touch_attribution %}
   <p class="muted" style="margin:0;">Unknown -- not tracked. This booking was staff-entered, imported, or arrived by phone, so there was never a page load to capture attribution from.</p>
   {% else %}
