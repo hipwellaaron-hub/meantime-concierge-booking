@@ -17,10 +17,12 @@ This module exists to capture, classify for *display*, and persist. Never
 to decide.
 """
 
+import base64
 import datetime as dt
 import json
 import uuid
 from collections import Counter
+from typing import Mapping
 from urllib.parse import urlparse
 
 from sqlalchemy import select
@@ -136,6 +138,126 @@ def parse_attribution_payload(raw_json: str | None, *, fallback_referrer: str | 
         return fallback, fallback
 
     return None, None
+
+
+# --- parent-domain cookies -------------------------------------------------------
+#
+# meantime.com.au and book.meantime.com.au share cookies scoped to the
+# registrable domain. Proven live on 2026-09-06: after landing on the main
+# site with ?gclid=..., the enquiry page could read _ga, _ga_<stream>,
+# _gcl_au, _gcl_aw (which carries the gclid) and _fbp. So the click id
+# reaches Concierge in a cookie even when the link is bare -- it was being
+# ignored. UTM parameters are NOT in any Google or Meta cookie; for those
+# the website sets mt_touch_first / mt_touch_last (see
+# docs/tracking-handover.md, "Attribution handoff").
+
+# Google's conversion-linker cookies: GCL.<unix seconds>.<value>.
+_LINKER_COOKIES = {"_gcl_aw": "gclid", "_gcl_gb": "gbraid", "_gcl_gf": "wbraid"}
+# Meta's click cookie: fb.<subdomain index>.<unix millis>.<fbclid>.
+_META_CLICK_COOKIE = "_fbc"
+# The website's own handoff of a full touch (base64url JSON).
+_SITE_TOUCH_COOKIES = ("mt_touch_first", "mt_touch_last")
+
+
+def _iso(ts: float) -> str:
+    return dt.datetime.fromtimestamp(ts, tz=dt.timezone.utc).isoformat()
+
+
+def _decode_site_touch(raw: str) -> dict | None:
+    try:
+        padded = raw + "=" * (-len(raw) % 4)
+        data = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8"))
+    except (ValueError, UnicodeDecodeError, TypeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def touches_from_cookies(cookies: Mapping[str, str]) -> list[dict]:
+    """Each cookie that carries a campaign signal becomes its OWN touch
+    bundle with its own captured_at. Bundles are never merged: a gclid from
+    one click and UTMs from another visit stay two touches, and
+    reconcile_touches orders them by time."""
+    touches: list[dict] = []
+    for cookie, field in _LINKER_COOKIES.items():
+        raw = (cookies.get(cookie) or "").strip()
+        parts = raw.split(".", 2)
+        if len(parts) == 3 and parts[0] == "GCL" and parts[1].isdigit() and parts[2]:
+            touches.append(build_touch({field: parts[2], "captured_at": _iso(int(parts[1]))}))
+    raw = (cookies.get(_META_CLICK_COOKIE) or "").strip()
+    parts = raw.split(".", 3)
+    if len(parts) == 4 and parts[0] == "fb" and parts[2].isdigit() and parts[3]:
+        touches.append(build_touch({"fbclid": parts[3], "captured_at": _iso(int(parts[2]) / 1000)}))
+    for cookie in _SITE_TOUCH_COOKIES:
+        raw = (cookies.get(cookie) or "").strip()
+        if raw:
+            data = _decode_site_touch(raw)
+            if data and has_signal(build_touch(data)):
+                touches.append(build_touch(data))
+    return touches
+
+
+def has_signal(bundle: dict | None) -> bool:
+    """A touch worth attributing: any UTM value or click id."""
+    return bool(bundle) and any(bundle.get(f) for f in UTM_FIELDS + CLICK_ID_FIELDS)
+
+
+def _captured_at(bundle: dict) -> dt.datetime:
+    raw = bundle.get("captured_at")
+    try:
+        parsed = dt.datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return dt.datetime.max.replace(tzinfo=dt.timezone.utc)
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=dt.timezone.utc)
+
+
+def _same_click(a: dict, b: dict) -> bool:
+    return any(a.get(f) and a.get(f) == b.get(f) for f in CLICK_ID_FIELDS)
+
+
+# The site whose internal navigation is not a touch. A visitor stepping
+# from meantime.com.au to book.meantime.com.au with no campaign parameter
+# has not been acquired again; the referral is the hop, not a source.
+INTERNAL_REFERRER_HOSTS = ("meantime.com.au",)
+
+
+def _is_internal_hop(bundle: dict) -> bool:
+    if has_signal(bundle):
+        return False
+    try:
+        host = urlparse(bundle.get("referrer") or "").netloc.lower()
+    except ValueError:
+        return False
+    return any(host == h or host.endswith("." + h) for h in INTERNAL_REFERRER_HOSTS)
+
+
+def reconcile_touches(first: dict, last: dict, extra: list[dict]) -> tuple[dict, dict]:
+    """Combine the browser's captured touches with the cookie-derived ones.
+
+    - Every real touch is a candidate: the page's own first and last
+      (including an honest untagged direct return -- a visitor who comes
+      back by typing the address has a last touch of "unknown", and that
+      must not be overwritten by an older campaign), and each cookie touch
+      with a signal.
+    - The one visit that is NOT a touch is the internal hop from
+      meantime.com.au to the enquiry page with no campaign parameter: that
+      is navigation inside the same site, and counting it would make every
+      website-referred enquiry's last touch "Referral".
+    - First touch is the earliest candidate by captured_at, last the
+      latest. A gclid the linker cookie recorded on the main website
+      before the visitor reached Concierge is therefore the acquisition.
+    - A touch never contributes fields to another touch; each bundle is
+      taken whole. A cookie touch that is the same click the browser
+      already captured is not a second touch.
+    - With no candidates at all, the page's own bundles stand.
+    """
+    candidates = [b for b in (first, last) if not _is_internal_hop(b)]
+    for bundle in extra:
+        if has_signal(bundle) and not any(_same_click(bundle, existing) for existing in candidates):
+            candidates.append(bundle)
+    if not candidates:
+        return first, last
+    ordered = sorted(candidates, key=_captured_at)
+    return ordered[0], ordered[-1]
 
 
 def summarize_channel(bundle: dict | None) -> str:

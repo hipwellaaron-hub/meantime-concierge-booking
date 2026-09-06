@@ -12,8 +12,8 @@ from app.database import get_db
 from app.models import Booking, Venue
 from app.rate_limit import InMemoryRateLimiter, rate_limit_dependency
 from app.schemas.enquiry import EVENT_TYPES, EnquiryCreate
-from app.services.attribution import build_touch, parse_attribution_payload
-from app.services import drafting
+from app.services.attribution import build_touch, parse_attribution_payload, reconcile_touches, touches_from_cookies
+from app.services import conversions, drafting
 from app.services.enquiry_classification import create_enquiry_booking
 from app.services.lead_analytics import classify_lead_source
 from app.templating import templates
@@ -29,6 +29,13 @@ router = APIRouter(tags=["enquiries"])
 _enquiry_rate_limiter = InMemoryRateLimiter(max_requests=5, window_seconds=300)
 
 BOOKING_EVENT_ACTOR_MAX_LENGTH = 255
+
+
+def _submission_uuid(raw: str | None) -> uuid.UUID | None:
+    try:
+        return uuid.UUID(raw) if raw else None
+    except (ValueError, AttributeError, TypeError):
+        return None
 
 
 def _venue(db: Session) -> Venue:
@@ -64,6 +71,18 @@ def submit_enquiry(
         first_touch = build_touch({"referrer": referrer})
     if last_touch is None:
         last_touch = first_touch
+    # The parent-domain cookies the website's tags set are visible on this
+    # POST: Google's linker cookie carries the gclid of a click that landed
+    # on meantime.com.au, Meta's carries the fbclid, and the website's own
+    # mt_touch_* cookies carry UTMs. Each is its own touch, ordered by time.
+    first_touch, last_touch = reconcile_touches(first_touch, last_touch, touches_from_cookies(request.cookies))
+
+    submission_id = _submission_uuid(payload.submission_id)
+    tracking_context = conversions.build_tracking_context(
+        cookies=request.cookies,
+        user_agent=request.headers.get("user-agent"),
+        client_ip=conversions.client_ip_from_headers(request.headers, request.client.host if request.client else None),
+    )
 
     booking, _duplicate_candidates, _is_new = create_enquiry_booking(
         db,
@@ -85,7 +104,15 @@ def submit_enquiry(
         actor=actor,
         first_touch_attribution=first_touch,
         last_touch_attribution=last_touch,
+        submission_id=submission_id,
+        tracking_context=tracking_context,
     )
+
+    # The server copy of the Meta Lead goes after the response too, with
+    # the same event id as the browser copy so Meta counts one. GA4's
+    # server copy is a delayed fallback handled by the sweep, never here.
+    if _is_new:
+        background_tasks.add_task(conversions.dispatch_after_enquiry, booking.id)
 
     # Drafting runs AFTER this response is sent, in its own session, and
     # cannot raise into the request. By this line the booking is saved,
@@ -167,6 +194,7 @@ def record_conversion_dispatch(
     result = db.execute(
         update(Booking).where(Booking.id == booking_id, column.is_(None)).values({column: dt.datetime.now(dt.timezone.utc)})
     )
+    conversions.record_browser_dispatch(db, booking, platform)
     db.commit()
     if result.rowcount == 1:
         logger.info("%s conversion dispatched by browser for enquiry %s", platform, booking.reference_code)
