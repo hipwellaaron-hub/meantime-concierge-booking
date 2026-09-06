@@ -15,7 +15,7 @@ through post_ai, which has its own allowlist, so a read tool cannot be
 talked into a write.
 """
 
-from mcp_server.concierge import call_ai, post_ai
+from mcp_server.concierge import call_ai, path_segment, post_ai
 
 _DATE = {"type": "string", "description": "Date as YYYY-MM-DD."}
 
@@ -185,7 +185,7 @@ TOOLS: list[dict] = [
             },
             "required": ["booking_id"],
         },
-        "_call": lambda args: call_ai(f"/api/ai/bookings/{args['booking_id']}/documents"),
+        "_call": lambda args: call_ai(f"/api/ai/bookings/{path_segment(args['booking_id'], name='booking_id')}/documents"),
     },
     {
         "name": "booking_invoices",
@@ -202,7 +202,7 @@ TOOLS: list[dict] = [
             },
             "required": ["booking_id"],
         },
-        "_call": lambda args: call_ai(f"/api/ai/bookings/{args['booking_id']}/invoices"),
+        "_call": lambda args: call_ai(f"/api/ai/bookings/{path_segment(args['booking_id'], name='booking_id')}/invoices"),
     },
     {
         "name": "booking_events",
@@ -224,7 +224,8 @@ TOOLS: list[dict] = [
             "required": ["booking_id"],
         },
         "_call": lambda args: call_ai(
-            f"/api/ai/bookings/{args['booking_id']}/events", {"limit": args.get("limit")}
+            f"/api/ai/bookings/{path_segment(args['booking_id'], name='booking_id')}/events",
+            {"limit": args.get("limit")},
         ),
     },
     {
@@ -253,7 +254,7 @@ TOOLS: list[dict] = [
             "required": ["reference"],
         },
         "_call": lambda args: call_ai(
-            f"/api/ai/bookings/{args['reference']}/event-order-proposal"
+            f"/api/ai/bookings/{path_segment(args['reference'], name='reference')}/event-order-proposal"
         ),
     },
     {
@@ -326,7 +327,7 @@ TOOLS: list[dict] = [
             "required": ["reference", "source", "fields"],
         },
         "_call": lambda args: post_ai(
-            f"/api/ai/bookings/{args['reference']}/event-order-proposal",
+            f"/api/ai/bookings/{path_segment(args['reference'], name='reference')}/event-order-proposal",
             {
                 "source": args["source"],
                 "fields": args["fields"],

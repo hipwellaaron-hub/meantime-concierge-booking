@@ -1,3 +1,5 @@
+from urllib.parse import quote
+
 from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
@@ -116,7 +118,9 @@ app.add_middleware(SessionMiddleware, secret_key=settings.secret_key, https_only
 def _redirect_to_login(request: Request, exc: NotAuthenticated) -> RedirectResponse:
     # A browser-driven dashboard, not an API client -- an unauthenticated
     # staff route should land back on the login form, not a bare 401.
-    return RedirectResponse(url=f"/admin/login?next={request.url.path}", status_code=303)
+    # quote(): the path is attacker-chosen, and an unencoded "&" or "#" in it
+    # would inject further parameters into the login URL (2026-09-07 review).
+    return RedirectResponse(url=f"/admin/login?next={quote(request.url.path, safe='/')}", status_code=303)
 
 
 app.mount("/static", StaticFiles(directory="app/static"), name="static")

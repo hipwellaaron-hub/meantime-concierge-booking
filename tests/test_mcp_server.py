@@ -17,6 +17,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from mcp_server import oauth
+from mcp_server import tools as tools_module
 from mcp_server.app import app
 from mcp_server.concierge import ConciergeError, call_ai, post_ai
 from mcp_server.config import settings
@@ -401,6 +402,44 @@ def test_the_read_of_a_proposal_uses_get_not_post(client):
     assert body["result"]["isError"] is False
     assert get.call_args[0][0].endswith("/api/ai/bookings/HAM-1/event-order-proposal")
     post.assert_not_called()
+
+
+@pytest.mark.parametrize("hostile", [
+    "../../../admin/foo?x",       # httpx normalises this to /admin/foo
+    "a/../b",
+    "HAM-1?a",                    # "?" pushes the suffix into the query string
+    "HAM-1#frag",                 # "#" truncates the path entirely
+    "HAM-1/../../admin",
+    "%2e%2e%2fadmin",
+    "..",
+    "",
+])
+@pytest.mark.parametrize("tool", ["event_order_proposal", "propose_event_order_values", "booking_documents"])
+def test_a_reference_can_never_steer_the_request_off_the_ai_surface(hostile, tool):
+    """The allowlist tests the path with startswith/endswith, but httpx
+    normalises the URL afterwards -- so "../../../admin/foo?x" passed both
+    checks and the real request went to /admin/foo carrying the Concierge
+    credential (verified 2026-09-07). Outside input now has to be one plain
+    segment before it reaches a path at all."""
+    key = "booking_id" if tool == "booking_documents" else "reference"
+    args = {key: hostile}
+    if tool == "propose_event_order_values":
+        args |= {"source": "client email", "fields": {"music": "DJ."}}
+
+    with patch("mcp_server.concierge.httpx.get") as get, patch("mcp_server.concierge.httpx.post") as post:
+        with pytest.raises(ConciergeError, match="must be a plain booking reference"):
+            tools_module.call_tool(tool, args)
+        get.assert_not_called()
+        post.assert_not_called()
+
+
+def test_a_real_reference_still_reaches_the_right_path():
+    with patch("mcp_server.concierge.httpx.post") as mocked:
+        mocked.return_value = httpx.Response(201, json={"proposal_id": "p1"})
+        tools_module.call_tool("propose_event_order_values", {
+            "reference": "HAM-20271114-AB12C", "source": "client email", "fields": {"music": "DJ."},
+        })
+    assert mocked.call_args[0][0].endswith("/api/ai/bookings/HAM-20271114-AB12C/event-order-proposal")
 
 
 def test_post_refuses_every_path_but_the_proposal_before_any_request():
