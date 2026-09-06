@@ -9,6 +9,7 @@ house rules block the shapes that error takes.
 
 import datetime as dt
 import pathlib
+import re
 import threading
 import uuid
 from decimal import Decimal
@@ -130,12 +131,32 @@ def test_run_sheet_notes_pass(text):
     assert not beo_rules.validate({"special_notes": text}).blocked
 
 
-def test_the_default_playlist_line_alongside_a_dj_is_blocked():
+def test_a_playlist_alongside_a_dj_is_a_real_booking_and_passes():
+    """The wizard's music step is a multi-select and composes both lines
+    when the client picks both, so this is a correct Event Order, not a
+    half-finished transcription. A rule used to block it (Aaron's ruling,
+    2026-09-06: align to the wizard)."""
     music = (
         "Client's own Spotify playlist — set to public, playlist name given to the team on the night "
         "(no links).\nDJ."
     )
-    assert beo_rules.MUSIC_CONFLICT in beo_rules.validate({"music": music}).codes
+    assert not beo_rules.validate({"music": music}).blocked
+
+
+def test_the_wizards_own_music_text_never_blocks():
+    """Built the way a real submitted wizard builds it, from the wizard's
+    own line table -- whatever the client selects, the Event Order that
+    results must be transcribable."""
+    from itertools import combinations
+
+    from app.services import wizard_generation
+
+    types = list(wizard_generation.MUSIC_TYPE_LINES)
+    for size in range(1, len(types) + 1):
+        for combo in combinations(types, size):
+            text = wizard_generation.build_music_text({"music_types": list(combo)})
+            result = beo_rules.validate({"music": text})
+            assert not result.blocked, (combo, result.codes)
 
 
 def test_a_playlist_alone_and_a_dj_alone_both_pass():
@@ -919,17 +940,19 @@ def test_the_rsa_wording_the_venue_actually_uses_is_not_blocked_as_prose():
     assert not result.blocked, result.codes
 
 
-@pytest.mark.parametrize("music, entertainment, blocked", [
-    ("Client's own Spotify playlist, public, name on the night. DJs from 8pm.", None, True),
-    ("Client's own Spotify playlist, public, name on the night.", "Deejay from 8pm", True),
-    ("Client's own Spotify playlist, public, name on the night.", None, False),
-    ("DJ from 8pm.", None, False),
+@pytest.mark.parametrize("music, entertainment", [
+    ("Client's own Spotify playlist, public, name on the night. DJs from 8pm.", None),
+    ("Client's own Spotify playlist, public, name on the night.", "Deejay from 8pm"),
+    ("Client's own Spotify playlist, public, name on the night.", None),
+    ("DJ from 8pm.", None),
 ])
-def test_the_music_conflict_reads_both_fields_and_the_plural(music, entertainment, blocked):
+def test_no_music_combination_is_blocked(music, entertainment):
+    """The removed rule blocked the first two. Kept as a regression guard so
+    the rule is not reintroduced: the wizard allows every one of these."""
     proposed = {"music": music}
     if entertainment is not None:
         proposed["entertainment"] = entertainment
-    assert (beo_rules.MUSIC_CONFLICT in beo_rules.validate(proposed).codes) is blocked
+    assert not beo_rules.validate(proposed).blocked
 
 
 def test_a_date_in_the_event_name_is_not_an_18th():
@@ -978,3 +1001,199 @@ def test_the_panel_does_not_render_on_a_superseded_draft(admin_client, db, loft)
     page = admin_client.get(f"/admin/bookings/{booking.id}/documents/{old.id}/edit").text
 
     assert "Proposed by Claude" not in page
+
+
+# --- regenerate must not silently destroy a human value ------------------------
+#
+# Aaron, 2026-09-06: "Silent loss of a declared allergy is the thing all of
+# this work exists to prevent." Regenerate was doing exactly that, proved
+# live before the fix: one click replaced "1x severe nut allergy (table 4)."
+# with the generator's default "No dietary requirements declared" and made
+# it version 2, with nothing shown to anyone.
+
+
+def _csrf(client, booking_id):
+    page = client.get(f"/admin/bookings/{booking_id}")
+    return re.search(r'name="csrf_token" value="([^"]+)"', page.text).group(1)
+
+
+def _regenerate(client, booking_id, csrf, doc_type="beo"):
+    return client.post(
+        f"/admin/bookings/{booking_id}/documents/{doc_type}/generate", data={"csrf_token": csrf}
+    )
+
+
+def test_regenerate_refuses_to_silently_replace_a_declared_allergy(admin_client, db, loft):
+    booking = _booking(db, loft, name="Regenerate Allergy")
+    _beo(db, booking, dietaries="1x severe nut allergy (table 4).")
+
+    resp = _regenerate(admin_client, booking.id, _csrf(admin_client, booking.id))
+
+    assert resp.status_code == 409
+    assert "1x severe nut allergy (table 4)." in resp.text
+    assert "No dietary requirements declared" in resp.text  # what it would become
+    db.expire_all()
+    current = documents_service.get_current(db, booking.id, DocumentType.beo)
+    assert current.version == 1, "the version must not have been written"
+    assert current.content["dietaries"] == "1x severe nut allergy (table 4)."
+
+
+def test_the_allergy_survives_when_the_default_choice_is_taken(admin_client, db, loft):
+    """Every box arrives ticked, so submitting the form untouched keeps
+    everything. The safe answer must require no action."""
+    booking = _booking(db, loft, name="Regenerate Keep")
+    _beo(db, booking, dietaries="1x severe nut allergy (table 4).", room_layout_notes="Rounds of 8.")
+
+    csrf = _csrf(admin_client, booking.id)
+    shown = _regenerate(admin_client, booking.id, csrf)
+    expect = re.search(r'name="expect" value="([^"]+)"', shown.text).group(1)
+    # The form as rendered: every checkbox is checked.
+    keep = re.findall(r'name="keep" value="([^"]+)" checked', shown.text)
+    assert set(keep) == {"dietaries", "room_layout_notes"}
+
+    resp = admin_client.post(
+        f"/admin/bookings/{booking.id}/documents/beo/generate/confirm",
+        data={"csrf_token": csrf, "expect": expect, "keep": keep},
+    )
+    assert resp.status_code in (200, 303)
+    db.expire_all()
+    current = documents_service.get_current(db, booking.id, DocumentType.beo)
+    assert current.version == 2, "a new version was still created"
+    assert current.content["dietaries"] == "1x severe nut allergy (table 4)."
+    assert current.content["room_layout_notes"] == "Rounds of 8."
+
+
+def test_unticking_a_field_lets_the_regenerated_value_through(admin_client, db, loft):
+    booking = _booking(db, loft, name="Regenerate Replace")
+    _beo(db, booking, dietaries="1x severe nut allergy (table 4).", room_layout_notes="Rounds of 8.")
+
+    csrf = _csrf(admin_client, booking.id)
+    shown = _regenerate(admin_client, booking.id, csrf)
+    expect = re.search(r'name="expect" value="([^"]+)"', shown.text).group(1)
+
+    # Keep the allergy, let the layout note be rebuilt.
+    resp = admin_client.post(
+        f"/admin/bookings/{booking.id}/documents/beo/generate/confirm",
+        data={"csrf_token": csrf, "expect": expect, "keep": ["dietaries"]},
+    )
+    assert resp.status_code in (200, 303)
+    db.expire_all()
+    current = documents_service.get_current(db, booking.id, DocumentType.beo)
+    assert current.content["dietaries"] == "1x severe nut allergy (table 4)."
+    assert "Rounds of 8." not in (current.content["room_layout_notes"] or "")
+
+
+def test_the_decision_is_recorded_field_by_field(admin_client, db, loft):
+    booking = _booking(db, loft, name="Regenerate Audit")
+    _beo(db, booking, dietaries="1x severe nut allergy (table 4).", room_layout_notes="Rounds of 8.")
+    csrf = _csrf(admin_client, booking.id)
+    shown = _regenerate(admin_client, booking.id, csrf)
+    expect = re.search(r'name="expect" value="([^"]+)"', shown.text).group(1)
+    admin_client.post(
+        f"/admin/bookings/{booking.id}/documents/beo/generate/confirm",
+        data={"csrf_token": csrf, "expect": expect, "keep": ["dietaries"]},
+    )
+    db.expire_all()
+    event = db.query(BookingEvent).filter_by(booking_id=booking.id, event_type="document_regenerated").one()
+    assert "kept Dietaries" in event.new_value
+    assert "replaced Room layout notes" in event.new_value
+    assert event.actor.startswith("staff:")
+
+
+def test_a_regenerate_with_nothing_to_lose_is_still_one_click(admin_client, db, loft):
+    """The ordinary case must not have grown a confirmation step."""
+    booking = _booking(db, loft, name="Regenerate Clean")
+    _beo(db, booking)  # placeholders only -- nothing a human wrote
+
+    resp = _regenerate(admin_client, booking.id, _csrf(admin_client, booking.id))
+
+    assert resp.status_code in (200, 303)
+    db.expire_all()
+    assert documents_service.get_current(db, booking.id, DocumentType.beo).version == 2
+
+
+def test_the_choice_is_refused_when_the_values_changed_underneath_it(admin_client, db, loft):
+    """Compare-and-set: between the screen and the submit, another approval
+    landed. The human answered a question about a value that is no longer
+    the one at risk, so the answer must not be applied."""
+    booking = _booking(db, loft, name="Regenerate Race")
+    doc = _beo(db, booking, dietaries="1x severe nut allergy (table 4).")
+    csrf = _csrf(admin_client, booking.id)
+    shown = _regenerate(admin_client, booking.id, csrf)
+    stale_expect = re.search(r'name="expect" value="([^"]+)"', shown.text).group(1)
+
+    documents_service.update_content_fields(
+        db, doc, {"dietaries": "1x severe nut allergy (table 4). 2x coeliac."}, actor="staff:someone_else"
+    )
+
+    resp = admin_client.post(
+        f"/admin/bookings/{booking.id}/documents/beo/generate/confirm",
+        data={"csrf_token": csrf, "expect": stale_expect, "keep": []},
+    )
+    assert resp.status_code == 409, "must re-ask, not write"
+    db.expire_all()
+    current = documents_service.get_current(db, booking.id, DocumentType.beo)
+    assert current.version == 1
+    assert "coeliac" in current.content["dietaries"], "the newer value is intact"
+
+
+def test_the_kept_value_comes_from_the_document_not_the_form(admin_client, db, loft):
+    """A value that travelled through a browser and back is not the one that
+    was approved. Only the field NAME is taken from the form."""
+    booking = _booking(db, loft, name="Regenerate Tamper")
+    _beo(db, booking, dietaries="1x severe nut allergy (table 4).")
+    csrf = _csrf(admin_client, booking.id)
+    shown = _regenerate(admin_client, booking.id, csrf)
+    expect = re.search(r'name="expect" value="([^"]+)"', shown.text).group(1)
+
+    resp = admin_client.post(
+        f"/admin/bookings/{booking.id}/documents/beo/generate/confirm",
+        data={
+            "csrf_token": csrf, "expect": expect, "keep": ["dietaries"],
+            # A tampered payload naming a value and a field outside the set.
+            "dietaries": "No dietary requirements declared",
+            "keep_value": "nothing to see",
+        },
+    )
+    assert resp.status_code in (200, 303)
+    db.expire_all()
+    current = documents_service.get_current(db, booking.id, DocumentType.beo)
+    assert current.content["dietaries"] == "1x severe nut allergy (table 4)."
+
+
+def test_an_approved_value_is_named_as_approved_on_the_screen(admin_client, db, loft, staff_user):
+    booking = _booking(db, loft, name="Regenerate Approved")
+    doc = _beo(db, booking)
+    proposal, _ = beo_proposals.propose(
+        db, booking, fields={"dietaries": "1x severe nut allergy (table 4)."},
+        source="client email 6 Sep", actor="ai:claude",
+    )
+    beo_proposals.approve_field(db, proposal.fields[0], actor=f"staff:{staff_user.email}")
+    db.expire_all()
+
+    resp = _regenerate(admin_client, booking.id, _csrf(admin_client, booking.id))
+
+    assert resp.status_code == 409
+    assert "approved by" in resp.text
+    assert staff_user.email in resp.text
+
+
+def test_the_protected_fields_cover_every_proposable_field():
+    """The two lists must not drift: a field a proposal can write is a field
+    a regenerate must not silently destroy."""
+    from app.services import document_regeneration
+
+    assert set(beo_rules.PROPOSABLE_FIELDS) <= set(document_regeneration.PROTECTED_TEXT_FIELDS)
+
+
+def test_a_generated_placeholder_is_not_treated_as_something_to_lose():
+    """[REVIEW] prompts and the dietaries default are what the generator
+    emits when nothing was captured. Keeping those would be keeping noise --
+    and the dietaries default is the very sentence that overwrote a real
+    allergy, so it must never count as worth protecting."""
+    from app.services import document_regeneration as dr
+
+    assert dr._is_disposable("[REVIEW] add room layout notes")
+    assert dr._is_disposable("No dietary requirements declared")
+    assert dr._is_disposable("")
+    assert not dr._is_disposable("1x severe nut allergy (table 4).")

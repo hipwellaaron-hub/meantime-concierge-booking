@@ -37,6 +37,7 @@ from app.services.contact_matching import (
     update_contact_details,
 )
 from app.services import beo_proposals as beo_proposals_service
+from app.services import document_regeneration
 from app.services import documents as documents_service
 from app.services import enquiry_classification
 from app.services import invoicing
@@ -528,6 +529,20 @@ def add_linked_space(
     return _redirect_to_detail(booking_id)
 
 
+def _fresh_document_content(db: Session, booking: Booking, doc_type: DocumentType) -> dict:
+    if doc_type == DocumentType.agreement:
+        return generate_agreement_content(booking)
+    session = booking.wizard_session
+    if session is not None and session.status == WizardSessionStatus.submitted:
+        # A completed wizard already has the client's real food/
+        # beverage/music/extras answers -- generating blind [REVIEW]
+        # placeholders instead would silently throw that away just
+        # because staff triggered this by hand rather than the client
+        # submitting (see app.services.wizard_generation).
+        return wizard_generation.build_beo_content_for_session(db, session)
+    return generate_beo_content(booking)
+
+
 @router.post("/{booking_id}/documents/{doc_type}/generate", dependencies=[Depends(require_csrf)])
 def generate_document(
     booking_id: uuid.UUID,
@@ -536,21 +551,83 @@ def generate_document(
     db: Session = Depends(get_db),
     staff: StaffUser = Depends(require_staff),
 ):
+    """Regenerating rebuilds the document from the booking. Where that
+    would destroy something a person wrote -- an approved allergy note, a
+    hand-edited instruction -- it stops and asks, naming every field.
+    Silent loss of a declared allergy is the thing this whole feature
+    exists to prevent (Aaron, 2026-09-06), and a regenerate was doing it.
+    Nothing else changes: with nothing to lose, this is the same one click
+    it has always been."""
     booking = _get_booking_or_404(db, booking_id)
-    if doc_type == DocumentType.agreement:
-        content = generate_agreement_content(booking)
-    else:
-        session = booking.wizard_session
-        if session is not None and session.status == WizardSessionStatus.submitted:
-            # A completed wizard already has the client's real food/
-            # beverage/music/extras answers -- generating blind [REVIEW]
-            # placeholders instead would silently throw that away just
-            # because staff triggered this by hand rather than the client
-            # submitting (see app.services.wizard_generation).
-            content = wizard_generation.build_beo_content_for_session(db, session)
-        else:
-            content = generate_beo_content(booking)
+    content = _fresh_document_content(db, booking, doc_type)
+    current = documents_service.get_current(db, booking.id, doc_type)
+    losses = document_regeneration.losses(db, current, content)
+    if losses:
+        return _render_regenerate_confirmation(request, db, booking, doc_type, current, losses, staff)
     documents_service.create_new_version(db, booking, doc_type, content, actor=_actor(staff))
+    return _redirect_to_detail(booking_id)
+
+
+def _render_regenerate_confirmation(request, db, booking, doc_type, current, losses, staff):
+    return templates.TemplateResponse(
+        request,
+        "admin/regenerate_confirm.html",
+        {
+            **admin_ctx(request, staff),
+            "booking": booking,
+            "doc_type": doc_type,
+            "document": current,
+            "losses": losses,
+            "expect": document_regeneration.fingerprint(losses),
+            "hand_edit": document_regeneration.was_hand_edited(db, current),
+        },
+        status_code=409,
+    )
+
+
+@router.post("/{booking_id}/documents/{doc_type}/generate/confirm", dependencies=[Depends(require_csrf)])
+def generate_document_confirmed(
+    booking_id: uuid.UUID,
+    doc_type: DocumentType,
+    request: Request,
+    expect: str = Form(...),
+    keep: list[str] = Form(default=[]),
+    db: Session = Depends(get_db),
+    staff: StaffUser = Depends(require_staff),
+):
+    """The decision, applied. Values for the kept fields are read from the
+    document at write time, never from the form -- a value that travelled
+    through a browser and back is not the one that was approved.
+
+    `expect` is a compare-and-set on the exact set of losses that was
+    shown. If another approval landed, or the booking changed, in the
+    seconds in between, the human was answering a question about different
+    values: re-ask rather than write."""
+    booking = _get_booking_or_404(db, booking_id)
+    content = _fresh_document_content(db, booking, doc_type)
+    current = documents_service.get_current(db, booking.id, doc_type)
+    losses = document_regeneration.losses(db, current, content)
+    if not losses:
+        # Whatever was at risk is no longer at risk. Nothing to decide.
+        documents_service.create_new_version(db, booking, doc_type, content, actor=_actor(staff))
+        return _redirect_to_detail(booking_id)
+    if document_regeneration.fingerprint(losses) != expect:
+        return _render_regenerate_confirmation(request, db, booking, doc_type, current, losses, staff)
+
+    keep_fields = {name for name in keep if name in document_regeneration.PROTECTED_TEXT_FIELDS}
+    merged = document_regeneration.apply_choices(content, current, keep_fields)
+    document = documents_service.create_new_version(db, booking, doc_type, merged, actor=_actor(staff))
+    db.add(
+        BookingEvent(
+            booking_id=booking.id,
+            event_type="document_regenerated",
+            field_name=f"{doc_type.value}_version",
+            old_value=str(current.version),
+            new_value=truncate(f"v{document.version}: " + document_regeneration.summarise(losses, keep_fields), 500),
+            actor=_actor(staff),
+        )
+    )
+    db.commit()
     return _redirect_to_detail(booking_id)
 
 

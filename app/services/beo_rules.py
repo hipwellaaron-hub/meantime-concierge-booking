@@ -27,9 +27,17 @@ Every rule comes from a real failure or a real house rule:
 - CLIENT_PROSE keeps the document a run sheet. "We have organised a
   cake" is the client's voice pasted through; the floor team needs
   "Cake: client supplying".
-- MUSIC_CONFLICT catches the default playlist line surviving alongside a
-  DJ, which is what a half-finished transcription looks like.
 - RSA_MISSING is a policy floor for an 18th with children on the booking.
+
+There is deliberately NO rule about a playlist alongside a DJ. One existed
+and was wrong: the wizard's music step is a multi-select whose own comment
+says "a playlist before/after a DJ set is a normal event", and
+wizard_generation.build_music_text composes BOTH lines when the client
+picks both. So the pattern this rule called a half-finished transcription
+is a correct Event Order for a real and common booking, and the rule
+refused to transcribe anything into Music for those clients. Two rules for
+one fact confuse whoever hits them (Aaron, 2026-09-06). The wizard is the
+authority on what a valid music answer looks like.
 
 Fail closed: validate() treats an unexpected error as a block.
 """
@@ -86,7 +94,6 @@ ERASES_VALUE = "erases_value"
 DROPS_DIETARY = "drops_dietary"
 DIETARY_CONTAMINATION = "dietary_contamination"
 CLIENT_PROSE = "client_prose"
-MUSIC_CONFLICT = "music_conflict"
 RSA_MISSING = "rsa_missing"
 RULES_ERROR = "rules_error"
 
@@ -152,13 +159,6 @@ _CLIENT_REQUEST = re.compile(
 # wizard_generation.MUSIC_TYPE_LINES["own_playlist"]) -- recognised by its
 # distinctive parts rather than the whole sentence, so a lightly reworded
 # copy still trips it.
-_DEFAULT_PLAYLIST_LINE = re.compile(
-    r"\bspotify\b.{0,200}\b(?:public|playlist\s+name|no\s+links?)\b|"
-    r"\b(?:public|playlist\s+name|no\s+links?)\b.{0,200}\bspotify\b",
-    re.IGNORECASE | re.DOTALL,
-)
-_DJ_MENTION = re.compile(r"(?<!\w)(?:djs?|d\.j\.|disc\s+jockeys?|deejays?)(?!\w)", re.IGNORECASE)
-
 # The RSA line an 18th's Event Order must carry. The term staff and the
 # agreement both use is "RSA"; anything that says it satisfies this.
 _RSA_LINE = re.compile(r"(?<!\w)r\.?s\.?a\.?(?!\w)|responsible\s+service\s+of\s+alcohol", re.IGNORECASE)
@@ -339,21 +339,6 @@ def _validate(
                     _excerpt(match),
                 )
             )
-
-    # Read music and entertainment together: once the wizard split them, a
-    # DJ belongs in either, and the template default lives in music.
-    music_effective = " \n".join(
-        normalise(proposed.get(name, current.get(name))) for name in ("music", "entertainment")
-    )
-    if ("music" in proposed or "entertainment" in proposed) and _DEFAULT_PLAYLIST_LINE.search(music_effective) \
-            and _DJ_MENTION.search(music_effective):
-        result.violations.append(
-            RuleViolation(
-                MUSIC_CONFLICT, "music",
-                "Music carries both the default Spotify playlist line and a DJ. One of them is left over from "
-                "the template; confirm which the client actually has.",
-            )
-        )
 
     if child_count > 0 and looks_like_eighteenth(event_type=event_type, event_name=event_name, notes=notes):
         effective_notes = normalise(proposed.get("special_notes", current.get("special_notes")))
