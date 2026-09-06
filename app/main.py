@@ -5,6 +5,7 @@ from starlette.responses import FileResponse, PlainTextResponse, RedirectRespons
 
 from app.admin_auth import NotAuthenticated
 from app.api.ai_read import router as ai_read_router
+from app.api.ai_write import router as ai_write_router
 from app.api.admin_auth import router as admin_auth_router
 from app.api.admin_bookings import router as admin_bookings_router
 from app.api.admin_calendar import router as admin_calendar_router
@@ -150,6 +151,7 @@ def browserconfig():
     return FileResponse("app/static/icons/browserconfig.xml", media_type="application/xml", headers=_ICON_CACHE)
 
 app.include_router(ai_read_router)
+app.include_router(ai_write_router)
 app.include_router(availability_router)
 app.include_router(health_router)
 app.include_router(documents_router)

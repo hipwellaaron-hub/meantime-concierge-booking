@@ -11,7 +11,17 @@ from sqlalchemy.orm import Session
 
 from app.admin_auth import admin_ctx, require_csrf, require_staff
 from app.database import get_db
-from app.models import Booking, BookingEvent, BookingVendor, Document, Invoice, Space, Venue
+from app.models import (
+    BeoProposal,
+    BeoProposalField,
+    Booking,
+    BookingEvent,
+    BookingVendor,
+    Document,
+    Invoice,
+    Space,
+    Venue,
+)
 from app.models.booking_vendor import VendorType
 from app.models.booking import BookingStatus, MinReductionReasonCode
 from app.models.document import DocumentStatus, DocumentType
@@ -26,6 +36,7 @@ from app.services.contact_matching import (
     find_or_create_contact,
     update_contact_details,
 )
+from app.services import beo_proposals as beo_proposals_service
 from app.services import documents as documents_service
 from app.services import enquiry_classification
 from app.services import invoicing
@@ -346,6 +357,10 @@ def booking_detail(
             enquiry_notification_failed=any(
                 e.event_type == "enquiry_notification_failed" for e in booking.events
             ) and booking.enquiry_notification_sent_at is None,
+            beo_proposal_waiting=len(beo_proposals_service.review_rows(db, booking_id)),
+            beo_proposal_document_id=(
+                d.id if (d := beo_proposals_service.current_draft_beo(db, booking_id)) is not None else None
+            ),
             first_touch_channel=summarize_channel(booking.first_touch_attribution),
             last_touch_channel=summarize_channel(booking.last_touch_attribution),
             touches_differ=booking.first_touch_attribution != booking.last_touch_attribution,
@@ -610,6 +625,9 @@ def edit_document_form(
         if document.type == DocumentType.agreement
         else "admin/document_edit_beo.html"
     )
+    proposal = (
+        beo_proposals_service.pending_proposal(db, booking_id) if document.type == DocumentType.beo else None
+    )
     return templates.TemplateResponse(
         request,
         template,
@@ -619,6 +637,12 @@ def edit_document_form(
             document=document,
             booking=document.booking,
             vendor_types=[vt.value for vt in VendorType],
+            # What the AI has proposed for this Event Order and has not yet
+            # had approved -- shown against the value each would replace.
+            beo_proposal=proposal if proposal is not None and proposal.is_reviewable else None,
+            beo_review_rows=beo_proposals_service.review_rows(db, booking_id)
+            if document.type == DocumentType.beo
+            else [],
         ),
     )
 
@@ -822,6 +846,87 @@ def save_document_edit(
         )
 
     documents_service.update_content(db, document, content, actor=_actor(staff))
+    return _redirect_to_detail(booking_id)
+
+
+# --- Event Order proposals: propose-and-approve --------------------------------
+#
+# The AI proposes values (app.api.ai_write); nothing reaches the document
+# until a staff member approves it here, field by field or all at once. The
+# textarea carries whatever Aaron actually wants written, so approving an
+# edited value is one action rather than approve-then-fix -- and the edit
+# is recorded, because it is the measure of whether the proposals are any
+# good.
+
+
+@router.post("/{booking_id}/beo-proposals/{proposal_id}/review", dependencies=[Depends(require_csrf)])
+def review_beo_proposal(
+    booking_id: uuid.UUID,
+    proposal_id: uuid.UUID,
+    request: Request,
+    action: str = Form(...),
+    value_catering_order_and_service_style: str = Form(default=""),
+    value_bar_structure: str = Form(default=""),
+    value_room_layout_notes: str = Form(default=""),
+    value_music: str = Form(default=""),
+    value_entertainment: str = Form(default=""),
+    value_dietaries: str = Form(default=""),
+    value_accessibility: str = Form(default=""),
+    value_decorations: str = Form(default=""),
+    value_special_notes: str = Form(default=""),
+    value_onsite_contact: str = Form(default=""),
+    db: Session = Depends(get_db),
+    staff: StaffUser = Depends(require_staff),
+):
+    _get_booking_or_404(db, booking_id)
+    proposal = db.get(BeoProposal, proposal_id)
+    if proposal is None or proposal.booking_id != booking_id:
+        raise HTTPException(status_code=404, detail="Proposal not found on this booking")
+
+    submitted = {
+        "catering_order_and_service_style": value_catering_order_and_service_style,
+        "bar_structure": value_bar_structure,
+        "room_layout_notes": value_room_layout_notes,
+        "music": value_music,
+        "entertainment": value_entertainment,
+        "dietaries": value_dietaries,
+        "accessibility": value_accessibility,
+        "decorations": value_decorations,
+        "special_notes": value_special_notes,
+        "onsite_contact": value_onsite_contact,
+    }
+
+    verb, _, target = action.partition(":")
+    try:
+        if verb == "approve_all":
+            beo_proposals_service.approve_all(db, proposal, actor=_actor(staff), values=submitted)
+        elif verb in ("approve", "reject"):
+            try:
+                field_id = uuid.UUID(target)
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail="Unknown proposal field") from exc
+            field_row = db.get(BeoProposalField, field_id)
+            if field_row is None or field_row.proposal_id != proposal.id:
+                raise HTTPException(status_code=404, detail="Proposal field not found on this proposal")
+            if verb == "approve":
+                beo_proposals_service.approve_field(
+                    db, field_row, actor=_actor(staff), value=submitted.get(field_row.field)
+                )
+            else:
+                beo_proposals_service.reject_field(db, field_row, actor=_actor(staff))
+        else:
+            raise HTTPException(status_code=422, detail="Unknown action")
+    except beo_proposals_service.ProposalError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        # documents.update_content refuses anything that is not a draft.
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    document = beo_proposals_service.current_draft_beo(db, booking_id)
+    if document is not None:
+        return RedirectResponse(
+            url=f"/admin/bookings/{booking_id}/documents/{document.id}/edit", status_code=303
+        )
     return _redirect_to_detail(booking_id)
 
 

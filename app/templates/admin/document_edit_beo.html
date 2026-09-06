@@ -10,6 +10,57 @@
   phone corrections never require sending them back through the wizard.
 </p>
 
+{% if beo_proposal and beo_review_rows %}
+{# Proposed values from the AI transcription layer. This form is separate
+   from the edit form below and posts to its own route: approving a field
+   writes only that field, and nothing here is applied until you press a
+   button. The textarea is the value that will be written -- edit it first
+   and the edit is recorded against the proposal, which is how we measure
+   whether the transcription is worth keeping. #}
+<div class="card" style="border-color: var(--gold);">
+  <h2>Proposed by Claude &mdash; {{ beo_review_rows | length }} field{{ "" if beo_review_rows | length == 1 else "s" }} awaiting approval</h2>
+  <p class="muted" style="margin:0 0 4px;">
+    From: {{ beo_proposal.source }}
+    &middot; {{ beo_proposal.created_at | sydney_time("%d %b %H:%M") }}
+    {% if beo_proposal.model %}&middot; {{ beo_proposal.model }}{% endif %}
+  </p>
+  <p class="muted" style="margin:0 0 14px; font-size:0.85rem;">
+    Nothing below has been applied. Approving writes that field to this draft Event Order; the food order,
+    the totals and the status are never proposable.
+  </p>
+
+  <form method="post" action="/admin/bookings/{{ booking.id }}/beo-proposals/{{ beo_proposal.id }}/review">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+    {% for row in beo_review_rows %}
+    <div style="border-top:1px solid var(--border); padding:14px 0;">
+      <label style="margin:0 0 6px;"><b>{{ row.label }}</b></label>
+
+      <p class="muted" style="margin:0 0 4px; font-size:0.8rem;">
+        {% if row.replaces_text %}Replaces what is on the Event Order now:{% else %}This field is currently empty.{% endif %}
+      </p>
+      {% if row.replaces_text %}
+      <pre style="margin:0 0 10px; padding:8px 10px; background:var(--bg); border:1px solid var(--border); border-radius:6px; white-space:pre-wrap; font-size:0.85rem; color:var(--muted);">{{ row.current }}</pre>
+      {% endif %}
+
+      <label style="margin:0 0 4px; font-size:0.85rem;">Proposed <span class="muted">(edit before approving if it is not quite right)</span></label>
+      <textarea name="value_{{ row.field }}" rows="3">{{ row.proposed }}</textarea>
+
+      <div style="margin-top:6px;">
+        <button class="btn" type="submit" name="action" value="approve:{{ row.id }}">Approve {{ row.label }}</button>
+        <button class="btn danger" type="submit" name="action" value="reject:{{ row.id }}">Reject</button>
+      </div>
+    </div>
+    {% endfor %}
+
+    <div style="border-top:1px solid var(--border); padding-top:14px;">
+      <button type="submit" name="action" value="approve_all">Approve all {{ beo_review_rows | length }}</button>
+      <span class="muted" style="font-size:0.85rem;">Writes every field above, using whatever the boxes say now.</span>
+    </div>
+  </form>
+</div>
+{% endif %}
+
 <form method="post" action="/admin/bookings/{{ booking.id }}/documents/{{ document.id }}/edit">
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
 

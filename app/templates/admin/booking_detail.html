@@ -76,6 +76,14 @@
 
 <details class="card">
   <summary class="section-summary">Traffic source</summary>
+  {% if beo_proposal_waiting %}
+  <p style="margin:0 0 10px;"><span class="badge gold">Event Order proposal waiting</span>
+    <span class="muted" style="font-size:0.85rem;">
+      {{ beo_proposal_waiting }} field(s) proposed by Claude.
+      {% if beo_proposal_document_id %}Review them on the <a href="/admin/bookings/{{ booking.id }}/documents/{{ beo_proposal_document_id }}/edit">Event Order</a>.
+      {% else %}Generate the Event Order to review them.{% endif %}
+    </span></p>
+  {% endif %}
   {% if not booking.first_touch_attribution and not booking.last_touch_attribution %}
   <p class="muted" style="margin:0;">Unknown -- not tracked. This booking was staff-entered, imported, or arrived by phone, so there was never a page load to capture attribution from.</p>
   {% else %}

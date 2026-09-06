@@ -356,6 +356,11 @@ class Booking(Base):
         remote_side=[id], back_populates="linked_bookings"
     )
     linked_bookings: Mapped[list["Booking"]] = relationship(back_populates="parent_booking")
+    # Proposed Event Order values awaiting approval, newest last. Nothing
+    # here has touched the document: see app.services.beo_proposals.
+    beo_proposals: Mapped[list["BeoProposal"]] = relationship(
+        back_populates="booking", cascade="all, delete-orphan", order_by="BeoProposal.created_at"
+    )
     vendors: Mapped[list["BookingVendor"]] = relationship(
         back_populates="booking", order_by="BookingVendor.created_at"
     )
