@@ -246,7 +246,15 @@ def test_the_placeholder_minimum_of_zero_no_longer_passes_everything(
     """The placeholder's standard_min_adults is 0, so a below-minimum
     enquiry used to sail through. It must be judged against the real
     rooms' minimums instead."""
+    # Deliberately not a Saturday: the Lounge is withheld on a Saturday
+    # night by design (draft_gate: it earns more as restaurant covers), so
+    # a bare "today + 68 days" made this assertion fail one day in seven --
+    # it broke on 2026-09-07, when the offset landed on Saturday 14 Nov,
+    # and passed again the next day. This test is about room minimums, not
+    # about which night it is.
     when = dt.date.today() + dt.timedelta(days=68)
+    while when.weekday() == 5:  # Saturday
+        when += dt.timedelta(days=1)
     # 5 guests clears nothing: Loft 60, Mezzanine 40, Lounge 0 but holds 35.
     b = _unassigned(db, unassigned_space, name="Tiny 40th", when=when, adults=5)
     decision = draft_gate.evaluate(db, b, adult_count=5, attendee_count=5)
