@@ -14,6 +14,11 @@ from app.services.enquiry_classification import looks_like_18th
 from app.utils import format_person_name
 from app.services.policy import STANDARD_DEPOSIT
 
+# The document never prints a blank Dietaries section: an empty value
+# reads as this sentence. The one definition -- the hand-edit form, the
+# regeneration placeholder check and an approved proposal all import it.
+NO_DIETARIES = "No dietary requirements declared"
+
 REVIEW = "[REVIEW]"
 
 # --- Master Policy v1.3 §3: client-facing contract terms --------------------
@@ -494,7 +499,7 @@ def generate_beo_content(
         "music_entertainment": (
             (music_entertainment or f"{REVIEW} add music/entertainment detail") if music is None else None
         ),
-        "dietaries": dietaries or "No dietary requirements declared",
+        "dietaries": dietaries or NO_DIETARIES,
         "accessibility": accessibility,
         "decorations": decorations,
         "status_text": status_text,

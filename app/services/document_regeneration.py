@@ -38,7 +38,7 @@ from sqlalchemy.orm import Session
 from app.models import BookingEvent, Document
 from app.models.beo_proposal import FIELD_APPROVED, BeoProposal, BeoProposalField
 from app.services import beo_rules
-from app.services.document_generation import REVIEW
+from app.services.document_generation import NO_DIETARIES, REVIEW
 
 logger = logging.getLogger(__name__)
 
@@ -113,7 +113,7 @@ _GENERATED_PLACEHOLDERS = frozenset({
     f"{REVIEW} add bar structure",
     f"{REVIEW} add room layout notes",
     f"{REVIEW} add music/entertainment detail",
-    "No dietary requirements declared",
+    NO_DIETARIES,
 })
 
 

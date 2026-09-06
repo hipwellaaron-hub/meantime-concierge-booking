@@ -46,6 +46,7 @@ from app.services import wizard as wizard_service
 from app.services import wizard_generation
 from app.services.attribution import summarize_channel
 from app.services.document_generation import (
+    NO_DIETARIES,
     REVIEW,
     build_event_timeline,
     build_total_food_spend,
@@ -929,7 +930,7 @@ def save_document_edit(
         content["entertainment"] = entertainment.strip() or None
         content["music_entertainment"] = music_entertainment.strip() or None
         content["special_notes"] = special_notes.strip()
-        content["dietaries"] = dietaries.strip() or "No dietary requirements declared"
+        content["dietaries"] = dietaries.strip() or NO_DIETARIES
         content["accessibility"] = accessibility.strip() or None
         content["decorations"] = decorations.strip() or None
         content["status_text"] = status_text.strip() or None

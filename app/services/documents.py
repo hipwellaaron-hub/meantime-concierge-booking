@@ -168,9 +168,17 @@ def update_content(db: Session, document: Document, content: dict, *, actor: str
     return document
 
 
-def update_content_fields(db: Session, document: Document, changes: dict, *, actor: str) -> Document:
+def update_content_fields(
+    db: Session, document: Document, changes: dict, *, actor: str, event_type: str = "document_edited"
+) -> Document:
     """Merge specific keys into a draft's content, reading it AFTER the row
     lock is taken.
+
+    `event_type` names what kind of change this was. The default is a
+    hand-edit; an approval applying an AI proposal passes its own, because
+    "document_edited" is what the regenerate screen reads as "a person
+    typed into this version" -- and an approval is not that (ultrareview,
+    2026-09-06: every approval was making the screen claim a hand-edit).
 
     update_content above takes a whole content dict the caller built from
     an earlier read, so two callers editing different keys last-write-wins
@@ -189,7 +197,7 @@ def update_content_fields(db: Session, document: Document, changes: dict, *, act
     db.add(
         BookingEvent(
             booking_id=document.booking_id,
-            event_type="document_edited",
+            event_type=event_type,
             field_name=f"{document.type.value}_version",
             new_value=str(document.version),
             actor=actor,

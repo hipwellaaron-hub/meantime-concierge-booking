@@ -30,7 +30,7 @@ import datetime as dt
 import logging
 import uuid
 
-from sqlalchemy import select, text
+from sqlalchemy import select, update, text
 from sqlalchemy.orm import Session
 
 from app.models import Booking, BookingEvent
@@ -48,6 +48,7 @@ from app.models.beo_proposal import (
     BeoProposalField,
 )
 from app.models.document import Document, DocumentStatus, DocumentType
+from app.services.document_generation import NO_DIETARIES, REVIEW
 from app.services import beo_rules, documents as documents_service
 from app.services.booking import VOIDED_STATUSES
 
@@ -55,9 +56,9 @@ logger = logging.getLogger(__name__)
 
 # The document never prints a blank Dietaries section: an empty value
 # reads as this sentence, so "nothing declared" is a statement rather
-# than an oversight. One definition, used by the hand-edit form and by
-# an approved proposal alike.
-NO_DIETARIES = "No dietary requirements declared"
+# than an oversight. One definition, in the generator that writes it
+# first; the hand-edit form, the regenerate placeholder check and an
+# approved proposal all import it (see NO_DIETARIES below).
 
 # Fields the document stores as None when empty, rather than "".
 _NULLABLE_WHEN_EMPTY = ("music", "entertainment", "accessibility", "decorations", "onsite_contact")
@@ -151,31 +152,80 @@ def _supersede_older(db: Session, booking_id: uuid.UUID, *, actor: str) -> None:
     """A newer ask replaces whatever was still pending. Fields already
     approved or rejected keep their state and their audit trail; a field
     that is dropped without ever being seen gets its own audit row, so
-    the timeline can explain where a proposed value went."""
+    the timeline can explain where a proposed value went.
+
+    Both writes are compare-and-set in SQL, not read-then-set in Python.
+    The advisory lock serialises proposes with each other only; an
+    approval runs under a row lock this function never took, so a Python
+    check of `state == pending` could read pending, block on the
+    approval's row lock, and then overwrite the just-committed "approved"
+    the instant it released -- leaving a field that was applied to the
+    document recorded as superseded, invisible to every count of
+    approvals, which is the one measure this feature exists to produce
+    (ultrareview, 2026-09-06). `WHERE state = 'pending'` is re-evaluated
+    by Postgres after the lock is granted, so an approved row is skipped.
+    """
+    now = dt.datetime.now(dt.timezone.utc)
     older = db.scalars(
         select(BeoProposal).where(
             BeoProposal.booking_id == booking_id, BeoProposal.status == STATUS_PENDING
         )
     ).all()
     for proposal in older:
-        for field_row in proposal.fields:
-            if field_row.state == FIELD_PENDING:
-                field_row.state = FIELD_SUPERSEDED
-                db.add(
-                    BookingEvent(
-                        booking_id=booking_id,
-                        event_type="beo_proposal_superseded",
-                        field_name=field_row.field,
-                        old_value=field_row.proposed_value or None,
-                        actor=actor,
-                    )
+        dropped = db.execute(
+            update(BeoProposalField)
+            .where(BeoProposalField.proposal_id == proposal.id, BeoProposalField.state == FIELD_PENDING)
+            .values(state=FIELD_SUPERSEDED)
+            .returning(BeoProposalField.field, BeoProposalField.proposed_value)
+            .execution_options(synchronize_session=False)
+        ).all()
+        for field_name, proposed_value in dropped:
+            db.add(
+                BookingEvent(
+                    booking_id=booking_id,
+                    event_type="beo_proposal_superseded",
+                    field_name=field_name,
+                    old_value=proposed_value or None,
+                    actor=actor,
                 )
-        proposal.status = STATUS_SUPERSEDED
-        proposal.resolved_at = dt.datetime.now(dt.timezone.utc)
+            )
+        # The parent row the same way: an approval that resolved this
+        # proposal in the meantime must keep "resolved", not be relabelled.
+        db.execute(
+            update(BeoProposal)
+            .where(BeoProposal.id == proposal.id, BeoProposal.status == STATUS_PENDING)
+            .values(status=STATUS_SUPERSEDED, resolved_at=now)
+            .execution_options(synchronize_session=False)
+        )
+        # The ORM copies were read before the SQL ran; drop them so nothing
+        # later flushes a stale state over what the database now holds.
+        for field_row in proposal.fields:
+            db.expire(field_row)
+        db.expire(proposal)
 
 
-def _rule_context(booking: Booking) -> dict:
+def _printed_legacy_music(content: dict) -> str | None:
+    """The older merged music/entertainment value, but only when it is
+    what the Event Order actually prints: the template shows `music` if
+    there is one and falls back to the merged field otherwise. A merged
+    value behind a split `music` is dead weight, and the generator's own
+    "[REVIEW] add music/entertainment detail" prompt is not a value a
+    person wrote -- treating either as legacy text refused every proposal
+    that touched Music on a freshly generated Event Order."""
+    if content.get("music"):
+        return None
+    legacy = content.get("music_entertainment")
+    if not isinstance(legacy, str) or not legacy.strip() or legacy.lstrip().startswith(REVIEW):
+        return None
+    return legacy
+
+
+def _rule_context(booking: Booking, document: Document | None = None) -> dict:
+    content = (document.content if document is not None else None) or {}
     return {
+        # The older merged field, so LEGACY_MUSIC_SPLIT can refuse a Music
+        # write that would drop the entertainment half of it.
+        "legacy_music_entertainment": _printed_legacy_music(content),
         "event_type": booking.event_type,
         "event_name": booking.event_name,
         "notes": booking.notes,
@@ -208,7 +258,7 @@ def propose(
     proposed = {name: normalise_newlines(value).strip() for name, value in (fields or {}).items()}
     current = current_values(document)
 
-    result = beo_rules.validate(proposed, current=current, **_rule_context(booking))
+    result = beo_rules.validate(proposed, current=current, **_rule_context(booking, document))
 
     if not result.blocked:
         # Before the insert, so a partial unique index on "one pending
@@ -308,10 +358,10 @@ def _claim(db: Session, field_row: BeoProposalField) -> None:
         )
 
 
-def _check_on_approval(booking: Booking, changes: dict[str, str], current: dict[str, str]) -> None:
+def _check_on_approval(document: Document, changes: dict[str, str], current: dict[str, str]) -> None:
     """The house rules, on the values actually being written. The box is
     editable, so this is the check that cannot be pasted past."""
-    result = beo_rules.validate(changes, current=current, **_rule_context(booking))
+    result = beo_rules.validate(changes, current=current, **_rule_context(document.booking, document))
     if result.blocked:
         raise ProposalError(result.as_note())
 
@@ -334,6 +384,8 @@ def _apply(
         if field_row.field == "music":
             # The merged legacy field is what the edit form clears on save;
             # leaving it behind would let it out-rank the value approved.
+            # LEGACY_MUSIC_SPLIT has already refused a write that would drop
+            # the entertainment half of it; this clear is safe by then.
             changes["music_entertainment"] = None
         field_row.state = FIELD_APPROVED
         field_row.previous_value = previous_values[field_row.field]
@@ -364,7 +416,11 @@ def _apply(
                 )
             )
     _resolve_if_complete(proposal)
-    return documents_service.update_content_fields(db, document, changes, actor=actor)
+    # Its own event type: "document_edited" is what the regenerate screen
+    # reads as a hand-edit, and an approval is not one.
+    return documents_service.update_content_fields(
+        db, document, changes, actor=actor, event_type="beo_proposal_applied"
+    )
 
 
 def approve_field(
@@ -380,7 +436,7 @@ def approve_field(
     document = _locked_draft(db, proposal.booking_id)
     _claim(db, field_row)
     applied = field_row.proposed_value if value is None else normalise_newlines(value)
-    _check_on_approval(document.booking, {field_row.field: applied}, current_values(document))
+    _check_on_approval(document, {field_row.field: applied}, current_values(document))
     return _apply(db, document, proposal, [(field_row, applied)], actor=actor)
 
 
@@ -423,7 +479,7 @@ def approve_all(
             (field_row, field_row.proposed_value if submitted is None else normalise_newlines(submitted))
         )
     _check_on_approval(
-        document.booking, {row.field: applied for row, applied in decisions}, current_values(document)
+        document, {row.field: applied for row, applied in decisions}, current_values(document)
     )
     return _apply(db, document, proposal, decisions, actor=actor)
 

@@ -798,6 +798,99 @@ def test_two_approvals_at_the_same_moment_both_survive():
         check.close()
 
 
+def test_an_approval_in_flight_is_not_overwritten_by_a_new_proposal():
+    """Found by the review of this branch: _supersede_older read the
+    pending fields without a lock, so a proposal arriving while Aaron
+    was approving a field would block behind his row lock at commit and
+    then write SUPERSEDED over APPROVED -- the document kept the value
+    while the record said it was never applied. Real sessions: A holds
+    the field row lock the way approve_field does, B proposes while A
+    holds it, A approves and commits, B must then see the approval."""
+    import time
+
+    from sqlalchemy import text as sql_text
+
+    from app.models import Contact
+    from app.models.document import DocumentType
+    from app.seed import seed as seed_hamilton
+    from app.services import documents as documents_service
+    from app.services.booking import create_booking
+    from app.services.document_generation import generate_beo_content
+    from tests.conftest import TestSessionLocal
+
+    setup = TestSessionLocal()
+    venue = seed_hamilton(setup)
+    space = next(s for s in venue.spaces if s.is_bookable)
+    email = f"race2.beo.{uuid.uuid4().hex[:8]}@example.com"
+    contact = Contact(name="Race BEO 2", email=email)
+    setup.add(contact)
+    setup.flush()
+    booking = create_booking(
+        setup, space_id=space.id, contact_id=contact.id, event_date=dt.date(2027, 5, 21),
+        start_time=dt.time(18, 0), end_time=dt.time(23, 0), event_name=f"Race BEO 2 {uuid.uuid4().hex[:6]}",
+        event_type="corporate", adult_count=40, child_count=0, notes=None, actor="test",
+    )
+    documents_service.create_new_version(
+        setup, booking, DocumentType.beo, generate_beo_content(booking), actor="staff:test"
+    )
+    first, _ = beo_proposals.propose(
+        setup, booking, fields=CLEAN, source="race email one", actor="ai:claude"
+    )
+    booking_id = booking.id
+    dietaries_id = next(f.id for f in first.fields if f.field == "dietaries")
+    setup.close()
+
+    errors = {}
+    session_a = TestSessionLocal()
+    row = session_a.get(BeoProposalField, dietaries_id)
+    session_a.refresh(row, with_for_update=True)          # A is mid-approval: the row is his
+
+    def propose_second():
+        session_b = TestSessionLocal()
+        try:
+            b_booking = session_b.get(type(booking), booking_id)
+            beo_proposals.propose(
+                session_b, b_booking, fields={"music": "Acoustic duo from 7pm."},
+                source="race email two", actor="ai:claude",
+            )
+        except Exception as exc:  # noqa: BLE001
+            errors["b"] = exc
+        finally:
+            session_b.close()
+
+    thread = threading.Thread(target=propose_second)
+    thread.start()
+    time.sleep(0.5)                                          # B is now waiting on A's lock (or, unfixed, has read PENDING)
+    try:
+        beo_proposals.approve_field(session_a, row, actor="staff:a")
+    except Exception as exc:  # noqa: BLE001
+        errors["a"] = exc
+    finally:
+        session_a.close()
+    thread.join(timeout=10)
+
+    check = TestSessionLocal()
+    try:
+        assert not errors, errors
+        field = check.get(BeoProposalField, dietaries_id)
+        assert field.state == FIELD_APPROVED, "the approval that committed first is the record"
+        superseded_dietaries = [
+            e for e in check.query(BookingEvent).filter_by(booking_id=booking_id)
+            if e.event_type == "beo_proposal_superseded" and e.field_name == "dietaries"
+        ]
+        assert superseded_dietaries == [], "no audit row may claim an applied field was dropped"
+        document = beo_proposals.current_draft_beo(check, booking_id)
+        assert document.content["dietaries"] == CLEAN["dietaries"]
+        assert beo_proposals.pending_proposal(check, booking_id).source == "race email two"
+    finally:
+        check.execute(sql_text("SET LOCAL app.allow_booking_purge='on'"))
+        target = check.get(type(booking), booking_id)
+        if target is not None:
+            from app.services.booking import delete_booking_and_dependents
+            delete_booking_and_dependents(check, target, actor="staff:test")
+        check.close()
+
+
 def test_only_one_proposal_is_ever_pending(db, loft):
     booking = _booking(db, loft)
     _beo(db, booking)
@@ -1691,3 +1784,159 @@ def test_a_booking_with_no_proposal_sees_no_warning(admin_client, db, loft):
 
     assert resp.status_code == 409
     assert "not been reviewed yet" not in resp.text
+
+
+# --- ultrareview 2026-09-06: the three findings ---------------------------------
+
+
+MERGED = "DJ 8pm + Magician from 9pm"
+
+
+def _legacy_beo(db, booking):
+    """An older Event Order: one merged music/entertainment value and no
+    split fields, which is what every pre-wizard document looks like."""
+    return _beo(db, booking, music=None, entertainment=None, music_entertainment=MERGED)
+
+
+def test_approving_music_alone_on_a_legacy_event_order_is_refused(db, loft):
+    """The template prints the merged value under Music until a split
+    `music` exists; approving Music alone clears it, and the magician was
+    gone from the printed run sheet."""
+    booking = _booking(db, loft, name="Legacy Music")
+    _legacy_beo(db, booking)
+    proposal, result = beo_proposals.propose(
+        db, booking, fields={"music": "DJ 8pm"}, source="client email", actor="ai:claude"
+    )
+    assert result.blocked
+    assert beo_rules.LEGACY_MUSIC_SPLIT in result.codes
+    # The merged value travels as the violation's excerpt -- that is what
+    # the 422 hands the model, so it can see exactly what it must carry.
+    assert [v.excerpt for v in result.violations if v.code == beo_rules.LEGACY_MUSIC_SPLIT] == [MERGED]
+    assert "Entertainment" in result.as_note()
+
+
+@pytest.mark.parametrize("fields", [
+    {"music": "DJ 8pm", "entertainment": "Magician from 9pm"},   # the split, done properly
+    {"music": MERGED},                                          # Music carries the whole value
+    {"entertainment": "Magician from 9pm"},                     # Entertainment on its own is never lossy
+])
+def test_a_legacy_event_order_accepts_a_split_that_loses_nothing(db, loft, fields):
+    booking = _booking(db, loft, name="Legacy Music OK")
+    _legacy_beo(db, booking)
+    _, result = beo_proposals.propose(db, booking, fields=fields, source="client email", actor="ai:claude")
+    assert not result.blocked, result.codes
+
+
+def test_the_legacy_rule_ignores_the_generators_own_placeholder(db, loft):
+    """Every freshly generated Event Order carries the [REVIEW] prompt in
+    the merged field. That is not a value anyone wrote, and counting it
+    refused every proposal that touched Music (found when the rule first
+    landed: four tests, one cause)."""
+    booking = _booking(db, loft, name="Placeholder Music")
+    doc = _beo(db, booking)
+    assert doc.content["music_entertainment"].startswith("[REVIEW]")
+    _, result = beo_proposals.propose(db, booking, fields={"music": "DJ 8pm"}, source="client email", actor="ai:claude")
+    assert not result.blocked, result.codes
+
+
+def test_the_legacy_rule_is_dormant_once_music_is_split(db, loft):
+    """A merged value behind a split `music` is not printed, so clearing it
+    loses nothing visible."""
+    booking = _booking(db, loft, name="Split Already")
+    _beo(db, booking, music="Playlist.", entertainment=None, music_entertainment=MERGED)
+    _, result = beo_proposals.propose(db, booking, fields={"music": "DJ 8pm"}, source="client email", actor="ai:claude")
+    assert not result.blocked, result.codes
+
+
+def test_the_legacy_rule_runs_at_approval_too(db, loft):
+    """The box is editable: a clean proposal can be edited into the lossy
+    shape at the moment of approval, so the rule must run there."""
+    booking = _booking(db, loft, name="Legacy At Approval")
+    _legacy_beo(db, booking)
+    proposal, result = beo_proposals.propose(
+        db, booking, fields={"music": MERGED}, source="client email", actor="ai:claude"
+    )
+    assert not result.blocked
+    with pytest.raises(beo_proposals.ProposalError, match="Entertainment"):
+        beo_proposals.approve_field(db, proposal.fields[0], actor="staff:aaron", value="DJ 8pm")
+    db.expire_all()
+    current = beo_proposals.current_draft_beo(db, booking.id)
+    assert current.content["music_entertainment"] == MERGED, "nothing was cleared"
+
+
+def test_approving_entertainment_first_then_music_is_the_documented_way_through(db, loft):
+    booking = _booking(db, loft, name="Legacy Two Step")
+    _legacy_beo(db, booking)
+    proposal, result = beo_proposals.propose(
+        db, booking, fields={"music": "DJ 8pm", "entertainment": "Magician from 9pm"},
+        source="client email", actor="ai:claude",
+    )
+    assert not result.blocked
+    rows = {f.field: f for f in proposal.fields}
+    beo_proposals.approve_field(db, rows["entertainment"], actor="staff:aaron")
+    beo_proposals.approve_field(db, rows["music"], actor="staff:aaron")
+    db.expire_all()
+    content = beo_proposals.current_draft_beo(db, booking.id).content
+    assert content["music"] == "DJ 8pm"
+    assert content["entertainment"] == "Magician from 9pm"
+    assert content["music_entertainment"] is None
+
+
+def test_an_approval_is_not_reported_as_a_hand_edit(admin_client, db, loft, staff_user):
+    """Approvals went through update_content_fields, which wrote the same
+    document_edited event a hand-edit does, so the regenerate screen told
+    Aaron the draft was hand-edited by the approver -- next to a badge
+    saying the same value was approved by the approver."""
+    from app.services import document_regeneration as dr
+
+    booking = _booking(db, loft, name="Not A Hand Edit")
+    doc = _beo(db, booking)
+    proposal, _ = beo_proposals.propose(
+        db, booking, fields={"dietaries": "1x severe nut allergy (table 4)."},
+        source="client email 6 Sep", actor="ai:claude",
+    )
+    beo_proposals.approve_field(db, proposal.fields[0], actor=f"staff:{staff_user.email}")
+    db.expire_all()
+
+    assert dr.was_hand_edited(db, doc) is None
+    applied = db.query(BookingEvent).filter_by(booking_id=booking.id, event_type="beo_proposal_applied").count()
+    assert applied == 1
+
+    resp = _regenerate(admin_client, booking.id, _csrf(admin_client, booking.id))
+    assert resp.status_code == 409
+    assert "approved by" in resp.text
+    assert "hand-edited" not in resp.text
+
+
+def test_a_real_hand_edit_is_still_reported(admin_client, db, loft):
+    booking = _booking(db, loft, name="Real Hand Edit")
+    doc = _beo(db, booking)
+    documents_service.update_content_fields(
+        db, doc, {"dietaries": "1x severe nut allergy (table 4)."}, actor="staff:aaron"
+    )
+    db.expire_all()
+    resp = _regenerate(admin_client, booking.id, _csrf(admin_client, booking.id))
+    assert resp.status_code == 409
+    assert "hand-edited by staff:aaron" in resp.text
+
+
+def test_a_proposal_resolved_by_an_approval_is_not_relabelled_superseded(db, loft):
+    """The parent row is compare-and-set as well as the fields. A proposal
+    whose every field was approved is RESOLVED, and a later proposal must
+    not rewrite that to SUPERSEDED: it superseded nothing."""
+    booking = _booking(db, loft, name="Resolved Stays")
+    _beo(db, booking)
+    first, _ = beo_proposals.propose(
+        db, booking, fields={"dietaries": "1x severe nut allergy (table 4)."},
+        source="email one", actor="ai:claude",
+    )
+    beo_proposals.approve_field(db, first.fields[0], actor="staff:aaron")
+    db.expire_all()
+    assert first.status == STATUS_RESOLVED
+
+    second, _ = beo_proposals.propose(db, booking, fields={"music": "DJ 8pm"}, source="email two", actor="ai:claude")
+    db.expire_all()
+    assert first.status == STATUS_RESOLVED
+    assert first.fields[0].state == FIELD_APPROVED
+    assert second.status == STATUS_PENDING
+    assert db.query(BookingEvent).filter_by(booking_id=booking.id, event_type="beo_proposal_superseded").count() == 0

@@ -28,6 +28,13 @@ Every rule comes from a real failure or a real house rule:
   cake" is the client's voice pasted through; the floor team needs
   "Cake: client supplying".
 - RSA_MISSING is a policy floor for an 18th with children on the booking.
+- LEGACY_MUSIC_SPLIT: older Event Orders carry ONE merged
+  music_entertainment value, and the template prints it under Music until
+  a split `music` exists. Approving Music alone clears the merged field,
+  so whatever part of it was entertainment vanishes from the printed run
+  sheet -- "DJ 8pm + Magician from 9pm" becomes "DJ 8pm" and the magician
+  is gone (ultrareview, 2026-09-06). Blocked unless Entertainment is
+  written too, already holds text, or Music carries the whole value.
 
 There is deliberately NO rule about a playlist alongside a DJ. One existed
 and was wrong: the wizard's music step is a multi-select whose own comment
@@ -94,6 +101,7 @@ ERASES_VALUE = "erases_value"
 DROPS_DIETARY = "drops_dietary"
 DIETARY_CONTAMINATION = "dietary_contamination"
 CLIENT_PROSE = "client_prose"
+LEGACY_MUSIC_SPLIT = "legacy_music_split"
 RSA_MISSING = "rsa_missing"
 RULES_ERROR = "rules_error"
 
@@ -199,6 +207,11 @@ class RuleResult:
         return " ".join(v.message for v in self.warnings)
 
 
+def _excerpt_text(text: str, width: int = 80) -> str:
+    text = " ".join(text.split())
+    return text if len(text) <= width else text[: width - 1] + "\u2026"
+
+
 def _excerpt(match: re.Match) -> str:
     return match.group(0).strip()[:120]
 
@@ -226,6 +239,7 @@ def validate(
     event_name: str | None = None,
     notes: str | None = None,
     child_count: int = 0,
+    legacy_music_entertainment: str | None = None,
 ) -> RuleResult:
     """Check field values against the house rules.
 
@@ -242,6 +256,7 @@ def validate(
             event_name=event_name,
             notes=notes,
             child_count=child_count,
+            legacy_music_entertainment=legacy_music_entertainment,
         )
     except Exception:  # noqa: BLE001 -- fail closed
         logger.exception("Event Order proposal validation failed")
@@ -260,8 +275,26 @@ def _validate(
     event_name: str | None,
     notes: str | None,
     child_count: int,
+    legacy_music_entertainment: str | None = None,
 ) -> RuleResult:
     result = RuleResult()
+
+    legacy = normalise(legacy_music_entertainment).strip()
+    if legacy and "music" in proposed:
+        # After this write, is there an Entertainment value at all?
+        entertainment_after = normalise(proposed.get("entertainment", current.get("entertainment"))).strip()
+        music_after = normalise(proposed.get("music")).strip()
+        if not entertainment_after and music_after != legacy:
+            result.violations.append(
+                RuleViolation(
+                    LEGACY_MUSIC_SPLIT, "music",
+                    "This Event Order still carries the older merged Music & entertainment value, and "
+                    "approving Music alone would drop whatever part of it is entertainment. Propose "
+                    "Music and Entertainment together (or approve Entertainment first), or make Music "
+                    "carry the whole of it.",
+                    _excerpt_text(legacy),
+                )
+            )
 
     if not proposed:
         result.violations.append(
