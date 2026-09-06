@@ -7,3 +7,7 @@ __pycache__/
 htmlcov/
 *.egg-info/
 .claude/
+
+# Marketing-site build (separate repo + its build archives), not the Concierge app
+website/
+meantime-website-*.zip
