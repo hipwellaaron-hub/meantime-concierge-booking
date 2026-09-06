@@ -256,11 +256,16 @@ def create_enquiry_booking(
     with _enquiry_submission_lock(db, email):
         # The strongest identity first: the same form submission (a retry
         # after a lost response, a double click, a concurrent repeat) is
-        # the same enquiry whatever the clock says.
+        # the same enquiry whatever the clock says -- but only while it IS
+        # the same submission. A visitor who goes Back, changes the date or
+        # the email and submits again has made a new enquiry, and the id
+        # the browser kept must not hand them the old one (review).
         if submission_id is not None:
             same_submission = db.scalar(select(Booking).where(Booking.submission_id == submission_id))
             if same_submission is not None:
-                return same_submission, [], False
+                if _same_submission_content(same_submission, email=email, event_name=event_name, event_date=event_date):
+                    return same_submission, [], False
+                submission_id = None
 
         contact, duplicate_candidates = find_or_create_contact(db, full_name, email, phone)
 
@@ -286,10 +291,9 @@ def create_enquiry_booking(
             actor=actor,
             first_touch_attribution=first_touch_attribution,
             last_touch_attribution=last_touch_attribution,
+            submission_id=submission_id,
+            tracking_context=tracking_context,
         )
-        booking.submission_id = submission_id
-        booking.tracking_context = tracking_context
-        db.commit()
         # classify_and_flag writes each flag as its own "enquiry_flagged"
         # BookingEvent (surfaced on Triage and the booking page) -- nothing
         # downstream needs its return value any more, since the enquiry
@@ -330,6 +334,8 @@ def _create_enquiry_booking_locked(
     actor: str,
     first_touch_attribution: dict | None,
     last_touch_attribution: dict | None,
+    submission_id: uuid.UUID | None = None,
+    tracking_context: dict | None = None,
 ) -> Booking:
     unassigned_space_id = ivvy_import.get_unassigned_space_id(db, venue)
 
@@ -379,6 +385,17 @@ def _create_enquiry_booking_locked(
         lead_referrer=lead_referrer,
         first_touch_attribution=first_touch_attribution,
         last_touch_attribution=last_touch_attribution,
+        submission_id=submission_id,
+        tracking_context=tracking_context,
+    )
+
+
+def _same_submission_content(booking: Booking, *, email: str, event_name: str, event_date: dt.date | None) -> bool:
+    contact_email = (booking.contact.email if booking.contact else "") or ""
+    return (
+        contact_email.strip().lower() == (email or "").strip().lower()
+        and (booking.event_name or "") == (event_name or "")
+        and booking.event_date == event_date
     )
 
 

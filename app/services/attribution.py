@@ -20,6 +20,7 @@ to decide.
 import base64
 import datetime as dt
 import json
+import re
 import uuid
 from collections import Counter
 from typing import Mapping
@@ -100,6 +101,11 @@ def build_touch(raw: dict) -> dict:
     bundle["referrer_category"] = classify_referrer(referrer)
     captured_at = raw.get("captured_at")
     bundle["captured_at"] = captured_at if isinstance(captured_at, str) else dt.datetime.now(dt.timezone.utc).isoformat()
+    # Provenance, for the staff panel: which cookie a touch came from, or
+    # nothing for a touch the enquiry page captured itself.
+    source = raw.get("source")
+    if isinstance(source, str) and source:
+        bundle["source"] = source[:40]
     return bundle
 
 
@@ -159,8 +165,21 @@ _META_CLICK_COOKIE = "_fbc"
 _SITE_TOUCH_COOKIES = ("mt_touch_first", "mt_touch_last")
 
 
-def _iso(ts: float) -> str:
-    return dt.datetime.fromtimestamp(ts, tz=dt.timezone.utc).isoformat()
+# A unix timestamp as the linker cookies write it: ASCII digits only, at
+# most 13 (millis until year 2286). str.isdigit() accepts superscript
+# digits that int() then rejects, and a 4,000-digit run trips Python's
+# int-conversion limit; both were 500s on the enquiry POST (review).
+_UNIX_DIGITS = re.compile(r"^[0-9]{1,13}$")
+
+
+def _iso(raw_ts: str, *, millis: bool = False) -> str | None:
+    if not _UNIX_DIGITS.match(raw_ts):
+        return None
+    try:
+        ts = int(raw_ts) / (1000 if millis else 1)
+        return dt.datetime.fromtimestamp(ts, tz=dt.timezone.utc).isoformat()
+    except (OverflowError, OSError, ValueError):
+        return None
 
 
 def _decode_site_touch(raw: str) -> dict | None:
@@ -179,20 +198,27 @@ def touches_from_cookies(cookies: Mapping[str, str]) -> list[dict]:
     reconcile_touches orders them by time."""
     touches: list[dict] = []
     for cookie, field in _LINKER_COOKIES.items():
-        raw = (cookies.get(cookie) or "").strip()
+        raw = (cookies.get(cookie) or "").strip()[:MAX_FIELD_LENGTH]
         parts = raw.split(".", 2)
-        if len(parts) == 3 and parts[0] == "GCL" and parts[1].isdigit() and parts[2]:
-            touches.append(build_touch({field: parts[2], "captured_at": _iso(int(parts[1]))}))
-    raw = (cookies.get(_META_CLICK_COOKIE) or "").strip()
+        if len(parts) == 3 and parts[0] == "GCL" and parts[2]:
+            when = _iso(parts[1])
+            if when:
+                touches.append(build_touch({field: parts[2], "captured_at": when, "source": f"cookie:{cookie}"}))
+    raw = (cookies.get(_META_CLICK_COOKIE) or "").strip()[:MAX_FIELD_LENGTH]
     parts = raw.split(".", 3)
-    if len(parts) == 4 and parts[0] == "fb" and parts[2].isdigit() and parts[3]:
-        touches.append(build_touch({"fbclid": parts[3], "captured_at": _iso(int(parts[2]) / 1000)}))
+    if len(parts) == 4 and parts[0] == "fb" and parts[3]:
+        when = _iso(parts[2], millis=True)
+        if when:
+            touches.append(build_touch({"fbclid": parts[3], "captured_at": when, "source": f"cookie:{_META_CLICK_COOKIE}"}))
     for cookie in _SITE_TOUCH_COOKIES:
         raw = (cookies.get(cookie) or "").strip()
-        if raw:
+        if raw and len(raw) <= 4096:
             data = _decode_site_touch(raw)
-            if data and has_signal(build_touch(data)):
-                touches.append(build_touch(data))
+            if data:
+                data["source"] = f"cookie:{cookie}"
+                bundle = build_touch(data)
+                if has_signal(bundle):
+                    touches.append(bundle)
     return touches
 
 
@@ -201,12 +227,15 @@ def has_signal(bundle: dict | None) -> bool:
     return bool(bundle) and any(bundle.get(f) for f in UTM_FIELDS + CLICK_ID_FIELDS)
 
 
-def _captured_at(bundle: dict) -> dt.datetime:
+def _captured_at(bundle: dict) -> dt.datetime | None:
+    """None when the time cannot be read: such a touch has no place in an
+    ordering and is left out of it (it used to sort last, which made a
+    garbage timestamp the last touch -- review)."""
     raw = bundle.get("captured_at")
     try:
         parsed = dt.datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
     except (ValueError, TypeError):
-        return dt.datetime.max.replace(tzinfo=dt.timezone.utc)
+        return None
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=dt.timezone.utc)
 
 
@@ -254,10 +283,11 @@ def reconcile_touches(first: dict, last: dict, extra: list[dict]) -> tuple[dict,
     for bundle in extra:
         if has_signal(bundle) and not any(_same_click(bundle, existing) for existing in candidates):
             candidates.append(bundle)
-    if not candidates:
+    dated = [(when, b) for b in candidates if (when := _captured_at(b)) is not None]
+    if not dated:
         return first, last
-    ordered = sorted(candidates, key=_captured_at)
-    return ordered[0], ordered[-1]
+    dated.sort(key=lambda pair: pair[0])
+    return dated[0][1], dated[-1][1]
 
 
 def summarize_channel(bundle: dict | None) -> str:

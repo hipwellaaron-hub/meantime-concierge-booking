@@ -278,6 +278,7 @@ def test_the_form_renders_a_submission_id_field(client):
     html = client.get("/enquire").text
     assert 'name="submission_id"' in html
     assert "crypto.randomUUID" in html
+    assert 'autocomplete="off"' in html and "pageshow" in html
 
 
 # --- server-side Meta copy --------------------------------------------------------
@@ -307,8 +308,9 @@ def test_meta_server_copy_shares_the_pixels_event_id_and_carries_no_pii(client, 
     event = body["data"][0]
     assert event["event_name"] == "Lead" and event["event_id"] == booking.reference_code
     assert event["action_source"] == "website"
-    assert event["user_data"] == {"client_user_agent": "Mozilla/5.0 test", "fbp": "fb.2.1.905305", "fbc": "fb.1.1788681860000.FBC",
-                                  "client_ip_address": "testclient"}
+    # TestClient's peer is the string "testclient", which is not an address,
+    # so it is dropped rather than sent.
+    assert event["user_data"] == {"client_user_agent": "Mozilla/5.0 test", "fbp": "fb.2.1.905305", "fbc": "fb.1.1788681860000.FBC"}
     serialised = json.dumps(body)
     for pii in ("pat.completion@example.com", "Pat", "Wilson", "0400111222", "Keen to see"):
         assert pii not in serialised
@@ -327,12 +329,13 @@ def test_meta_test_event_code_routes_to_test_events(client, db, server_dispatch_
 
 def test_meta_failure_is_recorded_with_a_retry_time_and_no_secret(client, db, server_dispatch_on, monkeypatch):
     booking = _public_booking(client, db)
-    post = _Post({"graph.facebook.com": httpx.Response(400, json={"error": {"message": "Invalid OAuth access token."}})})
+    post = _Post({"graph.facebook.com": httpx.Response(400, json={"error": {"message": "Invalid OAuth access token EAAtest-token-never-logged", "code": 190, "fbtrace_id": "Xy"}})})
     monkeypatch.setattr(httpx, "post", post)
     row = conversions.dispatch_meta(db, booking)
     assert row.status == STATUS_FAILED and row.attempts == 1
     assert row.next_attempt_at is not None
-    assert "Invalid OAuth" in row.last_error
+    # The provider's message text can echo request values; only codes are kept.
+    assert row.last_error == "HTTP 400 code=190 fbtrace_id=Xy"
     assert "EAAtest" not in (row.last_error or "")
 
 
@@ -352,9 +355,9 @@ def test_transport_failure_then_retry_succeeds_and_does_not_resend_after(client,
     assert summary["meta_retried"] == 1 and summary["meta_accepted"] == 1
     db.refresh(row)
     assert row.status == STATUS_ACCEPTED and row.attempts == 2
-    # Accepted stays accepted: another sweep sends nothing more.
+    # Accepted stays accepted: another sweep sends nothing more to Meta.
     conversions.run_sweep(db, now=now + dt.timedelta(hours=5))
-    assert len(post.calls) == 2
+    assert len([u for u, _ in post.calls if "graph.facebook.com" in u]) == 2
 
 
 def test_one_platform_failing_does_not_touch_the_other(client, db, server_dispatch_on, monkeypatch):
@@ -430,24 +433,47 @@ def test_ga4_fallback_is_skipped_without_a_client_id(client, db, server_dispatch
     conversions.run_sweep(db, now=booking.created_at + dt.timedelta(hours=2))
     row = db.query(ConversionDispatch).filter_by(booking_id=booking.id, platform=PLATFORM_GA4, channel=CHANNEL_SERVER).one()
     assert row.status == STATUS_SKIPPED and "client id" in row.last_error
+    db.refresh(booking)
     assert booking.ga4_conversion_dispatched_at is None  # the browser copy stays on offer
 
 
 # --- environment controls ----------------------------------------------------------
 
 
-def test_nothing_is_sent_and_nothing_is_marked_when_server_dispatch_is_off(client, db, monkeypatch):
+def test_nothing_is_sent_and_nothing_is_recorded_when_the_opt_in_is_off(client, db, server_dispatch_on, monkeypatch):
+    # Ids and secrets all configured; only the flag is off. Nothing goes
+    # out and no row is written, so the enquiry is still sent once the
+    # flag is set (review: a "skipped" row here was terminal).
     monkeypatch.setattr(settings, "tracking_server_dispatch_enabled", False)
-    monkeypatch.setattr(settings, "meta_capi_access_token", "EAAtoken")
-    monkeypatch.setattr(settings, "ga4_api_secret", "secret")
     booking = _ga4_booking(client, db)
     post = _Post({})
     monkeypatch.setattr(httpx, "post", post)
-    conversions.dispatch_meta(db, booking)
+    assert conversions.dispatch_meta(db, booking) is None
     conversions.run_sweep(db, now=booking.created_at + dt.timedelta(hours=2))
     assert post.calls == []
-    assert {r.status for r in db.query(ConversionDispatch).filter_by(booking_id=booking.id)} == {STATUS_SKIPPED}
+    assert db.query(ConversionDispatch).filter_by(booking_id=booking.id).count() == 0
     assert booking.ga4_conversion_dispatched_at is None
+
+
+def test_a_non_production_railway_environment_sends_nothing_even_with_the_flag(client, db, server_dispatch_on, monkeypatch):
+    monkeypatch.setattr(settings, "railway_environment_name", "staging")
+    booking = _ga4_booking(client, db)
+    post = _Post({})
+    monkeypatch.setattr(httpx, "post", post)
+    assert conversions.dispatch_meta(db, booking) is None
+    conversions.run_sweep(db, now=booking.created_at + dt.timedelta(hours=2))
+    assert post.calls == []
+
+
+def test_an_enquiry_that_arrived_before_the_variables_is_sent_once_they_exist(client, db, server_dispatch_on, monkeypatch):
+    monkeypatch.setattr(settings, "meta_capi_access_token", "")
+    booking = _public_booking(client, db)
+    assert conversions.dispatch_meta(db, booking) is None
+    monkeypatch.setattr(settings, "meta_capi_access_token", "EAAnow-set")
+    post = _Post({"graph.facebook.com": httpx.Response(200, json={"events_received": 1, "fbtrace_id": "late"})})
+    monkeypatch.setattr(httpx, "post", post)
+    summary = conversions.run_sweep(db, now=booking.created_at + dt.timedelta(hours=1))
+    assert summary["meta_first_send"] == 1 and summary["meta_accepted"] == 1
 
 
 def test_staff_bookings_never_get_a_server_copy(db, loft, server_dispatch_on, monkeypatch):
@@ -501,3 +527,197 @@ def test_the_internal_hop_is_not_a_touch_but_an_external_referral_is():
     assert f["gclid"] == "ADCLICK" and l["gclid"] == "ADCLICK"
     f2, l2 = attribution.reconcile_touches(hop, blog, click)
     assert f2["gclid"] == "ADCLICK" and l2["referrer_category"] == "referral"
+
+
+# --- review fixes -------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("cookies", [
+    {"_gcl_aw": "GCL.99999999999999999999.x"},
+    {"_fbc": "fb.1.99999999999999999999999999.x"},
+    {"_gcl_aw": "GCL." + "1" * 4400 + ".x"},
+    {"mt_touch_last": "AAAA" * 2000},
+    {"_fbp": "x" * 5000},
+])
+def test_a_crafted_parent_domain_cookie_never_blocks_the_enquiry(client, db, cookies):
+    resp = client.post("/enquiries", data=_payload(), cookies=cookies)
+    assert resp.status_code == 303
+    assert db.query(Booking).filter_by(event_name="Completion Enquiry").count() == 1
+
+
+def test_non_ascii_cookie_digits_are_not_a_timestamp():
+    # U+00B2 passes str.isdigit() and fails int(); Starlette hands cookie
+    # bytes through as latin-1, so it reaches the parser (review). The
+    # HTTP client used in tests refuses to send it, so the parser is
+    # exercised directly.
+    assert attribution.touches_from_cookies({"_gcl_aw": "GCL.\u00b2.x", "_fbc": "fb.1.\u00b2.x"}) == []
+    context = conversions.build_tracking_context(
+        cookies={"_ga": "\u00b2\u00b2", "_fbp": "\u00b2"}, user_agent=None, client_ip=None
+    )
+    assert "ga_client_id" not in context and "fbp" not in context
+
+
+def test_an_unreadable_timestamp_is_left_out_of_the_ordering():
+    first = attribution.build_touch({"gclid": "A", "captured_at": "2026-09-01T00:00:00Z"})
+    garbage = attribution.build_touch({"utm_source": "x", "captured_at": "06/09/2026"})
+    f, l = attribution.reconcile_touches(first, garbage, [])
+    assert f["gclid"] == "A" and l["gclid"] == "A"
+
+
+def test_cookie_touches_carry_their_provenance(client, db):
+    client.post("/enquiries", data=_payload(), cookies={"_gcl_aw": "GCL.1788681860.PROV"})
+    booking = db.query(Booking).filter_by(event_name="Completion Enquiry").one()
+    assert booking.first_touch_attribution["source"] == "cookie:_gcl_aw"
+
+
+def test_the_same_submission_id_with_different_content_is_a_new_lead(client, db):
+    # Back from the thank-you page, change the date, submit: a new enquiry,
+    # not the old one handed back (review).
+    sid = str(uuid.uuid4())
+    first = client.post("/enquiries", data={**_payload(), "submission_id": sid})
+    second = client.post("/enquiries", data={**_payload(event_date="2027-11-21"), "submission_id": sid})
+    assert first.status_code == second.status_code == 303
+    assert first.headers["location"] != second.headers["location"]
+    rows = db.query(Booking).filter_by(event_name="Completion Enquiry").order_by(Booking.created_at).all()
+    assert len(rows) == 2
+    assert str(rows[0].submission_id) == sid and rows[1].submission_id is None
+
+
+def test_the_same_submission_id_under_a_different_email_is_a_new_lead(client, db, monkeypatch):
+    from app.services import enquiry_classification
+    monkeypatch.setattr(enquiry_classification, "DUPLICATE_SUBMISSION_WINDOW", dt.timedelta(seconds=0))
+    sid = str(uuid.uuid4())
+    client.post("/enquiries", data={**_payload(), "submission_id": sid})
+    resp = client.post("/enquiries", data={**_payload(email="someone.else@example.com"), "submission_id": sid})
+    assert resp.status_code == 303
+    assert db.query(Booking).filter_by(event_name="Completion Enquiry").count() == 2
+
+
+def test_the_submission_id_is_written_in_the_same_insert_as_the_booking(client, db):
+    # No second transaction: the id is on the row from its first commit.
+    from sqlalchemy import event as sa_event
+    from app.models import Booking as B
+    seen = {}
+
+    @sa_event.listens_for(B, "after_insert")
+    def _capture(mapper, connection, target):
+        seen["submission_id"] = target.submission_id
+        seen["tracking_context"] = target.tracking_context
+
+    try:
+        sid = str(uuid.uuid4())
+        client.post("/enquiries", data={**_payload(), "submission_id": sid}, cookies={"_ga": "GA1.1.5.6"})
+    finally:
+        sa_event.remove(B, "after_insert", _capture)
+    assert str(seen["submission_id"]) == sid
+    assert seen["tracking_context"]["ga_client_id"] == "5.6"
+
+
+def test_free_text_event_type_never_reaches_a_payload(client, db, server_dispatch_on, monkeypatch):
+    resp = client.post("/enquiries", data=_payload(event_type="Jane Smith's 40th jane@x.com"),
+                       cookies={"_ga": "GA1.1.7.8"})
+    assert resp.status_code == 303
+    booking = db.query(Booking).filter_by(event_name="Completion Enquiry").one()
+    assert conversions.meta_payload(booking)["data"][0]["custom_data"]["content_category"] == "other"
+    assert conversions.ga4_payload(booking)["events"][0]["params"]["enquiry_type"] == "other"
+    html = client.get(f"/enquiries/{booking.id}/thanks").text
+    assert "jane@x.com" not in html
+
+
+def test_a_forged_forwarded_address_is_not_stored(client, db, monkeypatch):
+    monkeypatch.setattr(settings, "trusted_proxy_hops", 1)
+    client.post("/enquiries", data=_payload(), headers={"x-forwarded-for": "<script>alert(1)</script>, 203.0.113.9"})
+    booking = db.query(Booking).filter_by(event_name="Completion Enquiry").one()
+    assert booking.tracking_context.get("client_ip") == "203.0.113.9"
+
+
+def test_the_ga4_fallback_claims_the_send_before_it_posts(client, db, server_dispatch_on, monkeypatch):
+    booking = _ga4_booking(client, db)
+    state = {}
+
+    def observing_post(url, **kwargs):
+        if "google-analytics" in url:
+            db.expire(booking)
+            state["claimed_before_post"] = booking.ga4_conversion_dispatched_at is not None
+            return httpx.Response(204)
+        return httpx.Response(200, json={"events_received": 1})
+
+    monkeypatch.setattr(httpx, "post", observing_post)
+    conversions.run_sweep(db, now=booking.created_at + dt.timedelta(hours=1))
+    assert state["claimed_before_post"] is True
+
+
+def test_a_failed_ga4_post_releases_the_claim(client, db, server_dispatch_on, monkeypatch):
+    booking = _ga4_booking(client, db)
+    post = _Post({"google-analytics.com": httpx.Response(503), "graph.facebook.com": httpx.Response(200, json={"events_received": 1})})
+    monkeypatch.setattr(httpx, "post", post)
+    conversions.run_sweep(db, now=booking.created_at + dt.timedelta(hours=1))
+    db.refresh(booking)
+    assert booking.ga4_conversion_dispatched_at is None  # the browser copy is on offer again
+    row = db.query(ConversionDispatch).filter_by(booking_id=booking.id, platform=PLATFORM_GA4, channel=CHANNEL_SERVER).one()
+    assert row.status == STATUS_FAILED
+
+
+def test_one_bookings_failure_does_not_undo_anothers_recorded_send(client, db, server_dispatch_on, monkeypatch):
+    from sqlalchemy import text
+    a = _public_booking(client, db)
+    b_resp = client.post("/enquiries", data=_payload(email="second.completion@example.com", event_name="Second Completion"))
+    assert b_resp.status_code == 303
+    b = db.query(Booking).filter_by(event_name="Second Completion").one()
+    calls = {"n": 0}
+
+    def post(url, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise RuntimeError("provider library exploded")  # not an httpx error: the sweep must still survive
+        return httpx.Response(200, json={"events_received": 1, "fbtrace_id": "first"})
+
+    monkeypatch.setattr(httpx, "post", post)
+    summary = conversions.run_sweep(db, now=a.created_at + dt.timedelta(minutes=1))
+    assert summary["errors"] == 1 and summary["meta_accepted"] == 1
+    first_row = db.query(ConversionDispatch).filter_by(booking_id=a.id, platform=PLATFORM_META, channel=CHANNEL_SERVER).one()
+    assert first_row.status == STATUS_ACCEPTED
+    assert db.execute(text("select count(*) from conversion_dispatches where booking_id=:b"), {"b": b.id}).scalar() == 0
+
+
+def test_two_beacons_for_one_platform_do_not_error(client, db):
+    booking = _public_booking(client, db)
+    # Simulate the losing side of a concurrent double: a row already exists
+    # by the time this call looks. The insert must not raise.
+    conversions.record_browser_dispatch(db, booking, PLATFORM_GA4)
+    db.expire_all()
+    row = conversions.record_browser_dispatch(db, booking, PLATFORM_GA4)
+    assert row.status == STATUS_SENT
+    assert db.query(ConversionDispatch).filter_by(booking_id=booking.id, platform=PLATFORM_GA4).count() == 1
+
+
+def test_the_secret_bearing_request_log_is_silenced():
+    import logging
+    assert logging.getLogger("httpx").level >= logging.WARNING
+    assert logging.getLogger("httpcore").level >= logging.WARNING
+
+
+def test_the_address_and_user_agent_are_retired_after_the_windows(client, db, server_dispatch_on, monkeypatch):
+    from sqlalchemy import text
+    booking = _public_booking(client, db)
+    assert "user_agent" in booking.tracking_context
+    old = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=20)
+    db.execute(text("update bookings set created_at=:t where id=:i"), {"t": old, "i": booking.id})
+    db.commit()
+    post = _Post({})
+    monkeypatch.setattr(httpx, "post", post)
+    summary = conversions.run_sweep(db)
+    db.refresh(booking)
+    assert summary["context_retired"] == 1
+    assert "user_agent" not in booking.tracking_context and "client_ip" not in booking.tracking_context
+    assert booking.tracking_context.get("fbp") == "fb.2.1.905305"  # the pseudonymous ids stay
+    assert post.calls == []  # nothing that old is sent
+
+
+def test_validate_ga4_payload_writes_nothing(client, db, server_dispatch_on, monkeypatch):
+    booking = _ga4_booking(client, db)
+    monkeypatch.setattr(httpx, "post", _Post({"debug/mp/collect": httpx.Response(200, json={"validationMessages": []})}))
+    assert conversions.validate_ga4_payload(booking) == []
+    assert db.query(ConversionDispatch).filter_by(booking_id=booking.id).count() == 0
+    db.refresh(booking)
+    assert booking.ga4_conversion_dispatched_at is None

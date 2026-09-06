@@ -92,7 +92,7 @@
 
   <form method="post" action="/enquiries" id="enquiry-form">
     <input type="hidden" name="attribution" id="attribution-field">
-    <input type="hidden" name="submission_id" id="submission-id-field">
+    <input type="hidden" name="submission_id" id="submission-id-field" autocomplete="off">
     <div class="card">
       <section id="step-1">
         <p class="step-header">1 · Your Details</p>
@@ -245,7 +245,8 @@
   // click on Submit, resubmits this same id and lands on the same enquiry;
   // a fresh page load is a new submission.
   var submissionField = document.getElementById("submission-id-field");
-  if (submissionField && !submissionField.value) {
+  function mintSubmissionId() {
+    if (!submissionField) return;
     try {
       if (window.crypto && crypto.randomUUID) {
         submissionField.value = crypto.randomUUID();
@@ -258,6 +259,11 @@
       }
     } catch (e) { /* no id -> the server's duplicate window still applies */ }
   }
+  mintSubmissionId();
+  // A page restored from the back-forward cache keeps its DOM, id included.
+  // Coming Back to the form is a new submission (the server also refuses
+  // to reuse an id whose content changed), so mint again.
+  window.addEventListener("pageshow", function (ev) { if (ev.persisted) mintSubmissionId(); });
 
   var attributionField = document.getElementById("attribution-field");
   var attributionForm = document.getElementById("enquiry-form");

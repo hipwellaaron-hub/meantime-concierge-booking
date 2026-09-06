@@ -81,7 +81,7 @@
     <table style="font-size:0.85rem; margin-top:6px;">
       <tr><th>Platform</th><th>Channel</th><th>Status</th><th>Sent</th><th>Attempts</th><th>Note</th></tr>
       {% for d in conversion_dispatches %}
-      <tr><td>{{ d.platform }}</td><td>{{ d.channel }}</td><td>{{ d.status }}</td>
+      <tr><td>{{ d.platform }}</td><td>{{ d.channel }}</td><td>{{ d.status }}{% if d.channel == "server" and d.receipt and d.receipt.test_event %} (test)</td>{% else %}</td>{% endif %}
           <td>{{ d.sent_at | sydney_time("%d %b %H:%M") if d.sent_at else "" }}</td><td>{{ d.attempts }}</td>
           <td class="muted">{{ d.last_error or (d.receipt.fbtrace_id if d.receipt and d.receipt.fbtrace_id else "") }}</td></tr>
       {% endfor %}

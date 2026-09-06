@@ -26,7 +26,7 @@ is the booking reference, the receipt is the provider's trace id.
 import datetime as dt
 import uuid
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, UniqueConstraint, func
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -52,6 +52,7 @@ class ConversionDispatch(Base):
     __tablename__ = "conversion_dispatches"
     __table_args__ = (
         UniqueConstraint("booking_id", "platform", "channel", name="uq_conversion_dispatch_booking_platform_channel"),
+        Index("ix_conversion_dispatches_status_next", "status", "next_attempt_at"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)

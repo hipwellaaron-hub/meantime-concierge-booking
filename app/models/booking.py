@@ -182,13 +182,18 @@ class Booking(Base):
     # this booking whatever the clock says; a fresh form load is a new id.
     # NULL when the form was posted without it (no JavaScript, an API
     # client), where the 15-second duplicate window still applies.
-    submission_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), unique=True, nullable=True)
+    submission_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), unique=True, index=True, nullable=True
+    )
 
     # What the server saw on the POST that created the enquiry, for the
     # server-side conversion copies only: GA4 client/session ids and Meta
     # browser ids read from the parent-domain cookies, plus user agent
     # and client address. Not shown in the UI; never sent in an ordinary
-    # analytics event; nothing here identifies a person by name.
+    # analytics event; nothing here identifies a person by name. The
+    # address and user agent are cleared by the conversion sweep once the
+    # sending windows have passed (app.services.conversions
+    # .retire_tracking_context); the cookie ids stay for reconciliation.
     tracking_context: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
     # Provenance for bookings imported from a prior system (e.g. iVvy).

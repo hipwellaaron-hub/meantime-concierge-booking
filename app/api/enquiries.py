@@ -6,11 +6,12 @@ from typing import Annotated
 from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from sqlalchemy import update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models import Booking, Venue
-from app.rate_limit import InMemoryRateLimiter, rate_limit_dependency
+from app.rate_limit import InMemoryRateLimiter, client_ip, rate_limit_dependency
 from app.schemas.enquiry import EVENT_TYPES, EnquiryCreate
 from app.services.attribution import build_touch, parse_attribution_payload, reconcile_touches, touches_from_cookies
 from app.services import conversions, drafting
@@ -27,6 +28,9 @@ router = APIRouter(tags=["enquiries"])
 # shouldn't realistically hit this within 5 minutes), restrictive enough
 # to blunt a scripted flood of fake enquiries.
 _enquiry_rate_limiter = InMemoryRateLimiter(max_requests=5, window_seconds=300)
+# The conversion beacon is unauthenticated and writes a row; a real
+# browser sends at most two per enquiry.
+_beacon_rate_limiter = InMemoryRateLimiter(max_requests=30, window_seconds=300)
 
 BOOKING_EVENT_ACTOR_MAX_LENGTH = 255
 
@@ -75,17 +79,22 @@ def submit_enquiry(
     # POST: Google's linker cookie carries the gclid of a click that landed
     # on meantime.com.au, Meta's carries the fbclid, and the website's own
     # mt_touch_* cookies carry UTMs. Each is its own touch, ordered by time.
-    first_touch, last_touch = reconcile_touches(first_touch, last_touch, touches_from_cookies(request.cookies))
-
+    # Tracking must never block an enquiry: any parse failure means "no
+    # cookie touches", never an error.
+    try:
+        first_touch, last_touch = reconcile_touches(first_touch, last_touch, touches_from_cookies(request.cookies))
+    except Exception:  # noqa: BLE001
+        logger.exception("Cookie attribution failed; enquiry continues without it")
+    try:
+        tracking_context = conversions.build_tracking_context(
+            cookies=request.cookies, user_agent=request.headers.get("user-agent"), client_ip=client_ip(request),
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("Tracking context failed; enquiry continues without it")
+        tracking_context = None
     submission_id = _submission_uuid(payload.submission_id)
-    tracking_context = conversions.build_tracking_context(
-        cookies=request.cookies,
-        user_agent=request.headers.get("user-agent"),
-        client_ip=conversions.client_ip_from_headers(request.headers, request.client.host if request.client else None),
-    )
 
-    booking, _duplicate_candidates, _is_new = create_enquiry_booking(
-        db,
+    enquiry_kwargs = dict(
         venue=venue,
         full_name=full_name,
         email=payload.email,
@@ -104,9 +113,19 @@ def submit_enquiry(
         actor=actor,
         first_touch_attribution=first_touch,
         last_touch_attribution=last_touch,
-        submission_id=submission_id,
         tracking_context=tracking_context,
     )
+    try:
+        booking, _duplicate_candidates, _is_new = create_enquiry_booking(db, submission_id=submission_id, **enquiry_kwargs)
+    except IntegrityError:
+        # The one race the email lock cannot serialise: the same
+        # submission_id arriving at the same moment under two different
+        # emails. The second insert trips the unique index; it is a real
+        # enquiry, so it is created again without the id rather than
+        # failing the client. A clean second pass redoes the lock, the
+        # contact and the duplicate check.
+        db.rollback()
+        booking, _duplicate_candidates, _is_new = create_enquiry_booking(db, submission_id=None, **enquiry_kwargs)
 
     # The server copy of the Meta Lead goes after the response too, with
     # the same event id as the browser copy so Meta counts one. GA4's
@@ -167,12 +186,16 @@ def enquiry_thanks(booking_id: uuid.UUID, request: Request, db: Session = Depend
             "emit_ga4": emit_ga4,
             "emit_meta": emit_meta,
             "conversion_lead_id": booking.reference_code,
-            "conversion_enquiry_type": booking.event_type,
+            # Only a value from the form's own list reaches the tag.
+            "conversion_enquiry_type": conversions.safe_event_type(booking.event_type),
         },
     )
 
 
-@router.post("/enquiries/{booking_id}/conversion/{platform}", status_code=204)
+@router.post(
+    "/enquiries/{booking_id}/conversion/{platform}", status_code=204,
+    dependencies=[Depends(rate_limit_dependency(_beacon_rate_limiter))],
+)
 def record_conversion_dispatch(
     booking_id: uuid.UUID, platform: str, request: Request, db: Session = Depends(get_db)
 ):

@@ -86,6 +86,11 @@ class Settings(BaseSettings):
     # Events Manager's Test Events tab (not counted) -- the switch for a
     # controlled live test. Unset it for production counting.
     tracking_server_dispatch_enabled: bool = False
+    # Railway sets RAILWAY_ENVIRONMENT_NAME on every service. Anything that
+    # is not "production" (a duplicated staging environment, even with the
+    # variables copied across) renders no browser tag and sends nothing
+    # server-side. Unset means local or test, where the ids default empty.
+    railway_environment_name: str = ""
     meta_capi_access_token: str = ""
     meta_capi_test_event_code: str = ""
     ga4_api_secret: str = ""
