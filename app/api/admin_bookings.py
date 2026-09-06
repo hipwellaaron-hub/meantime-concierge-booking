@@ -364,6 +364,7 @@ def booking_detail(
             first_touch_channel=summarize_channel(booking.first_touch_attribution),
             last_touch_channel=summarize_channel(booking.last_touch_attribution),
             touches_differ=booking.first_touch_attribution != booking.last_touch_attribution,
+            conversion_dispatches=list(booking.conversion_dispatches),
             legacy_mismatches=legacy_documents.legacy_mismatches(booking),
         ),
     )

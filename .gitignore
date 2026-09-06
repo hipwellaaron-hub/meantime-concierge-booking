@@ -7,3 +7,6 @@ __pycache__/
 htmlcov/
 *.egg-info/
 .claude/
+
+# Marketing-site build (static generator + output); separate from the Concierge app
+website/

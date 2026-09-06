@@ -3,6 +3,7 @@ from app.models.booking import Booking, BookingStatus, MinReductionReasonCode  #
 from app.models.booking_event import BookingEvent, BookingEventType  # noqa: F401
 from app.models.beo_proposal import BeoProposal, BeoProposalField  # noqa: F401
 from app.models.booking_vendor import BookingVendor, VendorType  # noqa: F401
+from app.models.conversion_dispatch import ConversionDispatch  # noqa: F401
 from app.models.contact import Contact  # noqa: F401
 from app.models.document import Document, DocumentStatus, DocumentType  # noqa: F401
 from app.models.enquiry_draft import EnquiryDraft  # noqa: F401
@@ -31,6 +32,7 @@ __all__ = [
     "BookingVendor",
     "BeoProposal",
     "BeoProposalField",
+    "ConversionDispatch",
     "VendorType",
     "Contact",
     "Document",

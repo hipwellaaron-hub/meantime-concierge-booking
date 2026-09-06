@@ -92,6 +92,7 @@
 
   <form method="post" action="/enquiries" id="enquiry-form">
     <input type="hidden" name="attribution" id="attribution-field">
+    <input type="hidden" name="submission_id" id="submission-id-field" autocomplete="off">
     <div class="card">
       <section id="step-1">
         <p class="step-header">1 · Your Details</p>
@@ -239,6 +240,30 @@
     if (!readStorage(STORAGE_FIRST)) writeStorage(STORAGE_FIRST, captured.touch);
     if (!readStorage(STORAGE_LAST)) writeStorage(STORAGE_LAST, captured.touch);
   }
+
+  // One id per rendered form. A retry after a lost response, or a second
+  // click on Submit, resubmits this same id and lands on the same enquiry;
+  // a fresh page load is a new submission.
+  var submissionField = document.getElementById("submission-id-field");
+  function mintSubmissionId() {
+    if (!submissionField) return;
+    try {
+      if (window.crypto && crypto.randomUUID) {
+        submissionField.value = crypto.randomUUID();
+      } else if (window.crypto && crypto.getRandomValues) {
+        var bytes = crypto.getRandomValues(new Uint8Array(16));
+        bytes[6] = (bytes[6] & 0x0f) | 0x40;   // version 4
+        bytes[8] = (bytes[8] & 0x3f) | 0x80;   // variant
+        var hex = Array.prototype.map.call(bytes, function (b) { return ("0" + b.toString(16)).slice(-2); }).join("");
+        submissionField.value = hex.slice(0, 8) + "-" + hex.slice(8, 12) + "-" + hex.slice(12, 16) + "-" + hex.slice(16, 20) + "-" + hex.slice(20);
+      }
+    } catch (e) { /* no id -> the server's duplicate window still applies */ }
+  }
+  mintSubmissionId();
+  // A page restored from the back-forward cache keeps its DOM, id included.
+  // Coming Back to the form is a new submission (the server also refuses
+  // to reuse an id whose content changed), so mint again.
+  window.addEventListener("pageshow", function (ev) { if (ev.persisted) mintSubmissionId(); });
 
   var attributionField = document.getElementById("attribution-field");
   var attributionForm = document.getElementById("enquiry-form");

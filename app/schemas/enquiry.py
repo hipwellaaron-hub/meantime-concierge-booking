@@ -69,6 +69,10 @@ class EnquiryCreate(BaseModel):
     # which never raises -- malformed attribution data must never block a
     # real enquiry from being captured.
     attribution: str | None = Field(default=None, max_length=4000)
+    # One id per rendered form (see app/templates/enquiry.html). Optional,
+    # so a client without JavaScript can still enquire; anything that is
+    # not a UUID is ignored rather than rejected.
+    submission_id: str | None = Field(default=None, max_length=64)
 
     @field_validator("first_name", "last_name", "event_name")
     @classmethod

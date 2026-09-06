@@ -75,6 +75,29 @@ class Settings(BaseSettings):
     ga4_measurement_id: str = ""
     meta_pixel_id: str = ""
 
+    # Server-side conversion copies (app.services.conversions). ALL default
+    # off. Production sets the three below deliberately; staging and local
+    # never do, so a copy of the production database on another host
+    # cannot send real conversions.
+    #   TRACKING_SERVER_DISPATCH_ENABLED = true
+    #   META_CAPI_ACCESS_TOKEN  = <Conversions API system-user token, secret>
+    #   GA4_API_SECRET          = <GA4 Measurement Protocol API secret, secret>
+    # META_CAPI_TEST_EVENT_CODE, when set, routes every server Meta event to
+    # Events Manager's Test Events tab (not counted) -- the switch for a
+    # controlled live test. Unset it for production counting.
+    tracking_server_dispatch_enabled: bool = False
+    # Railway sets RAILWAY_ENVIRONMENT_NAME on every service. Anything that
+    # is not "production" (a duplicated staging environment, even with the
+    # variables copied across) renders no browser tag and sends nothing
+    # server-side. Unset means local or test, where the ids default empty.
+    railway_environment_name: str = ""
+    meta_capi_access_token: str = ""
+    meta_capi_test_event_code: str = ""
+    ga4_api_secret: str = ""
+    # The GA4 server copy is a FALLBACK: it goes only if the browser has
+    # not confirmed its own send this many minutes after the enquiry.
+    ga4_server_fallback_after_minutes: int = 30
+
     # --- AI integration (Phase 1 brief) ---------------------------------
     # Bearer token for /api/ai/*. Empty by default so a deployment that
     # hasn't deliberately set one refuses every AI request rather than
