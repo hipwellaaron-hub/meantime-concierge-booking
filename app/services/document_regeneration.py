@@ -38,7 +38,7 @@ from sqlalchemy.orm import Session
 from app.models import BookingEvent, Document
 from app.models.beo_proposal import FIELD_APPROVED, BeoProposal, BeoProposalField
 from app.services import beo_rules
-from app.services.document_generation import NO_DIETARIES, REVIEW
+from app.services.document_generation import DERIVED_KEYS, mark_authored, mark_derived
 
 logger = logging.getLogger(__name__)
 
@@ -92,7 +92,15 @@ _TEXT_FIELD_LABELS = {
 # predate proposals, the legacy merged music field -- and the agreement's
 # terms, which are the contract itself.
 PROTECTED_FIELDS: tuple[ProtectedField, ...] = tuple(
-    ProtectedField(name, _TEXT_FIELD_LABELS.get(name, name.replace("_", " ").capitalize()))
+    ProtectedField(
+        name,
+        _TEXT_FIELD_LABELS.get(name, name.replace("_", " ").capitalize()),
+        # The older merged field is printed only while there is no split
+        # `music` (document.html renders `music or music_entertainment`), so
+        # keeping one without the other stores a value nothing will show
+        # while the audit line says it was kept.
+        companions=("music",) if name == "music_entertainment" else (),
+    )
     for name in beo_rules.PROPOSABLE_FIELDS + ("music_entertainment", "internal_notes", "status_text")
 ) + (
     ProtectedField("terms_sections", "Agreement terms", render=_render_sections, companions=("terms_text",)),
@@ -101,25 +109,28 @@ PROTECTED_FIELDS: tuple[ProtectedField, ...] = tuple(
 PROTECTED_FIELD_NAMES: tuple[str, ...] = tuple(f.name for f in PROTECTED_FIELDS)
 _BY_NAME = {f.name: f for f in PROTECTED_FIELDS}
 
-# Values the GENERATOR produces when nothing was captured. Matched exactly,
-# never as a substring: staff reuse the [REVIEW] convention in their own
-# notes, and "Client bringing cake. [REVIEW] confirm nut-free with kitchen"
-# is a human sentence carrying an allergy follow-up, not a placeholder
-# (2026-09-06 review -- a substring test silently regenerated over it).
-# test_every_generated_placeholder_is_recognised keeps this in step with
-# the generator.
-_GENERATED_PLACEHOLDERS = frozenset({
-    f"{REVIEW} add catering order and service style",
-    f"{REVIEW} add bar structure",
-    f"{REVIEW} add room layout notes",
-    f"{REVIEW} add music/entertainment detail",
-    NO_DIETARIES,
-})
 
+def field_spec(name: str) -> ProtectedField | None:
+    """The protected field of this name, or None if it is not one."""
+    return _BY_NAME.get(name)
 
-def _is_disposable(rendered: str) -> bool:
-    """True when the current value holds nothing a human would miss."""
-    return not rendered or rendered in _GENERATED_PLACEHOLDERS
+# Which keys a person authored is READ, not guessed. document_generation
+# stamps the keys it derived; documents.update_content and
+# update_content_fields take a key out of that set the moment a human
+# writes it. What is left is exactly what may be rebuilt without asking.
+#
+# The set this replaced held fixed placeholder strings and asked "does the
+# current text look generated?" -- which is unanswerable as soon as the
+# generator composes a value instead of emitting a constant, and it does
+# that for the agreement's clauses, the bar-credit line, status text and
+# the guest counts in special notes. Every one of those came back "a person
+# wrote this", pre-ticked to keep, so one click on the safe-looking default
+# wrote a stale figure onto the contract (2026-09-07 review).
+
+# Writes that mean a human authored this version of the document. Recorded
+# per version, not per field, which is why a legacy document can only ever
+# say "someone edited this" and not which key.
+_HUMAN_WRITE_EVENTS = ("document_edited", "beo_proposal_applied")
 
 
 @dataclass(frozen=True)
@@ -136,9 +147,8 @@ class ContentLoss:
 
     @property
     def empties_the_field(self) -> bool:
-        """The worst shape: real words replaced by nothing or by a
-        generated default that asserts the opposite."""
-        return _is_disposable(self.incoming)
+        """The worst shape: real words replaced by nothing at all."""
+        return not self.incoming
 
 
 def _approved_values(db: Session, booking_id) -> dict[str, list[BeoProposalField]]:
@@ -165,30 +175,59 @@ def _approval_note(rows: list[BeoProposalField], current: str) -> str | None:
     return None
 
 
+def _human_writes(db: Session, document: Document) -> list[BookingEvent]:
+    """Every write to THIS version that came from a person -- a hand-edit or
+    an approval applying a proposal. Recorded per version, not per field."""
+    return list(
+        db.scalars(
+            select(BookingEvent)
+            .where(
+                BookingEvent.booking_id == document.booking_id,
+                BookingEvent.event_type.in_(_HUMAN_WRITE_EVENTS),
+                BookingEvent.field_name == f"{document.type.value}_version",
+                BookingEvent.new_value == str(document.version),
+            )
+            .order_by(BookingEvent.created_at.desc())
+        ).all()
+    )
+
+
 def was_hand_edited(db: Session, document: Document) -> BookingEvent | None:
-    """Whether THIS version carries a hand-edit. Hand-edits are recorded per
-    document version, not per field, so this can say the draft was edited
-    but never which field -- the screen says so rather than guessing."""
-    return db.scalars(
-        select(BookingEvent)
-        .where(
-            BookingEvent.booking_id == document.booking_id,
-            BookingEvent.event_type == "document_edited",
-            BookingEvent.field_name == f"{document.type.value}_version",
-            BookingEvent.new_value == str(document.version),
-        )
-        .order_by(BookingEvent.created_at.desc())
-        .limit(1)
-    ).first()
+    """The most recent HAND-edit of this version, for the screen to name.
+    An approval is not one: it has its own event type, so the confirmation
+    no longer tells Aaron a draft was hand-edited by the person who
+    approved a proposal on it (2026-09-06 review)."""
+    for event in _human_writes(db, document):
+        if event.event_type == "document_edited":
+            return event
+    return None
+
+
+def authored_keys(db: Session, document: Document) -> set[str] | None:
+    """The keys a person wrote, or None when that cannot be known.
+
+    None means a legacy document -- one written before provenance was
+    recorded -- that a human has since touched. Its content says nothing
+    about which key, so every differing field is treated as at risk and the
+    screen says the provenance is unknown rather than implying it is exact.
+    """
+    content = document.content or {}
+    derived = content.get(DERIVED_KEYS)
+    if derived is not None:
+        return {k for k in content if not k.startswith("_") and k not in set(derived)}
+    if not _human_writes(db, document):
+        # No provenance recorded, but nothing human was ever written to this
+        # version either: the generator produced all of it.
+        return set()
+    return None
 
 
 def losses(db: Session, document: Document | None, fresh: dict) -> list[ContentLoss]:
     """The human-written values `fresh` would destroy, in field order.
 
-    Empty when there is nothing to lose -- no current document, or every
-    protected field either unchanged or holding only a generated
-    placeholder. An empty result means a regenerate is safe to run
-    straight through, which is the ordinary case.
+    Empty when there is nothing to lose -- which is now the ordinary case
+    for an untouched document, because the generator's own output is known
+    to be its own and is rebuilt without asking.
 
     This is a READ. A caller that intends to write must hold the document's
     row lock across both, or another approval can land in between and be
@@ -198,14 +237,17 @@ def losses(db: Session, document: Document | None, fresh: dict) -> list[ContentL
     if document is None:
         return []
     current_content = document.content or {}
+    authored = authored_keys(db, document)
     approved = _approved_values(db, document.booking_id)
 
     found: list[ContentLoss] = []
     for spec in PROTECTED_FIELDS:
         current = spec.render(current_content.get(spec.name))
         incoming = spec.render(fresh.get(spec.name))
-        if current == incoming or _is_disposable(current):
+        if current == incoming or not current:
             continue
+        if authored is not None and spec.name not in authored:
+            continue  # the generator wrote it; rebuilding is the whole point
         found.append(
             ContentLoss(
                 field=spec.name,
@@ -218,7 +260,7 @@ def losses(db: Session, document: Document | None, fresh: dict) -> list[ContentL
     return found
 
 
-def fingerprint(found: list[ContentLoss]) -> str:
+def fingerprint(found: list[ContentLoss], pending: list[dict] | None = None) -> str:
     """Identifies the exact set of losses a human was shown.
 
     The confirmation screen carries this back, and the write refuses if it
@@ -230,6 +272,11 @@ def fingerprint(found: list[ContentLoss]) -> str:
     digest = hashlib.sha256()
     for loss in found:
         digest.update(f"{loss.field}\x00{loss.current}\x00{loss.incoming}\x00".encode("utf-8"))
+    # The pending proposals were on the same screen, so they are part of
+    # what the human was answering about: a proposal arriving in between
+    # has to re-ask, not be silently invalidated by the write.
+    for row in pending or []:
+        digest.update(f"pending\x00{row.get('id')}\x00{row.get('field')}\x00".encode("utf-8"))
     return digest.hexdigest()[:32]
 
 
@@ -240,19 +287,29 @@ def apply_choices(fresh: dict, document: Document, keep_fields: set[str]) -> dic
     the form: a value that travelled through a browser and back is a value
     that could have gone stale or been tampered with, and this is the
     contract path.
+
+    The authorship travels with the value. A field kept because a person
+    wrote it is still theirs in the new version; a field allowed to
+    regenerate is the generator's again. Without that, one regenerate would
+    launder a human value into a derived one and the NEXT regenerate would
+    discard it without asking.
     """
     content = dict(fresh)
     current_content = document.content or {}
+    kept: list[str] = []
     for name in keep_fields:
         spec = _BY_NAME.get(name)
         if spec is None:
             continue
         content[spec.name] = current_content.get(spec.name)
+        kept.append(spec.name)
         for companion in spec.companions:
             # Derived from the kept value; letting it regenerate would
             # leave the document asserting two different things.
             content[companion] = current_content.get(companion)
-    return content
+            kept.append(companion)
+    mark_derived(content, [f.name for f in PROTECTED_FIELDS if f.name not in kept])
+    return mark_authored(content, kept)
 
 
 def summarise(found: list[ContentLoss], keep_fields: set[str]) -> str:

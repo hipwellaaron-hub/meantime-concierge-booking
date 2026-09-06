@@ -4,13 +4,15 @@ from unittest.mock import patch
 
 from app.models import Contact
 from app.models.booking import BookingStatus
-from app.models.document import DocumentStatus
+from app.models.document import DocumentStatus, DocumentType
 from app.models.invoice import InvoiceStatus, InvoiceType
 from app.models.payment import PaymentMethod
 from app.services import invoicing
+from app.services import documents as documents_service
 from app.services import wizard as wizard_service
 from app.services import wizard_generation
 from app.services.booking import change_status, create_booking
+from app.services.document_generation import generate_beo_content
 from app.services.wizard import BarStructure, CakeChoiceType, MusicType
 
 
@@ -279,3 +281,107 @@ def test_wizard_submission_reuses_existing_manual_final_invoice_not_a_duplicate(
     # flags on.
     assert result.is_clean is False
     assert any("already exists" in item for item in result.outstanding_items)
+
+
+# --- the door nobody was watching ---------------------------------------------
+#
+# A CLIENT submitting the wizard regenerates the Event Order. That path has
+# no staff member in front of it: no confirmation screen can be shown and
+# nobody is there to notice. Before this, a client who completed the wizard
+# with no dietary answer replaced an APPROVED "1x severe nut allergy
+# (table 4)." with "No dietary requirements declared" -- the incident this
+# whole feature exists to prevent, arriving from the client's own browser
+# (2026-09-07 review). End to end, through the real submission.
+
+
+def _approve_a_dietary_proposal(db, booking, text):
+    """The AI proposes, a staff member approves -- the real route by which a
+    human value reaches the Event Order."""
+    from app.services import beo_proposals
+
+    proposal, result = beo_proposals.propose(
+        db, booking, fields={"dietaries": text}, source="client email 6 Sep", actor="ai:claude"
+    )
+    assert not result.blocked, result.codes
+    beo_proposals.approve_field(db, proposal.fields[0], actor="staff:aaron")
+    db.expire_all()
+
+
+ALLERGY = "1x severe nut allergy (table 4)."
+
+
+def test_a_client_submitting_the_wizard_cannot_destroy_an_approved_allergy(db, loft, menu_items, public_holidays):
+    booking = _make_booking(db, loft)
+    change_status(db, booking, BookingStatus.confirmed, actor="test")
+    _pay_deposit(db, booking, amount=Decimal("500.00"))
+
+    # An Event Order exists, and Aaron has approved the allergy onto it.
+    documents_service.create_new_version(
+        db, booking, DocumentType.beo, generate_beo_content(booking), actor="staff:test"
+    )
+    _approve_a_dietary_proposal(db, booking, ALLERGY)
+    assert documents_service.get_current(db, booking.id, DocumentType.beo).content["dietaries"] == ALLERGY
+
+    # The client now completes the wizard and declares NO dietary needs,
+    # which is what regenerates the Event Order from their answers.
+    session = wizard_service.get_or_create_session(db, booking, actor="test")
+    _complete_all_steps(db, session, menu_items)
+    session, result = wizard_service.submit_review(db, session, actor="client")
+
+    db.expire_all()
+    current = documents_service.get_current(db, booking.id, DocumentType.beo)
+    assert current.version == 2, "the client's submission did regenerate the Event Order"
+    assert current.content["dietaries"] == ALLERGY, (
+        "the approved allergy must survive a client submission that declares none"
+    )
+    assert "No dietary requirements declared" not in (current.content["dietaries"] or "")
+
+
+def test_the_carried_value_stays_human_so_a_later_regenerate_still_asks(db, loft, menu_items, public_holidays):
+    """Carrying the value forward must carry its authorship too. Otherwise
+    one client submission launders a human value into a derived one, and the
+    NEXT staff regenerate discards it without asking -- the same loss, one
+    step later."""
+    from app.services import document_regeneration as dr
+
+    booking = _make_booking(db, loft)
+    change_status(db, booking, BookingStatus.confirmed, actor="test")
+    _pay_deposit(db, booking, amount=Decimal("500.00"))
+    documents_service.create_new_version(
+        db, booking, DocumentType.beo, generate_beo_content(booking), actor="staff:test"
+    )
+    _approve_a_dietary_proposal(db, booking, ALLERGY)
+
+    session = wizard_service.get_or_create_session(db, booking, actor="test")
+    _complete_all_steps(db, session, menu_items)
+    wizard_service.submit_review(db, session, actor="client")
+    db.expire_all()
+
+    current = documents_service.get_current(db, booking.id, DocumentType.beo)
+    assert "dietaries" in dr.authored_keys(db, current), "still a person's words"
+    # And a staff regenerate would therefore still stop and ask about it.
+    fresh = generate_beo_content(booking)
+    assert [loss.field for loss in dr.losses(db, current, fresh)] == ["dietaries"]
+
+
+def test_a_client_submission_still_updates_everything_they_answered(db, loft, menu_items, public_holidays):
+    """Carrying human values forward must not freeze the document: what the
+    client actually answered still has to land, or the wizard stops working."""
+    booking = _make_booking(db, loft)
+    change_status(db, booking, BookingStatus.confirmed, actor="test")
+    _pay_deposit(db, booking, amount=Decimal("500.00"))
+    documents_service.create_new_version(
+        db, booking, DocumentType.beo, generate_beo_content(booking), actor="staff:test"
+    )
+    _approve_a_dietary_proposal(db, booking, ALLERGY)
+
+    session = wizard_service.get_or_create_session(db, booking, actor="test")
+    _complete_all_steps(db, session, menu_items)
+    wizard_service.submit_review(db, session, actor="client")
+
+    db.expire_all()
+    content = documents_service.get_current(db, booking.id, DocumentType.beo).content
+    assert content["dietaries"] == ALLERGY
+    # The client's own answers are present, not the pre-wizard placeholders.
+    assert "[REVIEW]" not in (content["catering_order_and_service_style"] or "")
+    assert content["music"], "the client's music answer reached the Event Order"

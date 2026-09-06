@@ -48,7 +48,7 @@ from app.models.beo_proposal import (
     BeoProposalField,
 )
 from app.models.document import Document, DocumentStatus, DocumentType
-from app.services.document_generation import NO_DIETARIES, REVIEW
+from app.services.document_generation import NO_DIETARIES, REVIEW, _bar_structure_with_credit
 from app.services import beo_rules, documents as documents_service
 from app.services.booking import VOIDED_STATUSES
 
@@ -136,6 +136,21 @@ def pending_proposal(db: Session, booking_id: uuid.UUID) -> BeoProposal | None:
     return db.scalars(
         select(BeoProposal)
         .where(BeoProposal.booking_id == booking_id, BeoProposal.status == STATUS_PENDING)
+        .order_by(BeoProposal.created_at.desc())
+    ).first()
+
+
+def latest_proposal(db: Session, booking_id: uuid.UUID) -> BeoProposal | None:
+    """The most recent proposal on this booking in any state.
+
+    pending_proposal answers "what is awaiting review"; this answers "what
+    happened last", which is what the calibration read needs: once every
+    field is decided the proposal is RESOLVED, and that is precisely when
+    applied_value next to proposed_value becomes worth reading.
+    """
+    return db.scalars(
+        select(BeoProposal)
+        .where(BeoProposal.booking_id == booking_id)
         .order_by(BeoProposal.created_at.desc())
     ).first()
 
@@ -381,6 +396,16 @@ def _apply(
     now = dt.datetime.now(dt.timezone.utc)
     for field_row, applied in decisions:
         changes[field_row.field] = normalise_beo_field(field_row.field, applied)
+        if field_row.field == "bar_structure":
+            # The credit line is the venue's promise, generated from
+            # booking.bar_credit and printed only inside this field. A
+            # proposal replaces the whole field, so approving one used to
+            # delete the promise the floor has to honour, with no rule
+            # covering it (2026-09-07 review). Re-composed here rather than
+            # left to the AI to remember.
+            changes[field_row.field] = _bar_structure_with_credit(
+                changes[field_row.field], proposal.booking.bar_credit
+            )
         if field_row.field == "music":
             # The merged legacy field is what the edit form clears on save;
             # leaving it behind would let it out-rank the value approved.

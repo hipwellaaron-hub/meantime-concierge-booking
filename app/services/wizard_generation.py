@@ -27,6 +27,8 @@ from app.models.document import DocumentType
 from app.models.invoice import InvoiceStatus, InvoiceType
 from app.models.wizard_session import WizardSession
 from app.services import catalogue
+from app.services import document_regeneration
+from app.services import document_generation
 from app.services import documents as documents_service
 from app.services import invoicing
 from app.services import notifications
@@ -309,6 +311,57 @@ def get_prior_beo_internal_notes(db: Session, booking: Booking) -> str | None:
     return (current.content or {}).get("internal_notes")
 
 
+def carry_forward_authored(db: Session, booking: Booking, content: dict) -> dict:
+    """Keep every value a person wrote on the current Event Order.
+
+    A CLIENT submitting the wizard regenerates the Event Order, and that
+    path has no staff member in front of it -- there is nobody to show a
+    confirmation screen to and nobody to notice. Before this, a client who
+    completed the wizard with no dietary answer replaced an APPROVED
+    "1x severe nut allergy (table 4)." with "No dietary requirements
+    declared", silently, from the client's own browser: the incident this
+    whole feature exists to prevent, arriving through the one door nobody
+    was watching (2026-09-07 review).
+
+    So on this path human values are not offered up for a decision, they
+    are simply kept -- which is the answer a staff member would have given
+    anyway, and the only safe default when no one is asked. Their
+    authorship travels with them, so a later staff regenerate still shows
+    them as human values rather than laundering them into derived ones.
+
+    internal_notes has been carried this way since before proposals
+    existed; this generalises that to every field a person authored.
+    """
+    current = documents_service.get_current(db, booking.id, DocumentType.beo)
+    if current is None:
+        return content
+    authored = document_regeneration.authored_keys(db, current)
+    if authored is None:
+        # A legacy document a human has touched: which field is unknowable,
+        # so carry every protected field that holds something. Over-keeping
+        # is recoverable on the staff screen; silent loss is not.
+        authored = {
+            f.name for f in document_regeneration.PROTECTED_FIELDS
+            if f.render((current.content or {}).get(f.name))
+        }
+    kept = []
+    for name in sorted(authored):
+        spec = document_regeneration.field_spec(name)
+        if spec is None:
+            continue
+        content[name] = (current.content or {}).get(name)
+        kept.append(name)
+        for companion in spec.companions:
+            content[companion] = (current.content or {}).get(companion)
+            kept.append(companion)
+    if kept:
+        logger.info(
+            "Wizard regenerate for booking %s kept %d human-authored field(s): %s",
+            booking.reference_code, len(kept), ", ".join(sorted(set(kept))),
+        )
+    return document_generation.mark_authored(content, kept)
+
+
 def _session_content_kwargs(db: Session, session: WizardSession, deposit_paid) -> dict:
     """The full keyword set for generate_beo_content, derived from a
     wizard session -- one place, used by both the submission path and the
@@ -388,6 +441,9 @@ def generate_beo_and_invoice(db: Session, session: WizardSession, *, actor: str)
         outstanding_items.append("Accessibility need raised against a non-accessible space -- requires Aaron's review")
 
     beo_content = generate_beo_content(booking, food_line_items, **_session_content_kwargs(db, session, deposit_paid))
+    # No staff member is in front of this path, so nothing human is offered
+    # up for a decision -- it is kept. See carry_forward_authored.
+    beo_content = carry_forward_authored(db, booking, beo_content)
 
     document = documents_service.create_new_version(db, booking, DocumentType.beo, beo_content, actor=actor)
 

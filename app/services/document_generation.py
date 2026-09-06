@@ -21,6 +21,51 @@ NO_DIETARIES = "No dietary requirements declared"
 
 REVIEW = "[REVIEW]"
 
+DERIVED_KEYS = "_derived"
+
+
+def stamp_derived(content: dict) -> dict:
+    """Record which keys this content was DERIVED from the booking.
+
+    A regenerate has to answer one question per field: did a person write
+    the value that is there now, or did the generator? It used to guess, by
+    comparing the text against a list of fixed placeholder strings -- which
+    is wrong the moment the generator composes a value rather than emitting
+    a constant. It does that constantly: the agreement's clauses carry
+    agreed_min_food_spend and bar_credit, the bar structure carries the
+    credit line, special notes carry the guest count. So after any figure
+    changed, the OLD derived value was reported to staff as "written by a
+    person", pre-ticked to keep, and one click on the safe-looking default
+    wrote a stale figure onto the contract (2026-09-07 review).
+
+    Authorship is not guessable from text, so it is recorded instead. The
+    generator stamps every key it produced; documents.update_content and
+    update_content_fields remove the keys a human writes. What remains is
+    exactly what may be rebuilt without asking.
+    """
+    content[DERIVED_KEYS] = sorted(k for k in content if not k.startswith("_"))
+    return content
+
+
+def mark_authored(content: dict, keys) -> dict:
+    """Take keys out of the derived set: a person wrote these."""
+    derived = content.get(DERIVED_KEYS)
+    if derived is None:
+        return content
+    content[DERIVED_KEYS] = sorted(set(derived) - set(keys))
+    return content
+
+
+def mark_derived(content: dict, keys) -> dict:
+    """Put keys back: the generator produced these values."""
+    derived = content.get(DERIVED_KEYS)
+    if derived is None:
+        return content
+    content[DERIVED_KEYS] = sorted(set(derived) | {k for k in keys if not k.startswith("_")})
+    return content
+
+
+
 # --- Master Policy v1.3 §3: client-facing contract terms --------------------
 # Sourced verbatim from the Master Policy doc and cross-checked against a
 # real signed contract. Shared clauses reference policy.py's own constants
@@ -432,6 +477,13 @@ def _bar_structure_with_credit(bar_structure, bar_credit) -> str:
     base = bar_structure or f"{REVIEW} add bar structure"
     if bar_credit is not None and bar_credit > 0:
         credit = f"${bar_credit:,.0f} bar credit included, applied on the night."
+        # Idempotent. An approved proposal is re-composed through here so
+        # the promise survives a value that replaces the whole field, and
+        # the review panel shows staff the CURRENT value -- credit line
+        # included -- so the text coming back may already carry it.
+        # Prepending blindly printed the credit twice (2026-09-07 review).
+        if credit in base:
+            return base
         return credit + "\n\n" + base
     return base
 
@@ -478,7 +530,7 @@ def generate_beo_content(
     food_total = compute_food_order_total(food_order_line_items)
     contact = booking.contact
 
-    return {
+    return stamp_derived({
         "event_timeline": build_event_timeline(booking, vendors),
         "catering_order_and_service_style": catering_order_and_service_style or f"{REVIEW} add catering order and service style",
         "food_order": {
@@ -533,7 +585,7 @@ def generate_beo_content(
             "client_phone": contact.phone if contact else None,
             "total_paid": str(total_paid) if total_paid is not None else None,
         },
-    }
+    })
 
 
 def generate_agreement_content(booking: Booking) -> dict:
@@ -545,7 +597,7 @@ def generate_agreement_content(booking: Booking) -> dict:
     bank details."""
     space = booking.space
     terms_sections = _terms_sections(booking)
-    return {
+    return stamp_derived({
         "venue": policy.VENUE_TRADING_NAME,
         "space_name": space.name,
         "event_name": booking.event_name,
@@ -571,4 +623,4 @@ def generate_agreement_content(booking: Booking) -> dict:
         "venue_address": policy.VENUE_ADDRESS,
         "venue_contact_name": policy.VENUE_CONTACT_NAME,
         "venue_contact_email": policy.VENUE_CONTACT_EMAIL,
-    }
+    })

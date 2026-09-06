@@ -58,6 +58,11 @@
       {% endif %}
 
       <label style="margin:0 0 4px; font-size:0.85rem;">Proposed <span class="muted">(edit before approving if it is not quite right)</span></label>
+      {# Says this box exists, so the handler can tell "emptied" from "not
+         submitted at all". FastAPI collapses an empty value to the field's
+         default, so value_* alone cannot carry that difference, and an
+         emptied box used to write the AI's text instead of the blank. #}
+      <input type="hidden" name="submitted_fields" value="{{ row.field }}">
       <textarea name="value_{{ row.field }}" rows="3">{{ row.proposed }}</textarea>
 
       <div style="margin-top:6px;">
@@ -77,6 +82,9 @@
 
 <form method="post" action="/admin/bookings/{{ booking.id }}/documents/{{ document.id }}/edit">
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  {# What this page was rendered from: the save refuses if the document
+     moved while the form was open (2026-09-07 review). #}
+  <input type="hidden" name="content_expect" value="{{ content_expect }}">
 
   <div class="card">
     <h2>Timeline</h2>

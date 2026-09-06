@@ -38,6 +38,7 @@ from app.models.document import DocumentStatus, DocumentType
 from app.services import beo_proposals, beo_rules
 from app.services import documents as documents_service
 from app.services.booking import create_booking
+from app.services import document_generation
 from app.services.document_generation import generate_beo_content, rebuild_terms_text
 
 TOKEN = "test-ai-token-do-not-use-in-production"
@@ -61,8 +62,19 @@ def _booking(db, space, *, name="Proposal Test", event_type="birthday", adults=4
 
 
 def _beo(db, booking, **content_overrides):
+    """An Event Order whose overridden fields read as HUMAN-written.
+
+    Every real route to such a value -- a hand-edit through
+    documents.update_content, or an approval through update_content_fields
+    -- takes the key out of the generator's derived set. A test that
+    overrode the content dict directly skipped that, so the regenerate
+    guard correctly saw the generator's own output and had nothing to
+    protect. Marking it here keeps the fixture honest about what it is
+    standing in for (2026-09-07 review).
+    """
     content = generate_beo_content(booking)
     content.update(content_overrides)
+    document_generation.mark_authored(content, list(content_overrides))
     return documents_service.create_new_version(db, booking, DocumentType.beo, content, actor="staff:test")
 
 
@@ -91,12 +103,19 @@ def ai_client(db, hamilton, monkeypatch):
     "1x vegan. Supplier bringing the backdrop.",
     "No dairy — photographer needs a spot near the bar",
 ])
-def test_decoration_supplier_and_setup_language_is_blocked_from_dietaries(dietaries):
+def test_decoration_supplier_and_setup_language_is_flagged_in_dietaries(dietaries):
     """The error that prompted the feature: a decoration note transcribed
-    into Dietaries, taking a declared allergy down with it."""
+    into Dietaries, taking a declared allergy down with it.
+
+    Flagged, not blocked. A blocked proposal is stored for calibration and
+    never shown to staff, so blocking a dietary value means the declared
+    allergy reaches nobody -- and this pattern fires on ordinary allergy
+    notes ("GF cake delivered by client"). Aaron's RSA ruling, in the field
+    where it matters most: a messy allergy note reaches the kitchen, a
+    blocked one does not exist."""
     result = beo_rules.validate({"dietaries": dietaries})
-    assert beo_rules.DIETARY_CONTAMINATION in result.codes
-    assert result.blocked
+    assert beo_rules.DIETARY_CONTAMINATION in result.warning_codes
+    assert not result.blocked
 
 
 @pytest.mark.parametrize("dietaries", [
@@ -277,14 +296,16 @@ def test_a_mixed_payload_is_still_recorded_for_calibration(ai_client, db, loft):
 
 
 def test_a_rule_blocked_proposal_is_stored_but_never_reviewable(ai_client, db, loft):
+    """Uses CLIENT_PROSE: the dietary rules deliberately warn rather than
+    block now, precisely so a dietary value is never the thing withheld."""
     booking = _booking(db, loft)
     _beo(db, booking)
 
-    resp = _propose(ai_client, booking, {"dietaries": "Balloon arch, and no nuts"})
+    resp = _propose(ai_client, booking, {"special_notes": "We have organised a cake"})
 
     assert resp.status_code == 422
     detail = resp.json()["detail"]
-    assert beo_rules.DIETARY_CONTAMINATION in detail["rule_codes"]
+    assert beo_rules.CLIENT_PROSE in detail["rule_codes"]
     proposal = db.query(BeoProposal).filter_by(booking_id=booking.id).one()
     assert proposal.status == STATUS_RULES_BLOCKED
     assert proposal.is_reviewable is False
@@ -607,8 +628,10 @@ def test_a_declared_dietary_can_never_quietly_disappear(db, loft):
     result = beo_rules.validate(
         {"dietaries": "2x vegetarian"}, current={"dietaries": "2x vegetarian, 1x severe nut allergy"}
     )
-    assert beo_rules.DROPS_DIETARY in result.codes
-    assert "nut" in result.as_note()
+    assert beo_rules.DROPS_DIETARY in result.warning_codes
+    assert "nut" in result.warning_note()
+    # Warned, never blocked: a withheld allergy is the worse failure.
+    assert not result.blocked
     # Adding to it is fine.
     assert not beo_rules.validate(
         {"dietaries": "2x vegetarian, 1x nut allergy, 1x coeliac"},
@@ -692,7 +715,7 @@ def test_the_rules_run_again_on_what_the_box_says_at_approval(admin_client, db, 
         f"/admin/bookings/{booking.id}/beo-proposals/{proposal.id}/review",
         data={
             "csrf_token": csrf, "action": f"approve:{row.id}",
-            "value_dietaries": "Balloon arch behind the cake table",
+            "value_dietaries": "I will bring the balloon arch myself",
         },
         follow_redirects=False,
     )
@@ -1003,12 +1026,15 @@ def test_a_proposal_for_another_venues_booking_is_not_found(ai_client, db, loft)
     "Table runners in sage",
     "Chair sashes on the bridal table",
 ])
-def test_the_wider_decoration_vocabulary_is_blocked_from_dietaries(dietaries):
-    assert beo_rules.DIETARY_CONTAMINATION in beo_rules.validate({"dietaries": dietaries}).codes
+def test_the_wider_decoration_vocabulary_is_flagged_in_dietaries(dietaries):
+    result = beo_rules.validate({"dietaries": dietaries})
+    assert beo_rules.DIETARY_CONTAMINATION in result.warning_codes
+    assert not result.blocked, "a dietary value is never the thing withheld"
 
 
 def test_invisible_characters_do_not_smuggle_a_word_past_the_dietary_rule():
-    assert beo_rules.DIETARY_CONTAMINATION in beo_rules.validate({"dietaries": "ball\u200doons, no nuts"}).codes
+    result = beo_rules.validate({"dietaries": "ball\u200doons, no nuts"})
+    assert beo_rules.DIETARY_CONTAMINATION in result.warning_codes
 
 
 @pytest.mark.parametrize("text", [
@@ -1279,46 +1305,56 @@ def test_the_protected_fields_cover_every_proposable_field():
     assert set(beo_rules.PROPOSABLE_FIELDS) <= set(document_regeneration.PROTECTED_FIELD_NAMES)
 
 
-def test_a_generated_placeholder_is_not_treated_as_something_to_lose():
-    """[REVIEW] prompts and the dietaries default are what the generator
-    emits when nothing was captured. Keeping those would be keeping noise --
-    and the dietaries default is the very sentence that overwrote a real
-    allergy, so it must never count as worth protecting."""
+def test_the_generators_own_output_is_never_a_loss(db, loft):
+    """The question is no longer "does this text look generated?" -- which
+    was unanswerable the moment the generator composed a value instead of
+    emitting a constant, and is what reported stale contract terms as a
+    human's words. document_generation stamps what it derived; nothing in
+    an untouched document is at risk."""
     from app.services import document_regeneration as dr
 
-    assert dr._is_disposable("[REVIEW] add room layout notes")
-    assert dr._is_disposable("No dietary requirements declared")
-    assert dr._is_disposable("")
-    assert not dr._is_disposable("1x severe nut allergy (table 4).")
+    booking = _booking(db, loft, name="Untouched")
+    doc = documents_service.create_new_version(
+        db, booking, DocumentType.beo, generate_beo_content(booking), actor="staff:test"
+    )
+    assert dr.authored_keys(db, doc) == set()
+    assert dr.losses(db, doc, generate_beo_content(booking)) == []
 
 
-@pytest.mark.parametrize("value", [
-    "Client bringing cake. [REVIEW] confirm nut-free with kitchen",
-    "[REVIEW] with Aaron: client wants the nut allergy read back to the kitchen",
-    "Rounds of 8. [REVIEW]",
-])
-def test_a_staff_note_that_mentions_the_review_marker_is_still_protected(value):
-    """Staff reuse the [REVIEW] convention in their own notes. A substring
-    test classed those as placeholders and regenerated over them without
-    asking -- including one carrying an allergy follow-up (2026-09-06
-    review). Only an exact generated placeholder is disposable."""
+def test_a_composed_generator_value_is_not_mistaken_for_a_human_value(db, loft):
+    """The case the old text test got wrong: a bar credit makes the
+    generator's own bar_structure a composed string that matches no fixed
+    placeholder, so it read as "written by a person" and a regenerate
+    offered to keep a superseded credit figure."""
+    from decimal import Decimal
+
     from app.services import document_regeneration as dr
 
-    assert not dr._is_disposable(value)
+    booking = _booking(db, loft, name="Composed Value")
+    booking.bar_credit = Decimal("250")
+    db.flush()
+    doc = documents_service.create_new_version(
+        db, booking, DocumentType.beo, generate_beo_content(booking), actor="staff:test"
+    )
+    assert "250" in doc.content["bar_structure"]
+
+    booking.bar_credit = Decimal("500")
+    db.flush()
+    fresh = generate_beo_content(booking)
+    assert "500" in fresh["bar_structure"]
+    assert [loss.field for loss in dr.losses(db, doc, fresh)] == [], "the generator's own value is its own"
 
 
-def test_every_generated_placeholder_is_recognised(db, loft):
-    """Keeps the exact-match set in step with the generator. A bare booking
-    produces only placeholders, so every protected field it fills must be
-    disposable -- otherwise a first regenerate would ask about fields no
-    human has ever touched, and staff would learn to click through."""
+def test_a_staff_note_that_mentions_the_review_marker_is_still_protected(db, loft):
+    """Staff reuse the [REVIEW] convention in their own notes. Under the old
+    text test one of these was classed as a placeholder and regenerated over
+    without asking; authorship does not care what the words look like."""
     from app.services import document_regeneration as dr
 
-    booking = _booking(db, loft, name="Placeholder Drift")
-    content = generate_beo_content(booking)
-    for spec in dr.PROTECTED_FIELDS:
-        rendered = spec.render(content.get(spec.name))
-        assert dr._is_disposable(rendered), (spec.name, rendered)
+    booking = _booking(db, loft, name="Marker Note")
+    doc = _beo(db, booking, special_notes="[REVIEW] with Aaron: read the nut allergy back to the kitchen")
+    fresh = generate_beo_content(booking)
+    assert [loss.field for loss in dr.losses(db, doc, fresh)] == ["special_notes"]
 
 
 # --- the agreement is the contract, and it is protected too --------------------
@@ -1940,3 +1976,206 @@ def test_a_proposal_resolved_by_an_approval_is_not_relabelled_superseded(db, lof
     assert first.fields[0].state == FIELD_APPROVED
     assert second.status == STATUS_PENDING
     assert db.query(BookingEvent).filter_by(booking_id=booking.id, event_type="beo_proposal_superseded").count() == 0
+
+
+def test_an_emptied_box_is_a_blank_not_a_licence_to_write_the_ai_text(admin_client, db, loft):
+    """FastAPI turns an empty form value into the field's default, so ""
+    and "absent" both arrived as None -- and None meant "keep what was
+    proposed". So a staff member who deleted the whole box and clicked
+    Approve got the AI's original text written, recorded as approved
+    unedited (2026-09-07 review). The form now says which boxes it
+    rendered, so an emptied one is a real blank and the house rules refuse
+    it, which is what the route's own comment always claimed."""
+    booking = _booking(db, loft, name="Emptied Box")
+    document = _beo(db, booking, dietaries="1x severe nut allergy (table 4).")
+    proposal, _ = beo_proposals.propose(
+        db, booking, fields={"dietaries": "Balloons behind cake table, 1x nut allergy"},
+        source="email", actor="ai:claude",
+    )
+    row = proposal.fields[0]
+    page = admin_client.get(f"/admin/bookings/{booking.id}/documents/{document.id}/edit").text
+    csrf = re.search(r'name="csrf_token" value="([^"]+)"', page).group(1)
+    assert 'name="submitted_fields" value="dietaries"' in page, "the form must declare its boxes"
+
+    resp = admin_client.post(
+        f"/admin/bookings/{booking.id}/beo-proposals/{proposal.id}/review",
+        data={
+            "csrf_token": csrf, "action": f"approve:{row.id}",
+            "submitted_fields": "dietaries", "value_dietaries": "",
+        },
+        follow_redirects=False,
+    )
+
+    assert resp.status_code == 409, "emptying a field that holds a declared allergy is refused"
+    db.expire_all()
+    current = documents_service.get_current(db, booking.id, DocumentType.beo)
+    assert current.content["dietaries"] == "1x severe nut allergy (table 4).", "nothing was written"
+    row = db.get(BeoProposalField, row.id)
+    assert row.state == FIELD_PENDING and row.applied_value is None
+
+
+def test_a_hand_edit_cannot_revert_an_approval_that_landed_while_it_was_open(admin_client, db, loft):
+    """The form posts a whole content dict built when the page rendered, so
+    it silently reverted anything written in between -- an approval applying
+    a declared allergy to a field the editor never touched. The row lock did
+    not help: by then the stale dict was already in hand (2026-09-07)."""
+    booking = _booking(db, loft, name="Stale Edit")
+    document = _beo(db, booking)
+
+    page = admin_client.get(f"/admin/bookings/{booking.id}/documents/{document.id}/edit").text
+    csrf = re.search(r'name="csrf_token" value="([^"]+)"', page).group(1)
+    expect = re.search(r'name="content_expect" value="([^"]+)"', page).group(1)
+
+    # Meanwhile, an approval writes the allergy onto the same document.
+    proposal, _ = beo_proposals.propose(
+        db, booking, fields={"dietaries": "1x severe nut allergy (table 4)."},
+        source="client email", actor="ai:claude",
+    )
+    beo_proposals.approve_field(db, proposal.fields[0], actor="staff:liz")
+    db.expire_all()
+
+    resp = admin_client.post(
+        f"/admin/bookings/{booking.id}/documents/{document.id}/edit",
+        data={
+            "csrf_token": csrf, "content_expect": expect,
+            "catering_order_and_service_style": "Grazing on arrival.",
+            "bar_structure": "", "room_layout_notes": "", "music": "", "entertainment": "",
+            "dietaries": "", "accessibility": "", "decorations": "", "special_notes": "",
+            "av_notes": "", "internal_notes": "typo fixed", "status_text": "",
+        },
+        follow_redirects=False,
+    )
+
+    assert resp.status_code == 409, "a stale save must be refused, not applied"
+    db.expire_all()
+    current = documents_service.get_current(db, booking.id, DocumentType.beo)
+    assert current.content["dietaries"] == "1x severe nut allergy (table 4).", "the approval stands"
+
+
+def test_the_calibration_read_survives_the_proposal_resolving(ai_client, db, loft):
+    """Once every field is decided the proposal RESOLVES -- which is exactly
+    when applied_value next to proposed_value becomes worth reading. A
+    pending-only read went null at that moment, so the model was told to
+    read the correction before proposing and could never see it, and
+    re-proposed wording a human had already rewritten (2026-09-07 review)."""
+    booking = _booking(db, loft, name="Calibration")
+    _beo(db, booking)
+    proposal, _ = beo_proposals.propose(
+        db, booking, fields={"dietaries": "1x nut allergy"}, source="client email", actor="ai:claude"
+    )
+    # Aaron rewrites it before approving -- the signal itself.
+    beo_proposals.approve_field(
+        db, proposal.fields[0], actor="staff:aaron", value="1x severe nut allergy (table 4)."
+    )
+    db.expire_all()
+    assert beo_proposals.pending_proposal(db, booking.id) is None, "nothing is pending any more"
+
+    resp = ai_client.get(f"/api/ai/bookings/{booking.reference_code}/event-order-proposal")
+
+    assert resp.status_code == 200
+    body = resp.json()["proposal"]
+    assert body is not None, "the decided proposal must still be readable"
+    field = next(f for f in body["fields"] if f["field"] == "dietaries")
+    assert field["proposed_value"] == "1x nut allergy"
+    assert field["applied_value"] == "1x severe nut allergy (table 4)."
+    assert field["edited_before_approval"] is True
+
+
+def test_approving_a_bar_structure_keeps_the_bar_credit_promise(db, loft):
+    """The credit line is generated from booking.bar_credit and printed only
+    inside bar_structure. A proposal replaces the whole field, so approving
+    one deleted the promise the floor has to honour -- with no rule covering
+    it, unlike the music equivalent (2026-09-07 review)."""
+    from decimal import Decimal
+
+    booking = _booking(db, loft, name="Bar Credit")
+    booking.bar_credit = Decimal("250")
+    db.flush()
+    _beo(db, booking)
+
+    proposal, result = beo_proposals.propose(
+        db, booking, fields={"bar_structure": "Tab to $1,500, then cash bar."},
+        source="client email", actor="ai:claude",
+    )
+    assert not result.blocked, result.codes
+    beo_proposals.approve_field(db, proposal.fields[0], actor="staff:aaron")
+
+    db.expire_all()
+    written = documents_service.get_current(db, booking.id, DocumentType.beo).content["bar_structure"]
+    assert "Tab to $1,500, then cash bar." in written, "the approved wording is there"
+    assert "250" in written and "bar credit" in written.lower(), "and so is the credit the floor must honour"
+
+
+def test_no_bar_credit_means_no_invented_credit_line(db, loft):
+    booking = _booking(db, loft, name="No Bar Credit")
+    _beo(db, booking)
+    proposal, _ = beo_proposals.propose(
+        db, booking, fields={"bar_structure": "Cash bar all night."},
+        source="client email", actor="ai:claude",
+    )
+    beo_proposals.approve_field(db, proposal.fields[0], actor="staff:aaron")
+    db.expire_all()
+    written = documents_service.get_current(db, booking.id, DocumentType.beo).content["bar_structure"]
+    assert written == "Cash bar all night."
+
+
+# --- documents written before authorship was recorded -------------------------
+
+
+def test_a_pre_provenance_document_nobody_touched_regenerates_freely(db, loft):
+    """No stamp and no human write recorded against the version: the
+    generator wrote all of it, which is exact rather than a guess. This is
+    every document that existed before the redesign."""
+    from app.services import document_regeneration as dr
+
+    booking = _booking(db, loft, name="Legacy Untouched")
+    content = generate_beo_content(booking)
+    content.pop("_derived")  # as an older document has it
+    doc = documents_service.create_new_version(db, booking, DocumentType.beo, content, actor="staff:test")
+
+    assert dr.authored_keys(db, doc) == set()
+    assert dr.losses(db, doc, generate_beo_content(booking)) == []
+
+
+def test_a_pre_provenance_document_a_human_touched_protects_everything(db, loft):
+    """A hand-edit is recorded per VERSION, not per field, so which key is
+    unknowable. Every differing field is treated as at risk -- over-keeping
+    is recoverable on the screen, silent loss is not."""
+    from app.services import document_regeneration as dr
+
+    booking = _booking(db, loft, name="Legacy Edited")
+    content = generate_beo_content(booking)
+    content.pop("_derived")
+    doc = documents_service.create_new_version(db, booking, DocumentType.beo, content, actor="staff:test")
+    edited = dict(doc.content)
+    edited["room_layout_notes"] = "Rounds of 8, dance floor centre."
+    documents_service.update_content(db, doc, edited, actor="staff:aaron")
+    db.expire_all()
+    doc = documents_service.get_current(db, booking.id, DocumentType.beo)
+
+    assert dr.authored_keys(db, doc) is None, "unknowable, and says so"
+    fields = [loss.field for loss in dr.losses(db, doc, generate_beo_content(booking))]
+    assert "room_layout_notes" in fields
+
+
+def test_approving_a_bar_structure_that_repeats_the_credit_line_does_not_double_it(db, loft):
+    """The review panel shows staff the current value, credit line and all,
+    so the text coming back may already carry it. Re-composing blindly
+    printed the promise twice (found reviewing the fix, 2026-09-07)."""
+    from decimal import Decimal
+
+    booking = _booking(db, loft, name="Bar Credit Echo")
+    booking.bar_credit = Decimal("250")
+    db.flush()
+    _beo(db, booking)
+    echoed = "$250 bar credit included, applied on the night.\n\nTab to $1,500, then cash bar."
+
+    proposal, result = beo_proposals.propose(
+        db, booking, fields={"bar_structure": echoed}, source="client email", actor="ai:claude"
+    )
+    assert not result.blocked, result.codes
+    beo_proposals.approve_field(db, proposal.fields[0], actor="staff:aaron")
+
+    db.expire_all()
+    written = documents_service.get_current(db, booking.id, DocumentType.beo).content["bar_structure"]
+    assert written.count("bar credit included") == 1, written

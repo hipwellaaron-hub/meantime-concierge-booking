@@ -28,6 +28,17 @@ Every rule comes from a real failure or a real house rule:
   cake" is the client's voice pasted through; the floor team needs
   "Cake: client supplying".
 - RSA_MISSING is a policy floor for an 18th with children on the booking.
+
+Both dietary rules WARN; they do not block. A blocked proposal is stored
+for calibration and never shown to staff, so blocking a dietary value
+means the declared allergy reaches nobody -- and these two patterns fire
+on ordinary allergy notes: "GF cake delivered by client", "Set up a
+nut-free prep area", "Client collecting the cake at 5pm", "Allergy sign on
+table 4" were all refused (2026-09-07 review). That is Aaron's own ruling
+from the RSA rule, applied in the field where it matters most: "A safety
+rule that blocks the delivery of safety data is worse than no rule." A
+messy allergy note reaches the kitchen; a blocked one does not exist. The
+warning is surfaced on the review screen, where a human decides.
 - LEGACY_MUSIC_SPLIT: older Event Orders carry ONE merged
   music_entertainment value, and the template prints it under Music until
   a split `music` exists. Approving Music alone clears the merged field,
@@ -147,13 +158,42 @@ _DIETARY_TOKENS = (
     "allerg", "anaphyla", "intoleran", "epipen", "fodmap",
 )
 
+# Matched at a word START, never as a bare substring. "nut" used to match
+# inside "minutes" and "egg" inside "eggplant", so "2x vegetarian. Kitchen
+# needs 20 minutes notice." declared a nut allergy and any proposal that
+# did not repeat the word was refused for dropping it (2026-09-07 review).
+# A prefix rather than a whole word, because the stems are deliberate:
+# "allerg" has to catch allergy/allergies/allergic, "nut" has to catch
+# nuts, and "vegetarian" has to catch vegetarians.
+# Stems, where any continuation is the same requirement: allergy /
+# allergies / allergic / allergen, anaphylaxis / anaphylactic.
+_DIETARY_STEMS = ("allerg", "anaphyla", "intoleran")
+# Words, where only a plural may follow -- so "nut" still matches "nuts"
+# and "nut-free", while "egg" no longer matches "eggplant".
+_DIETARY_SUFFIX = {"soy": r"a?"}
+
+_DIETARY_TOKEN_RE = {
+    token: re.compile(
+        r"(?<![a-z])" + re.escape(token)
+        + (r"[a-z]*" if token in _DIETARY_STEMS else _DIETARY_SUFFIX.get(token, r"(?:e?s)?") + r"(?![a-z])"),
+        re.IGNORECASE,
+    )
+    for token in _DIETARY_TOKENS
+}
+
+# "my"/"mine" only where a pronoun can actually stand: followed by a
+# lower-case word. "My Nguyen, 0400 000 000" is a real contact name and
+# "(My Magic Co)" a real supplier, and both were refused outright -- on
+# the two fields most likely to hold a name (2026-09-07 review).
+#
 # First-person client voice. A run-sheet note has no narrator: "DJ from
 # 8pm", not "we have organised a DJ from 8pm". The bare "i" branch
 # refuses a following full stop so the venue's own "I.D. checks" wording
 # -- which the RSA rule effectively asks for -- is not blocked by it.
 _CLIENT_PROSE = re.compile(
-    r"(?<!\w)(?:i(?![\w.])|i'm|i'll|i've|i'd|im|ive|we|we're|we'll|we've|we'd|weve|my|mine|myself|"
-    r"our|ours|ourselves)(?!\w)",
+    r"(?<!\w)(?:i(?![\w.])|i'm|i'll|i've|i'd|im|ive|we|we're|we'll|we've|we'd|weve|mine|myself|"
+    r"our|ours|ourselves)(?!\w)"
+    r"|(?<!\w)my(?=\s+(?-i:[a-z]))",
     re.IGNORECASE,
 )
 # Requests and hopes: the client's voice even without a pronoun.
@@ -219,7 +259,7 @@ def _excerpt(match: re.Match) -> str:
 def declared_dietaries(text: str | None) -> set[str]:
     """Which dietary requirements a value declares, as matched tokens."""
     lowered = normalise(text).lower()
-    return {token for token in _DIETARY_TOKENS if token in lowered}
+    return {token for token, pattern in _DIETARY_TOKEN_RE.items() if pattern.search(lowered)}
 
 
 def looks_like_eighteenth(*, event_type: str | None, event_name: str | None, notes: str | None = None) -> bool:
@@ -337,7 +377,7 @@ def _validate(
     if "dietaries" in proposed:
         lost = declared_dietaries(current.get("dietaries")) - declared_dietaries(proposed["dietaries"])
         if lost:
-            result.violations.append(
+            result.warnings.append(
                 RuleViolation(
                     DROPS_DIETARY, "dietaries",
                     "The Event Order currently declares " + ", ".join(sorted(lost)) +
@@ -349,7 +389,7 @@ def _validate(
     dietaries = normalise(proposed.get("dietaries"))
     match = _DIETARY_CONTAMINATION.search(dietaries)
     if match:
-        result.violations.append(
+        result.warnings.append(
             RuleViolation(
                 DIETARY_CONTAMINATION, "dietaries",
                 "Dietaries carries decoration, supplier or setup language. That belongs in Decorations or "

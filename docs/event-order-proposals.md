@@ -28,6 +28,56 @@ on purpose.
 | Approving Music alone on an older Event Order (ultrareview) | **Refused, at propose and at approval.** Pre-wizard Event Orders carry ONE merged `music_entertainment` value, printed under Music until a split `music` exists; approving Music cleared it, so "DJ 8pm + Magician from 9pm" became "DJ 8pm" and the magician vanished from the run sheet. `LEGACY_MUSIC_SPLIT` blocks unless Entertainment is written too or already holds text, or Music carries the whole value. It ignores the generator's own `[REVIEW]` prompt and is dormant once `music` is split — the first cut got that wrong and refused every proposal on a fresh Event Order. | `beo_rules.LEGACY_MUSIC_SPLIT`, `beo_proposals._printed_legacy_music` |
 | Regenerate screen calling an approval a hand-edit (ultrareview, nit) | **Fixed at the event-type depth.** Approvals wrote the same `document_edited` event a hand-edit does, so the screen said "hand-edited by X" beside a badge saying "approved by X". `update_content_fields` now takes the event type; an approval records `beo_proposal_applied`. | `documents.update_content_fields`, `beo_proposals._apply` |
 
+## 1b. The redesign, 2026-09-07
+
+A ten-angle local review found fifteen defects, and two of them said the
+same thing: the design was **guessing**. Aaron's call was to fix the root
+rather than patch the list.
+
+**Authorship is recorded, not inferred.** `document_generation.stamp_derived`
+marks every key the generator produced; `documents.update_content` and
+`update_content_fields` take a key out of that set the moment a person
+writes it. `document_regeneration.losses` reads the set.
+
+The guess it replaced compared the current text against a list of fixed
+placeholder strings, which is unanswerable as soon as the generator
+composes a value rather than emitting a constant — and it does that
+constantly: the agreement's clauses carry `agreed_min_food_spend`, the bar
+structure carries the credit line, special notes carry the guest count. So
+after any figure changed, the OLD derived value was reported as "written by
+a person", pre-ticked to keep, and one click on the safe-looking default
+wrote a stale figure onto the contract. Deleted with it:
+`_GENERATED_PLACEHOLDERS`, `_is_disposable`, and the parity test that tried
+to keep them in step with the generator.
+
+A document written before this carries no stamp. For those, authorship
+comes from the audit trail instead: no `document_edited` and no
+`beo_proposal_applied` event for that version means the generator wrote all
+of it, which is exact. Only a legacy document that a human HAS touched is
+unknowable per field, and there every differing field is treated as at
+risk.
+
+**The dietary rules warn; they do not block.** A blocked proposal is stored
+for calibration and never shown to staff, so blocking a dietary value means
+the declared allergy reaches nobody — and both patterns fired on ordinary
+allergy notes ("GF cake delivered by client", "Set up a nut-free prep
+area", "Client collecting the cake", "Allergy sign on table 4"). The token
+match was substring-based too, so `nut` matched inside "minutes" and `egg`
+inside "eggplant", and a correct transcription was refused for dropping a
+requirement that was never declared. Aaron's RSA ruling, applied where it
+matters most: a messy allergy note reaches the kitchen, a blocked one does
+not exist.
+
+**The client's wizard submission was the door nobody was watching.** It
+regenerates the Event Order with no staff member in front of it, so no
+confirmation screen can be shown and nobody is there to notice. A client
+completing the wizard with no dietary answer replaced an approved allergy
+with "No dietary requirements declared" — the original incident, from the
+client's own browser. `wizard_generation.carry_forward_authored` now keeps
+every human-authored value on that path, with its authorship, so a later
+staff regenerate still recognises it. Covered end to end through the real
+submission.
+
 ## 2. Regenerate no longer destroys a human value silently
 
 This was a **live bug in the document layer**, not a limitation of
