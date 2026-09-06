@@ -13,13 +13,11 @@ the codes that failed, so the caller learns what to fix rather than
 retrying blind.
 """
 
-import uuid
-
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 
-from app.api.ai_auth import AiContext, require_ai_write
+from app.api.ai_auth import AiContext, require_ai, require_ai_write
 from app.models import AiRequestKind, Booking, Space
 from app.services import ai_access, beo_proposals, beo_rules
 
@@ -60,31 +58,20 @@ def propose_event_order_values(
     the proposed value is shown against the one it would replace.
     """
     booking = _booking_by_reference(ctx, reference)
-    unknown = sorted(set(payload.fields) - set(beo_rules.PROPOSABLE_FIELDS))
-    if unknown:
-        # Answered before anything is stored: a caller aiming at the food
-        # order or a total has misread the contract, and the useful reply
-        # is the list of fields that do exist.
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "error": "not a proposable field",
-                "unknown_fields": unknown,
-                "proposable_fields": list(beo_rules.PROPOSABLE_FIELDS),
-                "note": "Status, the food order and every total are computed from the catalogue, the wizard "
-                        "and the booking. They are not proposable.",
-            },
+    try:
+        proposal, result = beo_proposals.propose(
+            ctx.db,
+            booking,
+            fields=payload.fields,
+            source=payload.source,
+            actor=ctx.actor,
+            trigger=payload.trigger,
+            model=payload.model,
         )
-
-    proposal, result = beo_proposals.propose(
-        ctx.db,
-        booking,
-        fields=payload.fields,
-        source=payload.source,
-        actor=ctx.actor,
-        trigger=payload.trigger,
-        model=payload.model,
-    )
+    except beo_proposals.ProposalError as exc:
+        # The booking cannot take a proposal at all (cancelled, or a linked
+        # second room whose Event Order lives on the parent).
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     ai_access.log_request(
         ctx.db,
@@ -109,7 +96,9 @@ def propose_event_order_values(
                     {"code": v.code, "field": v.field, "message": v.message, "excerpt": v.excerpt}
                     for v in result.violations
                 ],
-                "note": "Stored for calibration, not shown to staff and not applied. Fix and re-propose.",
+                "proposable_fields": list(beo_rules.PROPOSABLE_FIELDS),
+                "note": "Recorded against the booking for calibration and visible in its audit trail, but not "
+                        "offered for approval and not applied. Fix and re-propose.",
             },
         )
 
@@ -118,6 +107,7 @@ def propose_event_order_values(
         "reference": booking.reference_code,
         "status": proposal.status,
         "awaiting_approval": [f.field for f in proposal.pending_fields],
+        "warnings": [{"code": w.code, "field": w.field, "message": w.message} for w in result.warnings],
         "as_of": ctx.as_of_iso,
         "note": "Stored as a pending proposal. Nothing is applied until a staff member approves it on the "
                 "Event Order form.",
@@ -125,11 +115,14 @@ def propose_event_order_values(
 
 
 @router.get("/bookings/{reference}/event-order-proposal")
-def read_event_order_proposal(reference: str, ctx: AiContext = Depends(require_ai_write)):
+def read_event_order_proposal(reference: str, ctx: AiContext = Depends(require_ai)):
     """What is still awaiting approval, and what happened to the last ask.
 
-    Behind the same write gate as proposing, deliberately: it exists so the
-    proposer can see whether its own work landed, not as a general read.
+    A read, behind the read gate. It sat behind require_ai_write until the
+    2026-09-06 review pointed out that enforce_write_budget MUTATES state:
+    once the budget had tripped, this GET re-disabled writes the moment
+    staff re-enabled them, and polling it after a 429 is the caller's most
+    natural behaviour.
     """
     booking = _booking_by_reference(ctx, reference)
     proposal = beo_proposals.pending_proposal(ctx.db, booking.id)

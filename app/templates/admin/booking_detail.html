@@ -1,6 +1,20 @@
 {% extends "admin/_base.html" %}
 {% block title %}{{ booking.event_name }}{% endblock %}
 {% block content %}
+{% if beo_proposal_waiting %}
+{# Deliberately at the top of the page and outside every <details>: this is
+   the only place staff learn a proposal exists, and it was previously
+   rendered inside the collapsed "Traffic source" section where nobody
+   would ever have seen it (2026-09-06 review). #}
+<div class="card" style="border-color: var(--gold);">
+  <p style="margin:0;"><span class="badge gold">Event Order proposal waiting</span>
+    <span style="font-size:0.9rem;">
+      {{ beo_proposal_waiting }} field{{ "" if beo_proposal_waiting == 1 else "s" }} proposed by Claude, not applied.
+      {% if beo_proposal_document_id %}<a href="/admin/bookings/{{ booking.id }}/documents/{{ beo_proposal_document_id }}/edit">Review on the Event Order &rarr;</a>
+      {% else %}Generate the Event Order to review them.{% endif %}
+    </span></p>
+</div>
+{% endif %}
 {% set current_agreement = (booking.documents | selectattr('type.value', 'equalto', 'agreement') | selectattr('is_current') | list | first) %}
 {% set current_beo = (booking.documents | selectattr('type.value', 'equalto', 'beo') | selectattr('is_current') | list | first) %}
 {% set deposit_invoices = booking.invoices | selectattr('type.value', 'equalto', 'deposit') | list %}
@@ -76,14 +90,6 @@
 
 <details class="card">
   <summary class="section-summary">Traffic source</summary>
-  {% if beo_proposal_waiting %}
-  <p style="margin:0 0 10px;"><span class="badge gold">Event Order proposal waiting</span>
-    <span class="muted" style="font-size:0.85rem;">
-      {{ beo_proposal_waiting }} field(s) proposed by Claude.
-      {% if beo_proposal_document_id %}Review them on the <a href="/admin/bookings/{{ booking.id }}/documents/{{ beo_proposal_document_id }}/edit">Event Order</a>.
-      {% else %}Generate the Event Order to review them.{% endif %}
-    </span></p>
-  {% endif %}
   {% if not booking.first_touch_attribution and not booking.last_touch_attribution %}
   <p class="muted" style="margin:0;">Unknown -- not tracked. This booking was staff-entered, imported, or arrived by phone, so there was never a page load to capture attribution from.</p>
   {% else %}

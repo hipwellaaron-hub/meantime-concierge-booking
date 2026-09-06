@@ -1427,7 +1427,9 @@ def delete_booking_and_dependents(db: Session, booking: Booking, *, actor: str) 
     can't be half-removed."""
     from sqlalchemy import delete as sql_delete
 
-    from app.models import BookingVendor, Payment
+    from sqlalchemy import update as sql_update
+
+    from app.models import AiRequestLog, BeoProposal, BookingVendor, Payment
     from app.models.wizard_session import WizardSession
 
     if booking.parent_booking_id is not None:
@@ -1456,6 +1458,15 @@ def delete_booking_and_dependents(db: Session, booking: Booking, *, actor: str) 
         db.execute(sql_delete(BookingEvent).where(BookingEvent.booking_id == target.id))
         db.execute(sql_delete(WizardSession).where(WizardSession.booking_id == target.id))
         db.execute(sql_delete(BookingVendor).where(BookingVendor.booking_id == target.id))
+        db.execute(sql_delete(BeoProposal).where(BeoProposal.booking_id == target.id))
+        # The AI request log is a security record and outlives the booking
+        # it referenced; its FK would otherwise block this delete outright
+        # (2026-09-06 review -- this is the first code to populate it).
+        db.execute(
+            sql_update(AiRequestLog)
+            .where(AiRequestLog.booking_id == target.id)
+            .values(booking_id=None)
+        )
         db.execute(sql_delete(Booking).where(Booking.id == target.id))
 
     logger.warning("HARD DELETE booking by %s -- %s", actor, snapshot)

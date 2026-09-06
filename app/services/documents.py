@@ -122,6 +122,38 @@ def update_content(db: Session, document: Document, content: dict, *, actor: str
     return document
 
 
+def update_content_fields(db: Session, document: Document, changes: dict, *, actor: str) -> Document:
+    """Merge specific keys into a draft's content, reading it AFTER the row
+    lock is taken.
+
+    update_content above takes a whole content dict the caller built from
+    an earlier read, so two callers editing different keys last-write-wins
+    -- one silently reverts the other while both believe they succeeded
+    (2026-09-06 review). This exists for callers that know exactly which
+    keys they are changing: the lock, the read and the write are one
+    critical section, so a concurrent change to a different key survives.
+    """
+    db.refresh(document, with_for_update=True)
+    if document.status != DocumentStatus.draft:
+        raise ValueError(f"cannot edit a document that is already {document.status.value} -- only a draft can be edited")
+
+    content = dict(document.content)
+    content.update(changes)
+    document.content = content
+    db.add(
+        BookingEvent(
+            booking_id=document.booking_id,
+            event_type="document_edited",
+            field_name=f"{document.type.value}_version",
+            new_value=str(document.version),
+            actor=actor,
+        )
+    )
+    db.commit()
+    db.refresh(document)
+    return document
+
+
 def _transition(db: Session, document: Document, new_status: DocumentStatus, *, actor: str) -> Document:
     old_status = document.status
     document.status = new_status

@@ -6,30 +6,37 @@ staff actor passing through approve_field / approve_all.
 
 What the layer guarantees:
 
-- A proposal is validated the moment it arrives (app.services.beo_rules).
-  A blocked one is stored for calibration and never becomes reviewable.
+- A proposal is validated when it arrives, and the value actually being
+  written is validated AGAIN at approval (app.services.beo_rules). The
+  approval screen lets Aaron edit the text first, so a propose-time-only
+  gate could be walked past by pasting into the box (2026-09-06 review).
 - Approval applies to the booking's CURRENT Event Order draft, resolved
-  at approval time, never to whatever document existed when the proposal
-  was made. An Event Order that has been sent cannot be edited at all --
-  that guard is documents.update_content's, and it is the same one the
-  hand-edit form goes through.
+  at approval time under a row lock taken BEFORE the content is read, so
+  two approvals cannot silently revert one another. An Event Order that
+  has been sent cannot be edited at all.
 - Every approval records what the field held before, what was proposed,
   and what was actually written. Approving an edited value is the signal
-  the whole feature is measured on.
-- A new proposal supersedes whatever was still pending on an older one,
-  so the review screen only ever shows the current ask.
+  the whole feature is measured on, so the comparison is made on
+  normalised line endings -- a browser rewrites a textarea's newlines,
+  and that must not read as a human correction.
+- One pending proposal per booking: a new ask supersedes what was still
+  pending, under an advisory lock so two concurrent proposals cannot both
+  survive. Superseding a field writes its own audit row, because a
+  proposed allergy that nobody ever saw disappearing is exactly the thing
+  the timeline has to be able to explain.
 """
 
 import datetime as dt
 import logging
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from app.models import Booking, BookingEvent
 from app.models.beo_proposal import (
     FIELD_APPROVED,
+    FIELD_BLOCKED,
     FIELD_PENDING,
     FIELD_REJECTED,
     FIELD_SUPERSEDED,
@@ -42,6 +49,7 @@ from app.models.beo_proposal import (
 )
 from app.models.document import Document, DocumentStatus, DocumentType
 from app.services import beo_rules, documents as documents_service
+from app.services.booking import VOIDED_STATUSES
 
 logger = logging.getLogger(__name__)
 
@@ -57,17 +65,24 @@ _NULLABLE_WHEN_EMPTY = ("music", "entertainment", "accessibility", "decorations"
 
 class ProposalError(ValueError):
     """Something a caller can fix: no draft to apply to, a field already
-    decided, a proposal that is not reviewable."""
+    decided, a value the house rules refuse."""
+
+
+def normalise_newlines(value: str | None) -> str:
+    """Browsers submit a textarea's newlines as CRLF. Storing that would
+    make every untouched multi-line approval read as an edit, which is the
+    one number this feature exists to produce."""
+    return (value or "").replace("\r\n", "\n").replace("\r", "\n")
 
 
 def normalise_beo_field(field: str, value: str | None) -> str | None:
     """The document's own storage shape for one field value."""
-    text = (value or "").strip()
+    text_value = normalise_newlines(value).strip()
     if field == "dietaries":
-        return text or NO_DIETARIES
+        return text_value or NO_DIETARIES
     if field in _NULLABLE_WHEN_EMPTY:
-        return text or None
-    return text
+        return text_value or None
+    return text_value
 
 
 def current_draft_beo(db: Session, booking_id: uuid.UUID) -> Document | None:
@@ -80,16 +95,10 @@ def current_draft_beo(db: Session, booking_id: uuid.UUID) -> Document | None:
     return document
 
 
-def _display(field: str, value) -> str:
-    if value is None:
-        return ""
-    return str(value)
-
-
 def current_values(document: Document | None) -> dict[str, str]:
     """What the Event Order reads today, for the ten proposable fields --
-    the "current" column of the review panel, and the base the RSA floor
-    is checked against."""
+    the "current" column of the review panel, and the base every
+    comparison rule is judged against."""
     content = (document.content if document is not None else None) or {}
     values: dict[str, str] = {}
     for field in beo_rules.PROPOSABLE_FIELDS:
@@ -102,39 +111,76 @@ def current_values(document: Document | None) -> dict[str, str]:
             # panel has to show the same thing or "current" would read
             # blank against a document that visibly is not.
             raw = content.get("music_entertainment")
-        values[field] = _display(field, raw)
+        values[field] = "" if raw is None else str(raw)
     return values
 
 
+def can_receive_proposals(booking: Booking) -> str | None:
+    """Why this booking cannot take a proposal, or None if it can.
+
+    A cancelled or dead booking is not having an event, and a linked
+    child room can never have an Event Order of its own (see
+    documents.create_new_version) -- proposing against either would
+    store something nobody can ever review."""
+    if booking.status in VOIDED_STATUSES:
+        return f"this booking is {booking.status.value}, so its Event Order is not going anywhere"
+    if booking.parent_booking_id is not None:
+        return "this is a linked second room; the Event Order belongs to the parent booking"
+    return None
+
+
 def pending_proposal(db: Session, booking_id: uuid.UUID) -> BeoProposal | None:
-    """The one proposal a reviewer should be looking at, if any."""
-    proposal = db.scalars(
+    """The newest proposal still awaiting review, if any. Callers decide
+    what to do with one that has no fields left pending (`is_reviewable`)."""
+    return db.scalars(
         select(BeoProposal)
         .where(BeoProposal.booking_id == booking_id, BeoProposal.status == STATUS_PENDING)
         .order_by(BeoProposal.created_at.desc())
     ).first()
-    return proposal if proposal is not None and proposal.is_reviewable else proposal
 
 
-def _supersede_older(db: Session, booking_id: uuid.UUID, *, keep: uuid.UUID, actor: str) -> int:
+def _proposal_lock(db: Session, booking_id: uuid.UUID) -> None:
+    """Serialise proposals for one booking, so "supersede whatever was
+    pending, then insert" cannot interleave with itself and leave two
+    pending proposals -- one of which would be invisible forever. Same
+    transaction-level advisory lock the enquiry path uses."""
+    db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:k)::bigint)"), {"k": f"beo_proposal:{booking_id}"})
+
+
+def _supersede_older(db: Session, booking_id: uuid.UUID, *, actor: str) -> None:
     """A newer ask replaces whatever was still pending. Fields already
-    approved or rejected keep their state and their audit trail."""
-    superseded = 0
+    approved or rejected keep their state and their audit trail; a field
+    that is dropped without ever being seen gets its own audit row, so
+    the timeline can explain where a proposed value went."""
     older = db.scalars(
         select(BeoProposal).where(
-            BeoProposal.booking_id == booking_id,
-            BeoProposal.id != keep,
-            BeoProposal.status == STATUS_PENDING,
+            BeoProposal.booking_id == booking_id, BeoProposal.status == STATUS_PENDING
         )
     ).all()
     for proposal in older:
         for field_row in proposal.fields:
             if field_row.state == FIELD_PENDING:
                 field_row.state = FIELD_SUPERSEDED
-                superseded += 1
+                db.add(
+                    BookingEvent(
+                        booking_id=booking_id,
+                        event_type="beo_proposal_superseded",
+                        field_name=field_row.field,
+                        old_value=field_row.proposed_value or None,
+                        actor=actor,
+                    )
+                )
         proposal.status = STATUS_SUPERSEDED
         proposal.resolved_at = dt.datetime.now(dt.timezone.utc)
-    return superseded
+
+
+def _rule_context(booking: Booking) -> dict:
+    return {
+        "event_type": booking.event_type,
+        "event_name": booking.event_name,
+        "notes": booking.notes,
+        "child_count": booking.child_count or 0,
+    }
 
 
 def propose(
@@ -153,19 +199,21 @@ def propose(
 
     Never applies anything.
     """
+    refusal = can_receive_proposals(booking)
+    if refusal is not None:
+        raise ProposalError(refusal)
+
+    _proposal_lock(db, booking.id)
     document = current_draft_beo(db, booking.id)
-    proposed = {name: (value or "").strip() for name, value in (fields or {}).items()}
+    proposed = {name: normalise_newlines(value).strip() for name, value in (fields or {}).items()}
+    current = current_values(document)
 
-    effective = current_values(document)
-    effective.update({k: v for k, v in proposed.items() if k in beo_rules.PROPOSABLE_FIELDS})
+    result = beo_rules.validate(proposed, current=current, **_rule_context(booking))
 
-    result = beo_rules.validate(
-        proposed,
-        effective=effective,
-        event_type=booking.event_type,
-        event_name=booking.event_name,
-        child_count=booking.child_count or 0,
-    )
+    if not result.blocked:
+        # Before the insert, so a partial unique index on "one pending
+        # proposal per booking" is satisfied at every point.
+        _supersede_older(db, booking.id, actor=actor)
 
     proposal = BeoProposal(
         booking_id=booking.id,
@@ -176,27 +224,26 @@ def propose(
         model=model,
         rule_codes=result.codes or None,
         rule_note=result.as_note() or None,
+        warning_codes=result.warning_codes or None,
+        warning_note=result.warning_note() or None,
         created_by=actor,
     )
     db.add(proposal)
     db.flush()
 
     # Field rows are written even for a blocked proposal: what it wanted
-    # to say is the calibration record. They are simply never reviewable,
-    # because the proposal's own status is not pending.
+    # to say is the calibration record. FIELD_BLOCKED keeps that readable
+    # apart from a field a newer ask replaced.
     for name in beo_rules.PROPOSABLE_FIELDS:
         if name in proposed:
             db.add(
                 BeoProposalField(
                     proposal_id=proposal.id,
                     field=name,
-                    state=FIELD_PENDING if not result.blocked else FIELD_SUPERSEDED,
+                    state=FIELD_BLOCKED if result.blocked else FIELD_PENDING,
                     proposed_value=proposed[name],
                 )
             )
-
-    if not result.blocked:
-        _supersede_older(db, booking.id, keep=proposal.id, actor=actor)
 
     db.add(
         BookingEvent(
@@ -219,14 +266,95 @@ def _resolve_if_complete(proposal: BeoProposal) -> None:
         proposal.resolved_at = dt.datetime.now(dt.timezone.utc)
 
 
+def _locked_draft(db: Session, booking_id: uuid.UUID) -> Document:
+    """The current Event Order draft, locked for update BEFORE its content
+    is read. Reading first and locking later is a lost update: two
+    approvals of different fields would each write a whole JSONB blob
+    built from a stale snapshot (2026-09-06 review)."""
+    document = current_draft_beo(db, booking_id)
+    if document is None:
+        raise ProposalError(
+            "there is no Event Order draft on this booking to apply it to -- generate one first, and note "
+            "that an Event Order that has already been sent cannot be edited"
+        )
+    db.refresh(document, with_for_update=True)
+    if document.status != DocumentStatus.draft:
+        raise ProposalError(f"this Event Order is {document.status.value} and can no longer be edited")
+    return document
+
+
 def _claim(db: Session, field_row: BeoProposalField) -> None:
     """Lock one field row and confirm it is still awaiting a decision, so
     two clicks on Approve cannot both apply."""
     db.refresh(field_row, with_for_update=True)
     if field_row.state != FIELD_PENDING:
-        raise ProposalError(f"that field is already {field_row.state}")
+        raise ProposalError(
+            f"that field is already {field_row.state} -- someone else may have acted on it, or a newer "
+            "proposal replaced it. Reload the Event Order."
+        )
     if field_row.proposal.status != STATUS_PENDING:
-        raise ProposalError(f"this proposal is {field_row.proposal.status} and cannot be approved")
+        raise ProposalError(
+            f"this proposal is {field_row.proposal.status} and cannot be approved -- reload the Event Order."
+        )
+
+
+def _check_on_approval(booking: Booking, changes: dict[str, str], current: dict[str, str]) -> None:
+    """The house rules, on the values actually being written. The box is
+    editable, so this is the check that cannot be pasted past."""
+    result = beo_rules.validate(changes, current=current, **_rule_context(booking))
+    if result.blocked:
+        raise ProposalError(result.as_note())
+
+
+def _apply(
+    db: Session,
+    document: Document,
+    proposal: BeoProposal,
+    decisions: list[tuple[BeoProposalField, str]],
+    *,
+    actor: str,
+) -> Document:
+    """Write the approved values onto the locked draft, in one merge and
+    one commit, recording what each one replaced."""
+    previous_values = current_values(document)
+    changes: dict[str, str | None] = {}
+    now = dt.datetime.now(dt.timezone.utc)
+    for field_row, applied in decisions:
+        changes[field_row.field] = normalise_beo_field(field_row.field, applied)
+        if field_row.field == "music":
+            # The merged legacy field is what the edit form clears on save;
+            # leaving it behind would let it out-rank the value approved.
+            changes["music_entertainment"] = None
+        field_row.state = FIELD_APPROVED
+        field_row.previous_value = previous_values[field_row.field]
+        field_row.applied_value = normalise_newlines(applied).strip()
+        field_row.decided_at = now
+        field_row.decided_by = actor
+        db.add(
+            BookingEvent(
+                booking_id=proposal.booking_id,
+                event_type="beo_proposal_approved",
+                field_name=field_row.field,
+                old_value=previous_values[field_row.field] or None,
+                new_value=field_row.applied_value or None,
+                actor=actor,
+            )
+        )
+        if field_row.edited_before_approval:
+            # The measure of whether the transcription is working: its own
+            # event, so it can be counted without diffing every row.
+            db.add(
+                BookingEvent(
+                    booking_id=proposal.booking_id,
+                    event_type="beo_proposal_edited",
+                    field_name=field_row.field,
+                    old_value=field_row.proposed_value or None,
+                    new_value=field_row.applied_value or None,
+                    actor=actor,
+                )
+            )
+    _resolve_if_complete(proposal)
+    return documents_service.update_content_fields(db, document, changes, actor=actor)
 
 
 def approve_field(
@@ -234,60 +362,16 @@ def approve_field(
 ) -> Document:
     """Write one proposed field onto the current Event Order draft.
 
-    `value` is what Aaron actually wants written: the proposed text when
-    he accepted it as offered, his own wording when he edited it first.
-    Both are recorded.
+    `value` is what Aaron actually wants written: None (the box was not
+    submitted) means the proposed text stands; his own wording means his
+    wording is written. Both are recorded.
     """
-    _claim(db, field_row)
     proposal = field_row.proposal
-    document = current_draft_beo(db, proposal.booking_id)
-    if document is None:
-        raise ProposalError(
-            "there is no Event Order draft on this booking to apply it to -- generate one first, and note that "
-            "an Event Order that has already been sent cannot be edited"
-        )
-
-    applied = field_row.proposed_value if value is None else value
-    content = dict(document.content)
-    previous = current_values(document)[field_row.field]
-    content[field_row.field] = normalise_beo_field(field_row.field, applied)
-    if field_row.field == "music":
-        # The merged legacy field is what the edit form clears on save;
-        # leaving it behind would let it out-rank the value just approved.
-        content["music_entertainment"] = None
-
-    field_row.state = FIELD_APPROVED
-    field_row.previous_value = previous
-    field_row.applied_value = (applied or "").strip()
-    field_row.decided_at = dt.datetime.now(dt.timezone.utc)
-    field_row.decided_by = actor
-    _resolve_if_complete(proposal)
-
-    db.add(
-        BookingEvent(
-            booking_id=proposal.booking_id,
-            event_type="beo_proposal_approved",
-            field_name=field_row.field,
-            old_value=previous or None,
-            new_value=field_row.applied_value or None,
-            actor=actor,
-        )
-    )
-    if field_row.edited_before_approval:
-        # The measure of whether the transcription is working: recorded as
-        # its own event so it can be counted without diffing every row.
-        db.add(
-            BookingEvent(
-                booking_id=proposal.booking_id,
-                event_type="beo_proposal_edited",
-                field_name=field_row.field,
-                old_value=field_row.proposed_value or None,
-                new_value=field_row.applied_value or None,
-                actor=actor,
-            )
-        )
-    # Commits, and refuses if the document stopped being a draft under us.
-    return documents_service.update_content(db, document, content, actor=actor)
+    document = _locked_draft(db, proposal.booking_id)
+    _claim(db, field_row)
+    applied = field_row.proposed_value if value is None else normalise_newlines(value)
+    _check_on_approval(document.booking, {field_row.field: applied}, current_values(document))
+    return _apply(db, document, proposal, [(field_row, applied)], actor=actor)
 
 
 def reject_field(db: Session, field_row: BeoProposalField, *, actor: str) -> BeoProposalField:
@@ -314,78 +398,50 @@ def approve_all(
     db: Session, proposal: BeoProposal, *, actor: str, values: dict[str, str] | None = None
 ) -> Document:
     """Approve every field still pending, in one write to the document and
-    one commit. `values` may carry edited wording per field, same as
-    approve_field."""
+    one commit. `values` may carry edited wording per field; a field it
+    does not mention keeps what was proposed."""
     if proposal.status != STATUS_PENDING or not proposal.pending_fields:
         raise ProposalError("there is nothing pending on this proposal")
-    document = current_draft_beo(db, proposal.booking_id)
-    if document is None:
-        raise ProposalError(
-            "there is no Event Order draft on this booking to apply it to -- generate one first, and note that "
-            "an Event Order that has already been sent cannot be edited"
-        )
-
-    content = dict(document.content)
-    previous_values = current_values(document)
-    now = dt.datetime.now(dt.timezone.utc)
+    document = _locked_draft(db, proposal.booking_id)
     values = values or {}
+
+    decisions: list[tuple[BeoProposalField, str]] = []
     for field_row in list(proposal.pending_fields):
         _claim(db, field_row)
-        applied = values.get(field_row.field)
-        applied = field_row.proposed_value if applied is None else applied
-        content[field_row.field] = normalise_beo_field(field_row.field, applied)
-        if field_row.field == "music":
-            content["music_entertainment"] = None
-        field_row.state = FIELD_APPROVED
-        field_row.previous_value = previous_values[field_row.field]
-        field_row.applied_value = (applied or "").strip()
-        field_row.decided_at = now
-        field_row.decided_by = actor
-        db.add(
-            BookingEvent(
-                booking_id=proposal.booking_id,
-                event_type="beo_proposal_approved",
-                field_name=field_row.field,
-                old_value=previous_values[field_row.field] or None,
-                new_value=field_row.applied_value or None,
-                actor=actor,
-            )
+        submitted = values.get(field_row.field)
+        decisions.append(
+            (field_row, field_row.proposed_value if submitted is None else normalise_newlines(submitted))
         )
-        if field_row.edited_before_approval:
-            db.add(
-                BookingEvent(
-                    booking_id=proposal.booking_id,
-                    event_type="beo_proposal_edited",
-                    field_name=field_row.field,
-                    old_value=field_row.proposed_value or None,
-                    new_value=field_row.applied_value or None,
-                    actor=actor,
-                )
-            )
-    _resolve_if_complete(proposal)
-    return documents_service.update_content(db, document, content, actor=actor)
+    _check_on_approval(
+        document.booking, {row.field: applied for row, applied in decisions}, current_values(document)
+    )
+    return _apply(db, document, proposal, decisions, actor=actor)
 
 
-def review_rows(db: Session, booking_id: uuid.UUID) -> list[dict]:
+def review_rows(db: Session, booking_id: uuid.UUID, *, document: Document | None = None) -> list[dict]:
     """What the Event Order form shows: every pending field, its proposed
     value and the value it would replace."""
     proposal = pending_proposal(db, booking_id)
     if proposal is None or not proposal.is_reviewable:
         return []
-    document = current_draft_beo(db, booking_id)
+    if document is None:
+        document = current_draft_beo(db, booking_id)
     current = current_values(document)
     rows = []
     for field_row in proposal.fields:
         if field_row.state != FIELD_PENDING:
             continue
+        existing = current[field_row.field]
         rows.append(
             {
                 "field": field_row.field,
                 "label": beo_rules.FIELD_LABELS[field_row.field],
                 "id": field_row.id,
                 "proposed": field_row.proposed_value,
-                "current": current[field_row.field],
-                "replaces_text": bool(current[field_row.field].strip()),
+                "current": existing,
+                # A generation placeholder is not content anyone wrote, so
+                # overwriting it is not the risky case the warning is for.
+                "replaces_text": bool(existing.strip()) and not existing.lstrip().startswith("[REVIEW]"),
             }
         )
     return rows

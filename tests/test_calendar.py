@@ -12,7 +12,7 @@ import threading
 import uuid
 
 import pytest
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 
 from app.models import Space, Venue
 from app.models.booking import BLOCKING_STATUSES, Booking, BookingStatus
@@ -267,7 +267,14 @@ def test_concurrent_confirmations_same_space_time_only_one_succeeds():
             barrier.wait(timeout=5)
             session.commit()
             results[key] = "success"
-        except IntegrityError:
+        except (IntegrityError, OperationalError):
+            # Two transactions each inserting a row the other conflicts
+            # with can be resolved either way by Postgres: one blocks and
+            # then fails the exclusion constraint (IntegrityError), or the
+            # pair deadlocks and one is chosen as the victim
+            # (OperationalError/DeadlockDetected). Both mean exactly one
+            # booking survived, which is the property under test; which
+            # one happens depends on timing, so both are accepted.
             session.rollback()
             results[key] = "failed"
         finally:

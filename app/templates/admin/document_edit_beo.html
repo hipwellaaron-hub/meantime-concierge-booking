@@ -26,8 +26,20 @@
   </p>
   <p class="muted" style="margin:0 0 14px; font-size:0.85rem;">
     Nothing below has been applied. Approving writes that field to this draft Event Order; the food order,
-    the totals and the status are never proposable.
+    the totals and the status are never proposable. The house rules run again on whatever the box says when
+    you approve, so editing here is checked too.
   </p>
+  {% if beo_proposal_stale %}
+  <p style="margin:0 0 14px; padding:8px 10px; border:1px solid var(--ember); border-radius:6px; font-size:0.85rem;">
+    <b>Proposed against an earlier version of this Event Order.</b> It has been regenerated since, so read each
+    value against what the document says now.
+  </p>
+  {% endif %}
+  {% if beo_proposal.warning_note %}
+  <p style="margin:0 0 14px; padding:8px 10px; border:1px solid var(--ember); border-radius:6px; font-size:0.85rem;">
+    <b>Worth knowing:</b> {{ beo_proposal.warning_note }}
+  </p>
+  {% endif %}
 
   <form method="post" action="/admin/bookings/{{ booking.id }}/beo-proposals/{{ beo_proposal.id }}/review">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -37,9 +49,11 @@
       <label style="margin:0 0 6px;"><b>{{ row.label }}</b></label>
 
       <p class="muted" style="margin:0 0 4px; font-size:0.8rem;">
-        {% if row.replaces_text %}Replaces what is on the Event Order now:{% else %}This field is currently empty.{% endif %}
+        {% if row.replaces_text %}<b style="color:var(--ember);">Replaces text already on the Event Order:</b>
+        {% elif row.current %}Replaces a generation placeholder:
+        {% else %}This field is currently empty.{% endif %}
       </p>
-      {% if row.replaces_text %}
+      {% if row.current %}
       <pre style="margin:0 0 10px; padding:8px 10px; background:var(--bg); border:1px solid var(--border); border-radius:6px; white-space:pre-wrap; font-size:0.85rem; color:var(--muted);">{{ row.current }}</pre>
       {% endif %}
 

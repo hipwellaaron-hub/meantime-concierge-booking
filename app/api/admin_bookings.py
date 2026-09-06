@@ -342,6 +342,8 @@ def booking_detail(
     bookable_spaces = db.scalars(
         select(Space).where(Space.venue_id == booking.space.venue_id, Space.is_bookable.is_(True)).order_by(Space.name)
     ).all()
+    beo_draft = beo_proposals_service.current_draft_beo(db, booking_id)
+    beo_review_rows = beo_proposals_service.review_rows(db, booking_id, document=beo_draft)
     return templates.TemplateResponse(
         request,
         "admin/booking_detail.html",
@@ -357,10 +359,8 @@ def booking_detail(
             enquiry_notification_failed=any(
                 e.event_type == "enquiry_notification_failed" for e in booking.events
             ) and booking.enquiry_notification_sent_at is None,
-            beo_proposal_waiting=len(beo_proposals_service.review_rows(db, booking_id)),
-            beo_proposal_document_id=(
-                d.id if (d := beo_proposals_service.current_draft_beo(db, booking_id)) is not None else None
-            ),
+            beo_proposal_waiting=len(beo_review_rows),
+            beo_proposal_document_id=beo_draft.id if beo_draft is not None else None,
             first_touch_channel=summarize_channel(booking.first_touch_attribution),
             last_touch_channel=summarize_channel(booking.last_touch_attribution),
             touches_differ=booking.first_touch_attribution != booking.last_touch_attribution,
@@ -625,9 +625,14 @@ def edit_document_form(
         if document.type == DocumentType.agreement
         else "admin/document_edit_beo.html"
     )
-    proposal = (
-        beo_proposals_service.pending_proposal(db, booking_id) if document.type == DocumentType.beo else None
+    # Only on the document approval would actually write to. A superseded
+    # (but still draft) version renders no panel, so the page cannot show
+    # one document's values above a form that edits another.
+    current_draft = (
+        beo_proposals_service.current_draft_beo(db, booking_id) if document.type == DocumentType.beo else None
     )
+    on_current = current_draft is not None and current_draft.id == document.id
+    proposal = beo_proposals_service.pending_proposal(db, booking_id) if on_current else None
     return templates.TemplateResponse(
         request,
         template,
@@ -640,9 +645,15 @@ def edit_document_form(
             # What the AI has proposed for this Event Order and has not yet
             # had approved -- shown against the value each would replace.
             beo_proposal=proposal if proposal is not None and proposal.is_reviewable else None,
-            beo_review_rows=beo_proposals_service.review_rows(db, booking_id)
-            if document.type == DocumentType.beo
+            beo_review_rows=beo_proposals_service.review_rows(db, booking_id, document=current_draft)
+            if on_current
             else [],
+            beo_proposal_stale=(
+                proposal is not None
+                and proposal.document_id is not None
+                and current_draft is not None
+                and proposal.document_id != current_draft.id
+            ),
         ),
     )
 
@@ -865,16 +876,20 @@ def review_beo_proposal(
     proposal_id: uuid.UUID,
     request: Request,
     action: str = Form(...),
-    value_catering_order_and_service_style: str = Form(default=""),
-    value_bar_structure: str = Form(default=""),
-    value_room_layout_notes: str = Form(default=""),
-    value_music: str = Form(default=""),
-    value_entertainment: str = Form(default=""),
-    value_dietaries: str = Form(default=""),
-    value_accessibility: str = Form(default=""),
-    value_decorations: str = Form(default=""),
-    value_special_notes: str = Form(default=""),
-    value_onsite_contact: str = Form(default=""),
+    # None, not "": a field whose box was not submitted keeps what was
+    # proposed, while a box someone actually emptied is a real change the
+    # house rules then refuse (2026-09-06 review -- defaulting these to ""
+    # let a request with no textarea blank a declared allergy).
+    value_catering_order_and_service_style: str | None = Form(default=None),
+    value_bar_structure: str | None = Form(default=None),
+    value_room_layout_notes: str | None = Form(default=None),
+    value_music: str | None = Form(default=None),
+    value_entertainment: str | None = Form(default=None),
+    value_dietaries: str | None = Form(default=None),
+    value_accessibility: str | None = Form(default=None),
+    value_decorations: str | None = Form(default=None),
+    value_special_notes: str | None = Form(default=None),
+    value_onsite_contact: str | None = Form(default=None),
     db: Session = Depends(get_db),
     staff: StaffUser = Depends(require_staff),
 ):
@@ -884,6 +899,7 @@ def review_beo_proposal(
         raise HTTPException(status_code=404, detail="Proposal not found on this booking")
 
     submitted = {
+        k: v for k, v in {
         "catering_order_and_service_style": value_catering_order_and_service_style,
         "bar_structure": value_bar_structure,
         "room_layout_notes": value_room_layout_notes,
@@ -894,6 +910,7 @@ def review_beo_proposal(
         "decorations": value_decorations,
         "special_notes": value_special_notes,
         "onsite_contact": value_onsite_contact,
+        }.items() if v is not None
     }
 
     verb, _, target = action.partition(":")
@@ -917,9 +934,13 @@ def review_beo_proposal(
         else:
             raise HTTPException(status_code=422, detail="Unknown action")
     except beo_proposals_service.ProposalError as exc:
+        # Nothing is half-applied: the field rows and audit rows this
+        # attempt added are discarded before the response is built.
+        db.rollback()
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
-        # documents.update_content refuses anything that is not a draft.
+        # documents.update_content_fields refuses anything not a draft.
+        db.rollback()
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     document = beo_proposals_service.current_draft_beo(db, booking_id)

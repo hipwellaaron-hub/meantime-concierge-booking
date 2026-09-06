@@ -33,7 +33,11 @@ STATUS_SUPERSEDED = "superseded"    # a newer proposal replaced the fields still
 FIELD_PENDING = "pending"
 FIELD_APPROVED = "approved"
 FIELD_REJECTED = "rejected"
-FIELD_SUPERSEDED = "superseded"
+FIELD_SUPERSEDED = "superseded"   # a newer proposal replaced it before anyone saw it
+FIELD_BLOCKED = "blocked"         # the house rules refused the proposal it belonged to
+
+PROPOSAL_STATUSES = (STATUS_PENDING, STATUS_RULES_BLOCKED, STATUS_RESOLVED, STATUS_SUPERSEDED)
+FIELD_STATES = (FIELD_PENDING, FIELD_APPROVED, FIELD_REJECTED, FIELD_SUPERSEDED, FIELD_BLOCKED)
 
 
 class BeoProposal(Base):
@@ -66,6 +70,11 @@ class BeoProposal(Base):
     # Set only when the house rules blocked it (see app.services.beo_rules).
     rule_codes: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     rule_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Non-blocking: something true about the finished Event Order that this
+    # proposal did not cause and must not be refused for, shown to the
+    # reviewer alongside the fields.
+    warning_codes: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    warning_note: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     created_by: Mapped[str] = mapped_column(String(255), nullable=False)

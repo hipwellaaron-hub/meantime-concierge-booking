@@ -8,6 +8,10 @@ house rules block the shapes that error takes.
 """
 
 import datetime as dt
+import pathlib
+import threading
+import uuid
+from decimal import Decimal
 
 import pytest
 from fastapi.testclient import TestClient
@@ -18,6 +22,8 @@ from app.main import app
 from app.models import AiRequestLog, BookingEvent, Contact
 from app.models.beo_proposal import (
     FIELD_APPROVED,
+    FIELD_BLOCKED,
+    BeoProposalField,
     FIELD_PENDING,
     FIELD_REJECTED,
     FIELD_SUPERSEDED,
@@ -152,22 +158,25 @@ def test_an_18th_with_children_needs_the_rsa_line_in_special_notes():
     assert not with_line.blocked
 
 
-def test_the_rsa_floor_reads_the_document_not_just_the_proposal():
-    """A proposal that leaves Special notes alone still has to leave the
-    finished Event Order carrying the line."""
-    blocked = beo_rules.validate(
-        {"music": "DJ from 8pm."},
-        effective={"music": "DJ from 8pm.", "special_notes": "Rounds of 8."},
+def test_an_unrelated_proposal_on_an_18th_warns_rather_than_withholding_it():
+    """A proposal that does not touch Special notes must not be refused
+    over the document's own RSA gap -- withholding an allergy transcription
+    for an unrelated policy floor is worse than surfacing both (2026-09-06
+    review). The warning is shown to the reviewer; the proposal stands."""
+    result = beo_rules.validate(
+        {"dietaries": "1x severe nut allergy"},
+        current={"special_notes": "Rounds of 8.", "dietaries": ""},
         event_type="18th Birthday", event_name="Milly's 18th", child_count=12,
     )
-    assert beo_rules.RSA_MISSING in blocked.codes
+    assert not result.blocked
+    assert beo_rules.RSA_ABSENT_ON_DOCUMENT in result.warning_codes
 
     already_there = beo_rules.validate(
-        {"music": "DJ from 8pm."},
-        effective={"music": "DJ from 8pm.", "special_notes": "RSA conditions apply."},
+        {"dietaries": "1x severe nut allergy"},
+        current={"special_notes": "RSA conditions apply.", "dietaries": ""},
         event_type="18th Birthday", event_name="Milly's 18th", child_count=12,
     )
-    assert not already_there.blocked
+    assert not already_there.blocked and already_there.warning_codes == []
 
 
 def test_the_rsa_floor_does_not_fire_without_children_or_without_an_18th():
@@ -226,8 +235,24 @@ def test_the_endpoint_refuses_the_food_order_the_totals_and_the_status(ai_client
     for field in ("food_order", "total_food_spend", "status_text", "line_items"):
         resp = _propose(ai_client, booking, {field: "anything"})
         assert resp.status_code == 422, field
-        assert field in resp.json()["detail"]["unknown_fields"]
-    assert db.query(BeoProposal).count() == 0, "a refused field must not store a proposal"
+        detail = resp.json()["detail"]
+        assert beo_rules.UNKNOWN_FIELD in detail["rule_codes"]
+        assert field in detail["note"] or field in str(detail["violations"])
+        assert "dietaries" in detail["proposable_fields"]
+
+
+def test_a_mixed_payload_is_still_recorded_for_calibration(ai_client, db, loft):
+    """A good transcription alongside a field that does not exist: the
+    attempt is stored, so what the model was reaching for is readable
+    rather than lost (2026-09-06 review)."""
+    booking = _booking(db, loft)
+    _beo(db, booking)
+    resp = _propose(ai_client, booking, {"dietaries": "1x severe nut allergy", "food_order": "[...]"})
+    assert resp.status_code == 422
+    proposal = db.query(BeoProposal).filter_by(booking_id=booking.id).one()
+    assert proposal.status == STATUS_RULES_BLOCKED
+    assert [f.field for f in proposal.fields] == ["dietaries"]
+    assert proposal.fields[0].state == FIELD_BLOCKED
 
 
 def test_a_rule_blocked_proposal_is_stored_but_never_reviewable(ai_client, db, loft):
@@ -242,6 +267,7 @@ def test_a_rule_blocked_proposal_is_stored_but_never_reviewable(ai_client, db, l
     proposal = db.query(BeoProposal).filter_by(booking_id=booking.id).one()
     assert proposal.status == STATUS_RULES_BLOCKED
     assert proposal.is_reviewable is False
+    assert {f.state for f in proposal.fields} == {FIELD_BLOCKED}
     assert beo_proposals.review_rows(db, booking.id) == []
 
 
@@ -450,10 +476,10 @@ def test_the_review_rows_show_the_value_each_would_replace(db, loft):
     rows = {r["field"]: r for r in beo_proposals.review_rows(db, booking.id)}
     assert rows["dietaries"]["current"] == "1x GF"
     assert rows["dietaries"]["replaces_text"] is True
-    # Music currently carries generation's own [REVIEW] placeholder. The
-    # panel shows exactly what the document says, placeholder included --
-    # "current" is a quotation, not a judgement about whether it counts.
+    # Music currently carries generation's own [REVIEW] placeholder: shown
+    # verbatim, but not flagged as overwriting content a human wrote.
     assert rows["music"]["current"].startswith("[REVIEW]")
+    assert rows["music"]["replaces_text"] is False
 
 
 def test_empty_dietaries_read_as_empty_not_as_the_printed_placeholder(db, loft):
@@ -479,7 +505,7 @@ def test_the_event_order_form_shows_proposed_against_current(admin_client, db, l
     assert "Proposed by Claude" in page
     assert "client email 6 Sep" in page
     assert "1x GF, 1x severe nut allergy" in page
-    assert "Replaces what is on the Event Order now" in page
+    assert "Replaces text already on the Event Order" in page
     assert "Approve all 1" in page
 
 
@@ -528,14 +554,427 @@ def test_the_booking_page_says_a_proposal_is_waiting(admin_client, db, loft):
     assert "Event Order proposal waiting" in page
 
 
-def test_every_audit_event_type_fits_the_column(db, loft):
+def test_every_audit_event_type_fits_the_column():
     """BookingEvent.event_type is varchar(30): an event this layer writes
-    that overflows it takes the approval down with it."""
+    that overflows it takes the approval down with it. Read out of the
+    source rather than retyped, so renaming one in production is caught."""
+    import re
+
     from app.models.booking_event import BookingEvent as BE
 
+    source = (pathlib.Path(beo_proposals.__file__)).read_text(encoding="utf-8")
+    names = set(re.findall(r'event_type="([a-z_]+)"', source))
+    assert names, "no event types found -- the pattern stopped matching"
     limit = BE.__table__.c.event_type.type.length
-    for name in (
-        "beo_proposal_created", "beo_proposal_blocked", "beo_proposal_approved",
-        "beo_proposal_rejected", "beo_proposal_edited",
-    ):
-        assert len(name) <= limit, name
+    for name in names:
+        assert len(name) <= limit, f"{name} is {len(name)} chars, limit {limit}"
+
+
+# --- 2026-09-06 review: what the five angles found ------------------------------
+
+
+def test_a_blank_proposal_cannot_erase_what_the_event_order_says(db, loft):
+    """The other half of the incident. A transcription that finds nothing
+    must not be able to replace a declared allergy with silence."""
+    result = beo_rules.validate({"dietaries": ""}, current={"dietaries": "1x severe nut allergy"})
+    assert beo_rules.ERASES_VALUE in result.codes
+    # Blank against blank is not an erasure.
+    assert not beo_rules.validate({"dietaries": ""}, current={"dietaries": ""}).blocked
+
+
+def test_a_declared_dietary_can_never_quietly_disappear(db, loft):
+    result = beo_rules.validate(
+        {"dietaries": "2x vegetarian"}, current={"dietaries": "2x vegetarian, 1x severe nut allergy"}
+    )
+    assert beo_rules.DROPS_DIETARY in result.codes
+    assert "nut" in result.as_note()
+    # Adding to it is fine.
+    assert not beo_rules.validate(
+        {"dietaries": "2x vegetarian, 1x nut allergy, 1x coeliac"},
+        current={"dietaries": "2x vegetarian, 1x nut allergy"},
+    ).blocked
+
+
+def test_the_endpoint_refuses_a_proposal_that_would_erase_a_dietary(ai_client, db, loft):
+    booking = _booking(db, loft)
+    _beo(db, booking, dietaries="1x severe nut allergy")
+    resp = _propose(ai_client, booking, {"dietaries": ""})
+    assert resp.status_code == 422
+    assert beo_rules.ERASES_VALUE in resp.json()["detail"]["rule_codes"]
+
+
+def test_approving_with_no_textarea_keeps_the_proposed_value(admin_client, db, loft):
+    """Proven live by the review: with the boxes defaulting to "", a POST
+    carrying only the action blanked a declared allergy and blamed the
+    staff member for editing it."""
+    import re
+
+    booking = _booking(db, loft)
+    document = _beo(db, booking)
+    proposal, _ = beo_proposals.propose(
+        db, booking, fields={"dietaries": "1x severe nut allergy (table 4)"}, source="email", actor="ai:claude"
+    )
+    row = proposal.fields[0]
+    page = admin_client.get(f"/admin/bookings/{booking.id}/documents/{document.id}/edit").text
+    csrf = re.search(r'name="csrf_token" value="([^"]+)"', page).group(1)
+
+    resp = admin_client.post(
+        f"/admin/bookings/{booking.id}/beo-proposals/{proposal.id}/review",
+        data={"csrf_token": csrf, "action": f"approve:{row.id}"},  # no value_* at all
+        follow_redirects=False,
+    )
+
+    assert resp.status_code == 303
+    db.refresh(document)
+    assert document.content["dietaries"] == "1x severe nut allergy (table 4)"
+    db.refresh(row)
+    assert row.applied_value == "1x severe nut allergy (table 4)"
+    assert row.edited_before_approval is False
+
+
+def test_approve_all_with_no_textareas_blanks_nothing(admin_client, db, loft):
+    import re
+
+    booking = _booking(db, loft)
+    document = _beo(db, booking)
+    proposal, _ = beo_proposals.propose(db, booking, fields=CLEAN, source="email", actor="ai:claude")
+    page = admin_client.get(f"/admin/bookings/{booking.id}/documents/{document.id}/edit").text
+    csrf = re.search(r'name="csrf_token" value="([^"]+)"', page).group(1)
+
+    resp = admin_client.post(
+        f"/admin/bookings/{booking.id}/beo-proposals/{proposal.id}/review",
+        data={"csrf_token": csrf, "action": "approve_all"},
+        follow_redirects=False,
+    )
+
+    assert resp.status_code == 303
+    db.refresh(document)
+    assert document.content["dietaries"] == CLEAN["dietaries"]
+    assert document.content["catering_order_and_service_style"] == CLEAN["catering_order_and_service_style"]
+
+
+def test_the_rules_run_again_on_what_the_box_says_at_approval(admin_client, db, loft):
+    """The box is editable, so a propose-time-only gate could be walked
+    past by pasting the original incident straight into it."""
+    import re
+
+    booking = _booking(db, loft)
+    document = _beo(db, booking)
+    proposal, _ = beo_proposals.propose(
+        db, booking, fields={"dietaries": "1x severe nut allergy"}, source="email", actor="ai:claude"
+    )
+    row = proposal.fields[0]
+    page = admin_client.get(f"/admin/bookings/{booking.id}/documents/{document.id}/edit").text
+    csrf = re.search(r'name="csrf_token" value="([^"]+)"', page).group(1)
+
+    resp = admin_client.post(
+        f"/admin/bookings/{booking.id}/beo-proposals/{proposal.id}/review",
+        data={
+            "csrf_token": csrf, "action": f"approve:{row.id}",
+            "value_dietaries": "Balloon arch behind the cake table",
+        },
+        follow_redirects=False,
+    )
+
+    assert resp.status_code == 409
+    db.refresh(document)
+    assert document.content["dietaries"] == "No dietary requirements declared"
+    db.refresh(row)
+    assert row.state == FIELD_PENDING, "a refused approval leaves the field to be decided again"
+
+
+def test_a_browser_rewriting_newlines_is_not_a_human_edit(db, loft):
+    """Textareas submit CRLF. Recording that as an edit would corrupt the
+    one number this feature exists to produce."""
+    booking = _booking(db, loft)
+    document = _beo(db, booking)
+    multiline = "Grazing on arrival\nAlternate drop from 7pm"
+    proposal, _ = beo_proposals.propose(
+        db, booking, fields={"catering_order_and_service_style": multiline}, source="email", actor="ai:claude"
+    )
+    row = proposal.fields[0]
+
+    beo_proposals.approve_field(db, row, actor="staff:test", value=multiline.replace("\n", "\r\n"))
+
+    db.refresh(row)
+    assert row.edited_before_approval is False
+    db.refresh(document)
+    assert "\r" not in document.content["catering_order_and_service_style"]
+
+
+def test_two_approvals_at_the_same_moment_both_survive():
+    """Reproduced by the review before the fix: each approval wrote a whole
+    content blob built from a snapshot taken before the row lock, so one
+    silently reverted the other while both audits claimed success. Real
+    sessions and real commits, so the row locks actually engage."""
+    from sqlalchemy import text as sql_text
+
+    from app.models import Contact
+    from app.models.document import DocumentType
+    from app.seed import seed as seed_hamilton
+    from app.services import documents as documents_service
+    from app.services.booking import create_booking
+    from app.services.document_generation import generate_beo_content
+    from tests.conftest import TestSessionLocal
+
+    setup = TestSessionLocal()
+    venue = seed_hamilton(setup)
+    space = next(s for s in venue.spaces if s.is_bookable)
+    email = f"race.beo.{uuid.uuid4().hex[:8]}@example.com"
+    contact = Contact(name="Race BEO", email=email)
+    setup.add(contact)
+    setup.flush()
+    booking = create_booking(
+        setup, space_id=space.id, contact_id=contact.id, event_date=dt.date(2027, 5, 14),
+        start_time=dt.time(18, 0), end_time=dt.time(23, 0), event_name=f"Race BEO {uuid.uuid4().hex[:6]}",
+        event_type="corporate", adult_count=40, child_count=0, notes=None, actor="test",
+    )
+    documents_service.create_new_version(
+        setup, booking, DocumentType.beo, generate_beo_content(booking), actor="staff:test"
+    )
+    proposal, _ = beo_proposals.propose(
+        setup, booking, fields=CLEAN, source="race email", actor="ai:claude"
+    )
+    booking_id = booking.id
+    ids = {f.field: f.id for f in proposal.fields}
+    setup.close()
+
+    barrier = threading.Barrier(2)
+    errors = {}
+
+    def approve(name, field_id):
+        session = TestSessionLocal()
+        try:
+            row = session.get(BeoProposalField, field_id)
+            barrier.wait(timeout=5)
+            beo_proposals.approve_field(session, row, actor=f"staff:{name}")
+        except Exception as exc:  # noqa: BLE001
+            errors[name] = exc
+        finally:
+            session.close()
+
+    threads = [
+        threading.Thread(target=approve, args=("a", ids["catering_order_and_service_style"])),
+        threading.Thread(target=approve, args=("b", ids["dietaries"])),
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    check = TestSessionLocal()
+    try:
+        assert not errors, errors
+        document = beo_proposals.current_draft_beo(check, booking_id)
+        assert document.content["dietaries"] == CLEAN["dietaries"]
+        assert document.content["catering_order_and_service_style"] == CLEAN["catering_order_and_service_style"]
+    finally:
+        check.execute(sql_text("SET LOCAL app.allow_booking_purge='on'"))
+        target = check.get(type(booking), booking_id)
+        if target is not None:
+            from app.services.booking import delete_booking_and_dependents
+            delete_booking_and_dependents(check, target, actor="staff:test")
+        check.close()
+
+
+def test_only_one_proposal_is_ever_pending(db, loft):
+    booking = _booking(db, loft)
+    _beo(db, booking)
+    beo_proposals.propose(db, booking, fields={"dietaries": "1x GF"}, source="one", actor="ai:claude")
+    beo_proposals.propose(db, booking, fields={"dietaries": "1x GF, 1x DF"}, source="two", actor="ai:claude")
+    pending = db.query(BeoProposal).filter_by(booking_id=booking.id, status=STATUS_PENDING).all()
+    assert len(pending) == 1
+
+
+def test_superseding_a_field_nobody_saw_leaves_an_audit_row(db, loft):
+    """A proposed allergy that vanished because a newer ask arrived has to
+    be explainable from the booking timeline."""
+    booking = _booking(db, loft)
+    _beo(db, booking)
+    beo_proposals.propose(
+        db, booking, fields={"dietaries": "1x severe nut allergy"}, source="one", actor="ai:claude"
+    )
+    beo_proposals.propose(db, booking, fields={"music": "DJ from 8pm."}, source="two", actor="ai:claude")
+
+    events = [e for e in db.query(BookingEvent).filter_by(booking_id=booking.id)]
+    superseded = [e for e in events if e.event_type == "beo_proposal_superseded"]
+    assert len(superseded) == 1
+    assert superseded[0].field_name == "dietaries"
+    assert "nut allergy" in superseded[0].old_value
+
+
+def test_a_cancelled_booking_and_a_linked_room_refuse_proposals(ai_client, db, loft, mezzanine):
+    from app.models.booking import BookingStatus
+    from app.services.booking import add_linked_space, change_status
+
+    cancelled = _booking(db, loft, name="Cancelled Party")
+    _beo(db, cancelled)
+    change_status(db, cancelled, BookingStatus.cancelled, actor="staff:test")
+    resp = _propose(ai_client, cancelled, {"dietaries": "1x GF"})
+    assert resp.status_code == 409
+    assert db.query(BeoProposal).filter_by(booking_id=cancelled.id).count() == 0
+
+    parent = _booking(db, loft, name="Two Room Party")
+    child = add_linked_space(db, parent, space_id=mezzanine.id, actor="staff:test")
+    resp = _propose(ai_client, child, {"dietaries": "1x GF"})
+    assert resp.status_code == 409
+
+
+def test_a_booking_can_still_be_deleted_after_the_ai_has_proposed(ai_client, db, loft):
+    """The write log's booking_id had never been populated before this
+    endpoint; its foreign key made the booking undeletable (proven by the
+    2026-09-06 review)."""
+    from app.services.booking import delete_booking_and_dependents
+
+    booking = _booking(db, loft, name="Delete Me")
+    _beo(db, booking)
+    assert _propose(ai_client, booking, CLEAN).status_code == 201
+
+    reference = delete_booking_and_dependents(db, booking, actor="staff:test")
+
+    assert reference
+    assert db.query(BeoProposal).filter_by(booking_id=booking.id).count() == 0
+    assert db.query(AiRequestLog).filter_by(booking_id=booking.id).count() == 0
+
+
+def test_reading_the_proposal_back_does_not_spend_or_trip_the_write_budget(ai_client, db, loft):
+    """The GET sat behind the write gate, and enforce_write_budget mutates
+    state: one read re-disabled writes the moment staff re-enabled them."""
+    from app.services import ai_access
+
+    booking = _booking(db, loft)
+    _beo(db, booking)
+    _propose(ai_client, booking, CLEAN)
+    writes_before = db.query(AiRequestLog).filter_by(kind="write").count()
+
+    resp = ai_client.get(f"/api/ai/bookings/{booking.reference_code}/event-order-proposal")
+
+    assert resp.status_code == 200
+    assert db.query(AiRequestLog).filter_by(kind="write").count() == writes_before
+    assert ai_access.writes_enabled(db) is True
+
+
+def test_a_proposal_for_another_venues_booking_is_not_found(ai_client, db, loft):
+    """Venue scoping, actually exercised: the reference exists, but not at
+    the venue the credential is for."""
+    from app.models import Space, Venue
+
+    other = Venue(name="Meantime The Entrance", slug="entrance")
+    db.add(other)
+    db.flush()
+    other_space = Space(
+        venue_id=other.id, name="The Deck", capacity=60, standard_min_adults=20,
+        min_food_spend=Decimal("0"), is_bookable=True,
+    )
+    db.add(other_space)
+    db.flush()
+    elsewhere = _booking(db, other_space, name="Entrance Party")
+
+    resp = _propose(ai_client, elsewhere, {"dietaries": "1x GF"})
+
+    assert resp.status_code == 404
+    assert db.query(BeoProposal).filter_by(booking_id=elsewhere.id).count() == 0
+
+
+# --- the widened validators -------------------------------------------------------
+
+
+@pytest.mark.parametrize("dietaries", [
+    "Decor being dropped off at 4pm",
+    "Grazing table hire, no nuts",
+    "Photo booth 7pm. 1x GF.",
+    "Styled by the client",
+    "Props arriving Friday",
+    "Neon sign behind the bar",
+    "Table runners in sage",
+    "Chair sashes on the bridal table",
+])
+def test_the_wider_decoration_vocabulary_is_blocked_from_dietaries(dietaries):
+    assert beo_rules.DIETARY_CONTAMINATION in beo_rules.validate({"dietaries": dietaries}).codes
+
+
+def test_invisible_characters_do_not_smuggle_a_word_past_the_dietary_rule():
+    assert beo_rules.DIETARY_CONTAMINATION in beo_rules.validate({"dietaries": "ball\u200doons, no nuts"}).codes
+
+
+@pytest.mark.parametrize("text", [
+    "im bringing the cake",
+    "ive organised a DJ",
+    "weve booked a photographer",
+    "Would like the room in rounds",
+    "Hoping for a 6pm start",
+    "Please can the cake go out at 9",
+])
+def test_client_voice_without_a_pronoun_or_an_apostrophe_is_blocked(text):
+    assert beo_rules.CLIENT_PROSE in beo_rules.validate({"special_notes": text}).codes
+
+
+def test_the_rsa_wording_the_venue_actually_uses_is_not_blocked_as_prose():
+    """The RSA rule effectively asks for this sentence; the prose rule
+    used to refuse it because of the I in I.D."""
+    result = beo_rules.validate(
+        {"special_notes": "RSA applies. I.D. checks at the door, no service to under 18s."},
+        event_type="18th Birthday", event_name="Milly's 18th", child_count=4,
+    )
+    assert not result.blocked, result.codes
+
+
+@pytest.mark.parametrize("music, entertainment, blocked", [
+    ("Client's own Spotify playlist, public, name on the night. DJs from 8pm.", None, True),
+    ("Client's own Spotify playlist, public, name on the night.", "Deejay from 8pm", True),
+    ("Client's own Spotify playlist, public, name on the night.", None, False),
+    ("DJ from 8pm.", None, False),
+])
+def test_the_music_conflict_reads_both_fields_and_the_plural(music, entertainment, blocked):
+    proposed = {"music": music}
+    if entertainment is not None:
+        proposed["entertainment"] = entertainment
+    assert (beo_rules.MUSIC_CONFLICT in beo_rules.validate(proposed).codes) is blocked
+
+
+def test_a_date_in_the_event_name_is_not_an_18th():
+    """The rule delegates to the one definition the rest of the system
+    uses, which requires birthday context rather than the digits alone."""
+    assert not beo_rules.validate(
+        {"special_notes": "Rounds of 8."}, event_type="corporate", event_name="Team lunch 18 Nov", child_count=4
+    ).blocked
+    assert beo_rules.RSA_MISSING in beo_rules.validate(
+        {"special_notes": "Rounds of 8."}, event_type="birthday", event_name="Milly's 18th birthday", child_count=4
+    ).codes
+
+
+# --- the review screen ------------------------------------------------------------
+
+
+def test_the_waiting_notice_is_not_buried_in_a_collapsed_section(admin_client, db, loft):
+    """It was rendered inside the collapsed "Traffic source" card, where
+    the test passed and no human would ever have seen it."""
+    booking = _booking(db, loft)
+    _beo(db, booking)
+    beo_proposals.propose(db, booking, fields={"dietaries": "1x GF"}, source="email", actor="ai:claude")
+
+    page = admin_client.get(f"/admin/bookings/{booking.id}").text
+
+    # The base template's stylesheet mentions <details class="card"> in a
+    # comment, so count tags in the body only.
+    import re
+
+    body = re.sub(r"<style>.*?</style>", "", page, flags=re.S)
+    notice = body.index("Event Order proposal waiting")
+    before = body[:notice]
+    assert before.count("<details") == before.count("</details>"),         "the notice is inside a collapsed <details> -- nobody would see it"
+    assert notice < body.index("Traffic source")
+
+
+def test_the_panel_does_not_render_on_a_superseded_draft(admin_client, db, loft):
+    """Two draft versions: the panel belongs only on the one approval
+    would actually write to, or the page shows one document's values above
+    a form that edits another."""
+    booking = _booking(db, loft)
+    old = _beo(db, booking)
+    beo_proposals.propose(db, booking, fields={"dietaries": "1x GF"}, source="email", actor="ai:claude")
+    _beo(db, booking)  # a new current version; `old` stays draft but not current
+
+    page = admin_client.get(f"/admin/bookings/{booking.id}/documents/{old.id}/edit").text
+
+    assert "Proposed by Claude" not in page
