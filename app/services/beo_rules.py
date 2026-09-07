@@ -147,6 +147,51 @@ _DIETARY_TOKENS = (
     "allerg", "anaphyla", "intoleran", "epipen", "fodmap",
 )
 
+# MATCHED AS WORDS, NEVER AS BARE SUBSTRINGS. The test used to be
+# `token in lowered`, so "nut" fired inside "minutes" and "egg" inside
+# "eggplant". A current value of "Kitchen needs 20 minutes notice." then
+# declared a nut allergy, and any proposal that did not repeat the word
+# was refused for dropping it. Refused, not warned: these rules block by
+# Aaron's ruling, and a blocked proposal is stored and never shown -- so
+# the false match made the transcription silently disappear.
+#
+# The first fix (2bbd23e, reverted) put a boundary on the LEFT of every
+# token, which stopped "minutes" and also stopped "walnuts" and
+# "hazelnuts" -- real nut allergies, spelled as compound words. So the
+# nut family is an explicit vocabulary, each word bounded on both sides,
+# and every member canonicalises to the token "nut": a current value
+# saying "walnut allergy" and a proposal saying "nut allergy" declare the
+# same thing. Not a suffix rule, because "butternut pumpkin" and
+# "doughnuts" are food, not allergies.
+#
+# Stems (allerg-, anaphyla-, intoleran-) match any continuation, because
+# the continuations are all the same requirement. Everything else is a
+# whole word with an optional plural, so "vegetarians" and "eggs" match
+# and "eggplant" does not. "soy" also takes "soya".
+_NUT_FAMILY = (
+    "nut", "peanut", "walnut", "hazelnut", "chestnut", "coconut",
+    "cashew", "almond", "pistachio", "macadamia", "pecan",
+)
+_DIETARY_STEMS = ("allerg", "anaphyla", "intoleran")
+_DIETARY_SUFFIX = {"soy": r"a?"}
+
+
+def _word_pattern(word: str) -> str:
+    if word in _DIETARY_STEMS:
+        return rf"\b{re.escape(word)}[a-z]*"
+    return rf"\b{re.escape(word)}{_DIETARY_SUFFIX.get(word, r'(?:e?s)?')}\b"
+
+
+# token -> compiled pattern. The nut family shares the "nut" token.
+_DIETARY_PATTERNS: dict[str, re.Pattern] = {
+    "nut": re.compile("|".join(_word_pattern(w) for w in _NUT_FAMILY), re.IGNORECASE),
+    **{
+        token: re.compile(_word_pattern(token), re.IGNORECASE)
+        for token in _DIETARY_TOKENS
+        if token not in ("nut", "peanut")
+    },
+}
+
 # First-person client voice. A run-sheet note has no narrator: "DJ from
 # 8pm", not "we have organised a DJ from 8pm". The bare "i" branch
 # refuses a following full stop so the venue's own "I.D. checks" wording
@@ -217,9 +262,14 @@ def _excerpt(match: re.Match) -> str:
 
 
 def declared_dietaries(text: str | None) -> set[str]:
-    """Which dietary requirements a value declares, as matched tokens."""
+    """Which dietary requirements a value declares, as canonical tokens.
+
+    Whole words only -- see _DIETARY_PATTERNS. The whole nut family comes
+    back as "nut", so the set difference that decides DROPS_DIETARY treats
+    "walnut allergy" and "nut allergy" as the same declaration.
+    """
     lowered = normalise(text).lower()
-    return {token for token in _DIETARY_TOKENS if token in lowered}
+    return {token for token, pattern in _DIETARY_PATTERNS.items() if pattern.search(lowered)}
 
 
 def looks_like_eighteenth(*, event_type: str | None, event_name: str | None, notes: str | None = None) -> bool:
