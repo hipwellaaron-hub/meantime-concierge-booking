@@ -75,8 +75,52 @@
 </div>
 {% endif %}
 
+{% if conflict %}
+<div class="card" style="border-left:4px solid #b00020;">
+  <h2 style="margin-top:0;">This document changed while you had it open</h2>
+  <p>
+    Somebody else saved this document after your page was loaded. Your own text is
+    still in the form below, exactly as you typed it. Saving again will replace
+    what is on the document now with your version.
+  </p>
+  {% if conflicts %}
+  <table>
+    <thead><tr><th>Field</th><th>On the document now</th><th>Saving would put</th></tr></thead>
+    <tbody>
+      {% for row in conflicts %}
+      <tr>
+        <td><strong>{{ row.label }}</strong></td>
+        <td style="white-space:pre-wrap;">{{ row.stored or "(empty)" }}</td>
+        <td style="white-space:pre-wrap;">{{ row.yours or "(empty)" }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p>
+    None of the fields on this form would read differently afterwards, so the
+    change was to something this comparison does not treat as a difference --
+    formatting, most likely. Reload if you want to be certain before saving.
+  </p>
+  {% endif %}
+  <p>
+    Nothing has been written yet. Changes you made to the timeline, vendors or
+    food order were <strong>not</strong> carried over -- re-enter those before saving.
+  </p>
+  <p>
+    This check covers the written fields above only. The food order, vendors and
+    timeline are <strong>not</strong> compared, so a change somebody else made to
+    those will be replaced by whatever this form now holds, without a warning.
+  </p>
+</div>
+{% endif %}
 <form method="post" action="/admin/bookings/{{ booking.id }}/documents/{{ document.id }}/edit">
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  {# Compare-and-set: the values this form was rendered from. The save
+     refuses if they have moved, rather than reverting somebody else's
+     edit and recording the revert as yours. #}
+  <input type="hidden" name="content_expect" value="{{ content_expect }}">
+
 
   <div class="card">
     <h2>Timeline</h2>
@@ -136,7 +180,7 @@
     <h2>Food order</h2>
     <p class="muted">Clear an item's description to remove that line.</p>
     <div id="line-items">
-      {% for item in document.content.food_order.line_items %}
+      {% for item in form_content.food_order.line_items %}
       <div class="field-row line-item">
         <div style="flex:2;"><label>Item</label><input type="text" name="item_descriptions" value="{{ item.description or item.item }}" maxlength="255"></div>
         <div>
@@ -160,53 +204,53 @@
   <div class="card">
     <h2>Details</h2>
     <label>Catering order &amp; service style</label>
-    <textarea name="catering_order_and_service_style" rows="3">{{ document.content.catering_order_and_service_style }}</textarea>
+    <textarea name="catering_order_and_service_style" rows="3">{{ form_content.catering_order_and_service_style }}</textarea>
 
     <label>Bar structure</label>
-    <textarea name="bar_structure" rows="3">{{ document.content.bar_structure }}</textarea>
+    <textarea name="bar_structure" rows="3">{{ form_content.bar_structure }}</textarea>
 
     <label>Room layout notes</label>
-    <textarea name="room_layout_notes" rows="2">{{ document.content.room_layout_notes }}</textarea>
+    <textarea name="room_layout_notes" rows="2">{{ form_content.room_layout_notes }}</textarea>
 
     <label>Music</label>
-    <textarea name="music" rows="2">{{ document.content.music or document.content.music_entertainment or "" }}</textarea>
+    <textarea name="music" rows="2">{{ form_content.music or form_content.music_entertainment or "" }}</textarea>
 
     <label>Entertainment</label>
-    <textarea name="entertainment" rows="2">{{ document.content.entertainment or "" }}</textarea>
+    <textarea name="entertainment" rows="2">{{ form_content.entertainment or "" }}</textarea>
 
     <label>Dietaries <span class="muted">(never blank on the document &mdash; empty here prints "No dietary requirements declared")</span></label>
-    <textarea name="dietaries" rows="2">{{ document.content.get("dietaries") if document.content.get("dietaries") != "No dietary requirements declared" else "" }}</textarea>
+    <textarea name="dietaries" rows="2">{{ form_content.get("dietaries") if form_content.get("dietaries") != "No dietary requirements declared" else "" }}</textarea>
 
     <label>Accessibility</label>
-    <textarea name="accessibility" rows="2">{{ document.content.accessibility or "" }}</textarea>
+    <textarea name="accessibility" rows="2">{{ form_content.accessibility or "" }}</textarea>
 
     <label>Decorations</label>
-    <textarea name="decorations" rows="2">{{ document.content.decorations or "" }}</textarea>
+    <textarea name="decorations" rows="2">{{ form_content.decorations or "" }}</textarea>
 
     <label>Special notes</label>
-    <textarea name="special_notes" rows="3">{{ document.content.special_notes }}</textarea>
+    <textarea name="special_notes" rows="3">{{ form_content.special_notes }}</textarea>
 
     <label>Status</label>
-    <input type="text" name="status_text" value="{{ document.content.status_text or '' }}" maxlength="500">
+    <input type="text" name="status_text" value="{{ form_content.status_text or '' }}" maxlength="500">
 
     <label>Onsite contact</label>
-    <input type="text" name="onsite_contact" value="{{ document.content.get('onsite_contact') or '' }}" maxlength="255">
+    <input type="text" name="onsite_contact" value="{{ form_content.get('onsite_contact') or '' }}" maxlength="255">
   </div>
 
-  {% if document.content.av %}
+  {% if form_content.av %}
   <div class="card">
     <h2>AV / Screen <span class="muted">(The Loft)</span></h2>
-    <label><input type="checkbox" name="av_video_slideshow" value="1" {% if document.content.av.video_slideshow %}checked{% endif %}> Video / slideshow supplied</label>
-    <label><input type="checkbox" name="av_microphones" value="1" {% if document.content.av.microphones_for_speeches %}checked{% endif %}> Microphones for speeches</label>
+    <label><input type="checkbox" name="av_video_slideshow" value="1" {% if form_content.av.video_slideshow %}checked{% endif %}> Video / slideshow supplied</label>
+    <label><input type="checkbox" name="av_microphones" value="1" {% if form_content.av.microphones_for_speeches %}checked{% endif %}> Microphones for speeches</label>
     <label>AV notes</label>
-    <textarea name="av_notes" rows="2">{{ document.content.av.notes or "" }}</textarea>
-    <p class="muted">USB deadline recomputes from the event date: {{ document.content.av.usb_deadline_display or "—" }}</p>
+    <textarea name="av_notes" rows="2">{{ form_content.av.notes or "" }}</textarea>
+    <p class="muted">USB deadline recomputes from the event date: {{ form_content.av.usb_deadline_display or "—" }}</p>
   </div>
   {% endif %}
 
   <div class="card" style="border-color: var(--ember);">
     <h2>Internal notes <span class="muted">(kitchen / bar / staffing &mdash; never shown to the client, never in the PDF)</span></h2>
-    <textarea name="internal_notes" rows="3">{{ document.content.get("internal_notes") or "" }}</textarea>
+    <textarea name="internal_notes" rows="3">{{ form_content.get("internal_notes") or "" }}</textarea>
   </div>
 
   <button type="submit">Save changes</button>

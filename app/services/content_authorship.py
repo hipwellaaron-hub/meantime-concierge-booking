@@ -269,7 +269,49 @@ def changed_fields(
 
     Keys absent from `incoming` are not considered: a partial `changes`
     dict says nothing about the keys it omits.
+
+    See `differing_fields` for the neighbouring question -- what a save
+    would OVERWRITE -- which is not the same and must not be answered with
+    this function.
     """
+    return _compare(
+        stored, incoming, candidates=candidates, placeholders=placeholders, skip_placeholder_writes=True
+    )
+
+
+def differing_fields(
+    stored: object,
+    incoming: object,
+    *,
+    candidates: Iterable[str],
+    placeholders: Iterable[str] = (),
+) -> set[str]:
+    """Which of `candidates` `incoming` would REPLACE on `stored`.
+
+    A different question from `changed_fields`, and the distinction is the
+    whole reason both exist. This one asks what a save would overwrite --
+    the question a screen asks when it has to tell somebody what they are
+    about to discard. `changed_fields` asks what a PERSON can be said to
+    have written, which is the question the record answers.
+
+    They differ in exactly one case: writing a generated placeholder over
+    somebody's real text. Nobody authored the generator's sentence, so it
+    is not a change in the authorship sense -- but it certainly replaces
+    what was there, and a screen that stayed quiet about it would let real
+    text be swapped for "[REVIEW] add bar structure" with nothing said
+    (review of 84916a7, where this function's absence did exactly that).
+
+    Comparison is CRLF-normalised and treats absent, None, blank and empty
+    containers as one state. A STORED placeholder is read as nothing too,
+    which is narrower than it sounds: it means blanking a placeholder is
+    not reported, because nothing of anybody's is lost. Writing real words
+    over a stored placeholder IS reported -- the value on the document is
+    about to change and the screen should say so.
+    """
+    return _compare(stored, incoming, candidates=candidates, placeholders=placeholders)
+
+
+def _compare(stored, incoming, *, candidates, placeholders, skip_placeholder_writes=False) -> set[str]:
     if not isinstance(incoming, dict):
         raise TypeError(f"incoming content must be a dict; got {type(incoming).__name__}")
     names = _names_to_write(candidates)
@@ -286,10 +328,10 @@ def changed_fields(
         if name not in incoming:
             continue
         submitted = _comparable(incoming[name])
-        if isinstance(submitted, str) and submitted in nobody_wrote:
+        if skip_placeholder_writes and isinstance(submitted, str) and submitted in nobody_wrote:
             # Whatever was there before, nobody authored the generator's
-            # own sentence. Losing the previous value is a separate matter,
-            # and one the regenerate screen already warns about.
+            # own sentence. That it REPLACES something is a real fact, and
+            # differing_fields is what reports it.
             continue
         if _written_value(before.get(name), nobody_wrote) != _written_value(incoming[name], nobody_wrote):
             changed.add(name)

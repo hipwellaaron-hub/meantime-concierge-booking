@@ -37,6 +37,7 @@ from app.services.contact_matching import (
     update_contact_details,
 )
 from app.services import beo_proposals as beo_proposals_service
+from app.services import content_authorship
 from app.services import document_regeneration
 from app.services import documents as documents_service
 from app.services import enquiry_classification
@@ -710,16 +711,12 @@ def _get_draft_document_or_404(db: Session, booking_id: uuid.UUID, document_id: 
     return document
 
 
-@router.get("/{booking_id}/documents/{document_id}/edit", response_class=HTMLResponse)
-def edit_document_form(
-    booking_id: uuid.UUID,
-    document_id: uuid.UUID,
-    request: Request,
-    db: Session = Depends(get_db),
-    staff: StaffUser = Depends(require_staff),
+def _edit_form_response(
+    request, staff, db, booking_id, document, *, form_content, conflicts=(), conflict=False, status_code=200
 ):
-    _get_booking_or_404(db, booking_id)
-    document = _get_draft_document_or_404(db, booking_id, document_id)
+    """The edit screen. Shared by the GET and by the conflict response, so a
+    refused save comes back as the same form carrying the staff member's own
+    words -- not a JSON error that throws their typing away."""
     template = (
         "admin/document_edit_agreement.html"
         if document.type == DocumentType.agreement
@@ -741,7 +738,19 @@ def edit_document_form(
             staff,
             document=document,
             booking=document.booking,
+            # What the form renders from: the stored content on a GET, and on
+            # a refused save the staff member's own submission.
+            form_content=form_content,
+            conflicts=list(conflicts),
+            conflict=conflict,
             vendor_types=[vt.value for vt in VendorType],
+            # Carried back on save and compared: the form is rendered from
+            # values that may be minutes old, and without this a change
+            # somebody else committed in between is silently reverted -- and
+            # now also recorded as the reverting staff member's own words.
+            content_expect=documents_service.content_fingerprint(
+                document.content, document_regeneration.PROTECTED_FIELD_NAMES
+            ),
             # What the AI has proposed for this Event Order and has not yet
             # had approved -- shown against the value each would replace.
             beo_proposal=proposal if proposal is not None and proposal.is_reviewable else None,
@@ -755,7 +764,21 @@ def edit_document_form(
                 and proposal.document_id != current_draft.id
             ),
         ),
+        status_code=status_code,
     )
+
+
+@router.get("/{booking_id}/documents/{document_id}/edit", response_class=HTMLResponse)
+def edit_document_form(
+    booking_id: uuid.UUID,
+    document_id: uuid.UUID,
+    request: Request,
+    db: Session = Depends(get_db),
+    staff: StaffUser = Depends(require_staff),
+):
+    _get_booking_or_404(db, booking_id)
+    document = _get_draft_document_or_404(db, booking_id, document_id)
+    return _edit_form_response(request, staff, db, booking_id, document, form_content=document.content)
 
 
 @router.post("/{booking_id}/documents/{document_id}/edit", dependencies=[Depends(require_csrf)])
@@ -793,6 +816,7 @@ def save_document_edit(
     item_quantities: list[str] = Form(default=[]),
     item_unit_prices: list[str] = Form(default=[]),
     item_categories: list[str] = Form(default=[]),
+    content_expect: str = Form(default=""),
     db: Session = Depends(get_db),
     staff: StaffUser = Depends(require_staff),
 ):
@@ -803,6 +827,105 @@ def save_document_edit(
     one that can't be hand-tweaked at all."""
     _get_booking_or_404(db, booking_id)
     document = _get_draft_document_or_404(db, booking_id, document_id)
+    # Locked BEFORE the content is read, so the values this form's save is
+    # compared against are the ones it is actually replacing. Without it a
+    # change committed between the page load and the save is reverted AND
+    # recorded as this staff member's own words (see lock_draft_for_update).
+    try:
+        documents_service.lock_draft_for_update(db, document)
+    except ValueError as exc:
+        # Sent or signed between the check above and the locked re-read.
+        # The same condition a moment earlier is a 409 from
+        # _get_draft_document_or_404, so it is a 409 here too rather than
+        # an unhandled ValueError and a 500.
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    if content_expect != documents_service.content_fingerprint(
+        document.content, document_regeneration.PROTECTED_FIELD_NAMES
+    ):
+        # Refuse, but hand their own words back. Throwing a JSON error at a
+        # staff member who has just typed a long note would protect one
+        # person's writing by destroying another's, in a feature whose whole
+        # purpose is that neither happens. The form comes back with what
+        # they wrote, a fresh fingerprint, and a table naming exactly what
+        # saving again would replace -- tell me before, not after. An empty
+        # value (a tab opened before this shipped) lands here too.
+        submitted = {
+            "catering_order_and_service_style": catering_order_and_service_style.strip(),
+            "bar_structure": bar_structure.strip(),
+            "room_layout_notes": room_layout_notes.strip(),
+            "music": music.strip(),
+            "entertainment": entertainment.strip(),
+            "music_entertainment": music_entertainment.strip(),
+            "special_notes": special_notes.strip(),
+            "dietaries": dietaries.strip(),
+            "accessibility": accessibility.strip(),
+            "decorations": decorations.strip(),
+            "status_text": status_text.strip(),
+            "onsite_contact": onsite_contact.strip(),
+            "internal_notes": internal_notes.strip(),
+        }
+        if document.type == DocumentType.agreement:
+            submitted = {
+                "terms_sections": [
+                    {"heading": heading.strip(), "body": body.strip()}
+                    for heading, body in zip(headings, bodies)
+                    if heading.strip() or body.strip()
+                ]
+            }
+        stored = document.content if isinstance(document.content, dict) else {}
+        # The labels the regenerate screen already shows for these fields,
+        # so one document's field is called the same thing on both screens.
+        labels = {spec.name: spec.label for spec in document_regeneration.PROTECTED_FIELDS}
+        # What this save would REPLACE -- not what it would record as
+        # authored. Asking changed_fields, which is the authorship question,
+        # meant a submission that writes the generator's placeholder over
+        # somebody's real text counted as nothing, so the table came back
+        # empty and the page said nothing at all (review of 84916a7).
+        # differing_fields is the same normalisation without that skip.
+        moved = content_authorship.differing_fields(
+            stored,
+            submitted,
+            candidates=document_regeneration.PROTECTED_FIELD_NAMES,
+            placeholders=document_regeneration.GENERATED_PLACEHOLDERS,
+        )
+        # Rendered through each field's own renderer, so an agreement's
+        # terms_sections reads as its clauses rather than as a repr of a
+        # list of dicts -- this is the screen somebody decides the fate of
+        # a hand-negotiated contract on.
+        specs = {spec.name: spec for spec in document_regeneration.PROTECTED_FIELDS}
+        conflicts = []
+        for name in sorted(moved):
+            spec = specs.get(name)
+            render = spec.render if spec is not None else str
+            conflicts.append(
+                {
+                    "label": labels.get(name, name.replace("_", " ").capitalize()),
+                    "stored": render(stored.get(name)),
+                    "yours": render(submitted[name]),
+                }
+            )
+        return _edit_form_response(
+            request,
+            staff,
+            db,
+            booking_id,
+            document,
+            # Every submitted value, including the empty ones. Overlaying only
+            # the truthy ones put back the text of a field the staff member had
+            # just cleared, so the form came back holding words they had
+            # deleted and saving again restored them -- the exact silent
+            # reversion this whole change exists to stop.
+            form_content={**stored, **submitted},
+            conflicts=conflicts,
+            # Separate from the row list: a refusal must never be silent, and
+            # the rows can legitimately come back empty (a formatting-only
+            # change moves the fingerprint without changing any value this
+            # comparison considers different).
+            conflict=True,
+            status_code=409,
+        )
+
     content = dict(document.content)
 
     if document.type == DocumentType.agreement:

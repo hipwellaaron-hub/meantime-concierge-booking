@@ -6,6 +6,8 @@ change should require re-reading an email chain to explain.
 """
 
 import datetime as dt
+import hashlib
+import json
 import logging
 import uuid
 from collections.abc import Iterable
@@ -53,6 +55,82 @@ def lock_current_for_update(db: Session, booking_id: uuid.UUID, doc_type: Docume
         )
         .with_for_update()
     ).scalar_one_or_none()
+
+
+def content_fingerprint(content: object, fields: Iterable[str]) -> str:
+    """Identifies the values an edit form was rendered from.
+
+    The form carries this back and the save refuses if it no longer
+    matches -- a compare-and-set, the same shape as the regenerate screen's
+    `expect` and every other toggle in this codebase.
+
+    The row lock alone cannot do this job. The staleness does not come from
+    a race inside the save; it comes from the GET that rendered the form,
+    which may be minutes old. A lock taken during the POST closes the
+    window between this request's read and its write, and nothing about the
+    window between the page load and the save -- so without this a value
+    somebody else committed in between is silently reverted, and now also
+    recorded as the reverting staff member's own words.
+
+    WHAT IS COVERED, precisely: whatever `fields` names, and nothing else.
+    Both callers pass the protected free-text fields, so this protects the
+    prose and NOT the rest of the form.
+
+    That is narrower than the form, and the difference is a real hole. The
+    edit form also writes the food order line items, the vendor rows, the
+    key moments, the guest arrival time and the AV block. A colleague's
+    change to any of those moves nothing this looks at, so the save is
+    accepted and reverts them without a word -- proved by putting four
+    platters on a document through one form and one platter through
+    another: the second save returned 303 and the quantity went back to
+    one, with the food total recomputed from the stale line (review of
+    85e326f). Money, on a client-facing document.
+
+    Widening it is deliberate follow-up work rather than a line change,
+    because it starts refusing saves that today succeed, and the vendor
+    snapshot is rewritten by a different staff action entirely (the
+    bump-in confirmation) -- fingerprinting it naively would collide with
+    every open edit form and reject saves that conflict with nothing. Until
+    then those fields remain last-write-wins, exactly as they were before
+    this commit, and the conflict banner says so.
+    """
+    values = content if isinstance(content, dict) else {}
+    # Canonical JSON over the whole field list at once. sort_keys settles
+    # dict key order, which repr() leaves to insertion order and which would
+    # otherwise let the same content fingerprint two ways and reject a save
+    # that conflicts with nothing. One JSON document rather than a value at a
+    # time, so no separator byte is needed to stop a value running into the
+    # next name -- the brackets already do that. default=str keeps a stray
+    # non-JSON value from raising here, since this is a comparison and never
+    # a stored artefact.
+    payload = json.dumps(
+        [[name, values.get(name)] for name in sorted(fields)], sort_keys=True, default=str
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:32]
+
+
+def lock_draft_for_update(db: Session, document: Document) -> Document:
+    """Take the row lock BEFORE the caller reads the content it is about to
+    edit, and re-check that it is still a draft.
+
+    update_content takes this lock itself, but by then a caller that built
+    its new content from an earlier read has already lost: the value it is
+    about to write was decided against a version that may have moved. That
+    was survivable while the write was only last-write-wins -- one staff
+    member silently reverting another, which the edit screen has always
+    done. It stopped being survivable when the writer began RECORDING
+    authorship, because the reverted value is then marked as the reverting
+    staff member's own words and a later regenerate preserves it. A lost
+    update became a protected lost update.
+
+    So callers that read, decide, and then write take the lock here first,
+    making the read and the write one critical section -- the same shape
+    update_content_fields already has for the same reason.
+    """
+    db.refresh(document, with_for_update=True)
+    if document.status != DocumentStatus.draft:
+        raise ValueError(f"cannot edit a document that is already {document.status.value} -- only a draft can be edited")
+    return document
 
 
 def get_by_token(db: Session, token: str) -> Document | None:
@@ -170,13 +248,9 @@ def update_content(
     `placeholders` are the values the generator writes when nothing was
     captured; a field set to one of them is never recorded as anyone's.
 
-    KNOWN GAP. A caller that built `content` from a read taken before this
-    one -- the edit form does, from the GET that rendered it -- may be
-    unknowingly reverting a value somebody else committed in between. That
-    revert is old last-write-wins behaviour, but recording authorship makes
-    it worse: the reverted text is marked as this caller's own words, so a
-    regenerate then preserves it. Closing that needs a compare-and-set
-    between the page load and the save, which is its own change.
+    A caller that built `content` from an earlier read should take
+    lock_draft_for_update first, or the authorship it records may describe
+    a value it is unknowingly reverting.
     """
     db.refresh(document, with_for_update=True)
     if document.status != DocumentStatus.draft:
