@@ -645,7 +645,21 @@ def generate_document_confirmed(
         pending = _pending_proposal_rows(db, booking, doc_type, current)
         return _render_regenerate_confirmation(request, db, booking, doc_type, current, losses, staff, pending)
 
-    keep_fields = {name for name in keep if name in document_regeneration.PROTECTED_FIELD_NAMES}
+    # Only the fields this person was actually ASKED about. Being a
+    # protected name is not the same question: the form offers a checkbox
+    # per loss, so any other name arriving here was never on the screen --
+    # and `regenerated_note` is built from the losses, so a keep outside
+    # that set is written with nothing in the audit trail able to mention
+    # it. Proved: a POST keeping `terms_sections` on a BEO wrote
+    # terms_sections and terms_text into it, and froze an unoffered field
+    # over the [REVIEW] prompt that would have asked someone to fill it
+    # in, under the note "kept Room layout notes".
+    #
+    # `losses` is the local the fingerprint was just checked against, not
+    # a fresh losses() call -- recomputing would reopen the check-to-write
+    # window the row lock exists to close.
+    offered = {loss.field for loss in losses}
+    keep_fields = {name for name in keep if name in offered}
     merged = document_regeneration.apply_choices(content, current, keep_fields)
     documents_service.create_new_version(
         db, booking, doc_type, merged, actor=_actor(staff),
