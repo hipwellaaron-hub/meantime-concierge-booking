@@ -27,6 +27,8 @@ from app.models.document import DocumentType
 from app.models.invoice import InvoiceStatus, InvoiceType
 from app.models.wizard_session import WizardSession
 from app.services import catalogue
+from app.services import content_authorship
+from app.services import document_regeneration
 from app.services import documents as documents_service
 from app.services import invoicing
 from app.services import notifications
@@ -388,6 +390,53 @@ def generate_beo_and_invoice(db: Session, session: WizardSession, *, actor: str)
         outstanding_items.append("Accessibility need raised against a non-accessible space -- requires Aaron's review")
 
     beo_content = generate_beo_content(booking, food_line_items, **_session_content_kwargs(db, session, deposit_paid))
+
+    # THE WIZARD BYPASS. Staff who regenerate are shown what a rebuild would
+    # destroy and decide field by field. A client submitting the wizard
+    # reaches the same create_new_version with nobody to ask, so until now
+    # it took the whole document -- an approved allergy note included --
+    # without a word. Same incident, through the one door that had no guard
+    # on it.
+    #
+    # There is no human in this request, so the safe answer is to KEEP what
+    # a person wrote and tell staff, rather than to decide for them. Locked
+    # for the same reason the staff path is: this reads the current
+    # document, decides from it, and then writes.
+    current = documents_service.lock_current_for_update(db, booking.id, DocumentType.beo)
+    at_risk = document_regeneration.losses(db, current, beo_content)
+    if at_risk:
+        beo_content = document_regeneration.apply_choices(
+            beo_content, current, {loss.field for loss in at_risk}
+        )
+        outstanding_items += [
+            f"{loss.label} kept from the previous Event Order rather than rebuilt from the wizard"
+            f"{' -- ' + loss.approved_note if loss.approved_note else ''}"
+            " -- confirm it still applies"
+            for loss in at_risk
+        ]
+
+    if current is not None:
+        # The record travels across EVERY rebuild, not only the ones that
+        # kept something. Doing this inside the `at_risk` branch meant a
+        # document whose recorded fields were all unchanged lost its record
+        # entirely, and the next regenerate treated those values as the
+        # generator's -- the guard holding for exactly one round.
+        #
+        # A name is forgotten when the wizard's value REPLACED the person's:
+        # leaving it recorded would claim they wrote what the wizard just
+        # produced. Compared value by value rather than as "authored minus
+        # kept", because a field the wizard rebuilds identically still holds
+        # their words.
+        beo_content = content_authorship.carry(beo_content, previous=current.content)
+        beo_content = content_authorship.forget(
+            beo_content,
+            content_authorship.differing_fields(
+                current.content,
+                beo_content,
+                candidates=content_authorship.authored(current.content),
+                placeholders=document_regeneration.GENERATED_PLACEHOLDERS,
+            ),
+        )
 
     document = documents_service.create_new_version(db, booking, DocumentType.beo, beo_content, actor=actor)
 
