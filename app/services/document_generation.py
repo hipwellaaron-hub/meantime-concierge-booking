@@ -421,53 +421,56 @@ def build_total_food_spend(food_total: Decimal | None, deposit_paid: Decimal | N
     }
 
 
-# A credit line this module composed, so it can be recognised and replaced
-# rather than duplicated. Anchored and specific: it must never match a
-# sentence somebody wrote themselves.
+# A credit line an OLDER version of this module composed INTO the field.
+# Nothing writes one any more (see bar_structure_shown below); this exists
+# only so a document stored before that change does not print the figure
+# twice. MULTILINE because a person may have typed above it.
 _CREDIT_LINE_RE = re.compile(
-    r"^\s*\$[\d,]+(?:\.\d{2})? bar credit included, applied on the night\.\s*",
-    re.IGNORECASE,
+    r"^[ \t]*\$[\d,]+(?:\.\d{2})? bar credit included, applied on the night\.[ \t]*\n?",
+    re.IGNORECASE | re.MULTILINE,
 )
 
 
 def strip_bar_credit_line(bar_structure: object) -> str:
-    """The bar structure without the credit line this module composed.
-
-    For anything that wants to compare the words a PERSON put in the field
-    against something -- the approval badge does -- the generated line has
-    to come off first, or the comparison fails on text nobody approved and
-    a true badge goes missing (found when approval started re-composing
-    the credit)."""
+    """The bar structure without any credit line a previous version composed
+    into it. Legacy only -- new content never contains one."""
     if not isinstance(bar_structure, str):
         return ""
     return _CREDIT_LINE_RE.sub("", bar_structure).strip()
 
 
-def bar_structure_with_credit(bar_structure, bar_credit) -> str:
-    """A bar credit is a promise the FLOOR has to honour, so it belongs in
-    the bar structure the team actually reads on the night -- not only in
-    the agreement the client signed. It used to be typed as free text into
-    the Minimum Spend clause, which meant the one group of people who
-    needed it never saw it.
+def bar_structure_shown(content: object) -> str:
+    """What the Bar Structure section PRINTS: the credit, then the words.
 
-    Stated first, before the structure itself, because it changes how the
-    tab is run from the opening drink.
+    A bar credit is a promise the FLOOR has to honour, so it belongs where
+    the team reads on the night and not only in the agreement the client
+    signed. It used to get there by being composed INTO content
+    ["bar_structure"], which put a generated fragment inside a
+    human-editable field and made every consumer responsible for peeling it
+    off again. Four of them did not, and each was its own defect: an
+    approval replaced the field and deleted the promise; a repeat of the
+    line doubled it; the regenerate screen reported the generator's own
+    placeholder as a human value at risk and suppressed its "would be
+    emptied" badge; the approval badge stopped matching; the review panel
+    claimed generated text was somebody's words; and a kept field froze a
+    stale figure beside a bar_credit that said otherwise (reviews of
+    43dc67a).
 
-    IDEMPOTENT, and public for that reason. The credit lives inside this
-    field and nowhere else in the Event Order, so anything that REPLACES
-    the field wholesale deletes the promise -- an approved AI proposal did
-    exactly that, with no rule covering it. Approval now re-composes
-    through here, which means the value handed in may already carry a
-    credit line: a stale one the model repeated, or the right one. Any
-    line this module composed is stripped and the current figure written
-    back, so re-composing cannot double it and cannot leave an out-of-date
-    amount standing.
+    So the field holds only what a person or the generator wrote about the
+    bar, the figure stays in content["bar_credit"] where it already lived,
+    and the two are joined HERE, at the one point that renders them. There
+    is nothing to strip, nothing to keep idempotent, and nothing for a
+    future writer to remember.
     """
-    base = _CREDIT_LINE_RE.sub("", bar_structure or "").strip() or f"{REVIEW} add bar structure"
-    if bar_credit is not None and bar_credit > 0:
-        credit = f"${bar_credit:,.0f} bar credit included, applied on the night."
-        return credit + "\n\n" + base
-    return base
+    values = content if isinstance(content, dict) else {}
+    structure = strip_bar_credit_line(values.get("bar_structure")) or f"{REVIEW} add bar structure"
+    try:
+        credit = Decimal(str(values.get("bar_credit") or "0"))
+    except InvalidOperation:
+        return structure
+    if credit <= 0:
+        return structure
+    return f"${credit:,.0f} bar credit included, applied on the night.\n\n{structure}"
 
 
 def generate_beo_content(
@@ -520,7 +523,9 @@ def generate_beo_content(
             "note": None if food_order_line_items else f"{REVIEW} no food order captured yet",
         },
         "total_food_spend": build_total_food_spend(food_total, deposit_paid),
-        "bar_structure": bar_structure_with_credit(bar_structure, booking.bar_credit),
+        # The credit is NOT composed in here -- see bar_structure_shown.
+        # This field holds only the words about the bar.
+        "bar_structure": bar_structure or f"{REVIEW} add bar structure",
         # Also carried as its own field so the Event Order can show the
         # figure without anyone having to read it out of the prose.
         "bar_credit": str(booking.bar_credit),

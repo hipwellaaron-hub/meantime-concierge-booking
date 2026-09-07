@@ -259,7 +259,7 @@
    paid/owing pill is the only financial signal. Kept on the client's PDF
    and the admin screen view. #}
 {% if not is_floor_app %}{{ beo_totals(content, staff) }}{% endif %}
-{{ beo_section("Bar Structure", content.bar_structure, staff) }}
+{{ beo_section("Bar Structure", content | bar_structure_shown, staff) }}
 {% endmacro %}
 
 {% macro beo_right_column(content, staff, document) %}

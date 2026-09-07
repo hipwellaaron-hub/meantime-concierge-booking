@@ -191,11 +191,18 @@ def test_the_wizard_measures_the_client_against_the_agreed_figure(db, loft, cont
 
 
 def test_the_event_order_carries_the_credit_into_the_bar_structure(db, loft, contact):
+    """The credit still reaches the floor above the bar wording -- it is now
+    joined on at render rather than stored inside the field, so that a
+    generated fragment does not sit inside a value people edit and compare
+    (see document_generation.bar_structure_shown)."""
     booking = _liz(db, loft, contact)
     content = document_generation.generate_beo_content(booking, [], bar_structure="Bar tab on the night")
     assert content["bar_credit"] == "250.00"
-    assert "$250 bar credit" in content["bar_structure"]
-    assert "Bar tab on the night" in content["bar_structure"]
+    assert content["bar_structure"] == "Bar tab on the night", "the field holds only the words"
+
+    shown = document_generation.bar_structure_shown(content)
+    assert shown.startswith("$250 bar credit")
+    assert "Bar tab on the night" in shown
 
 
 def test_no_bar_credit_leaves_the_bar_structure_untouched(db, loft, contact):
