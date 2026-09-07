@@ -61,7 +61,8 @@
 <div class="card">
   <p style="margin:0; font-size:0.9rem;">Nothing else on this
     {{ "Event Order" if doc_type.value == "beo" else "Agreement" }} would be lost &mdash; every other
-    field is either unchanged or holds only a generated placeholder.</p>
+    field is unchanged, holds only a generated placeholder, or is empty &mdash; either with
+    nobody recorded as having written it, or with nothing but a placeholder to replace it.</p>
 </div>
 {% endif %}
 
@@ -80,7 +81,7 @@
       <input type="checkbox" name="keep" value="{{ loss.field }}" checked>
       <strong>Keep this</strong> &mdash; what the {{ "Event Order" if doc_type.value == "beo" else "Agreement" }} says now
     </label>
-    <pre style="white-space:pre-wrap; margin:0 0 1rem; padding:0.75rem; background:var(--surface-hi); border-radius:4px;">{{ loss.current }}</pre>
+    <pre style="white-space:pre-wrap; margin:0 0 1rem; padding:0.75rem; background:var(--surface-hi); border-radius:4px;">{% if loss.cleared_by_a_person %}(nothing &mdash; somebody cleared this field on purpose){% elif not loss.current %}(nothing readable in this field){% else %}{{ loss.current }}{% endif %}</pre>
 
     <p style="margin:0 0 0.35rem; font-size:0.9rem;" class="muted">Unticked, it is replaced by:</p>
     <pre style="white-space:pre-wrap; margin:0; padding:0.75rem; background:var(--surface-hi); border-radius:4px;">{% if loss.incoming %}{{ loss.incoming }}{% else %}(nothing &mdash; the field would be left empty){% endif %}</pre>

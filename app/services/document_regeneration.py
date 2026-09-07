@@ -37,7 +37,7 @@ from sqlalchemy.orm import Session
 
 from app.models import BookingEvent, Document
 from app.models.beo_proposal import FIELD_APPROVED, BeoProposal, BeoProposalField
-from app.services import beo_rules
+from app.services import beo_rules, content_authorship
 from app.services.document_generation import NO_DIETARIES, REVIEW
 
 logger = logging.getLogger(__name__)
@@ -122,6 +122,25 @@ def _is_disposable(rendered: str) -> bool:
     return not rendered or rendered in GENERATED_PLACEHOLDERS
 
 
+def _was_cleared(stored: object, rendered: str) -> bool:
+    """Whether this field is empty because somebody emptied it.
+
+    Read from the STORED value, not from `rendered` being blank. _render_text
+    returns "" for anything that is not a str, so a field holding a dict, a
+    list, a number or a bool renders exactly like a field a person cleared --
+    and JSONB holds whatever was written to it, which is why every read path
+    in this codebase tolerates the wrong type rather than trusting it.
+
+    Deciding from the rendered string let the screen tell a staff member
+    that a colleague had deliberately emptied a field nobody had touched
+    (review of c7ed188). A claim about what a person did must rest on the
+    value itself, never on the shape of its rendering.
+    """
+    if rendered:
+        return False
+    return stored is None or (isinstance(stored, str) and not stored.strip())
+
+
 @dataclass(frozen=True)
 class ContentLoss:
     """One field whose human-written value a regenerate would destroy."""
@@ -133,6 +152,13 @@ class ContentLoss:
     # Set when this exact value can be traced to an approval, so the
     # screen can say who approved it and when rather than "something".
     approved_note: str | None = None
+    # This field is empty because somebody cleared it, and the record says
+    # so. Carried explicitly rather than inferred from `current` being
+    # blank: the screen states it in words, and a claim about what a person
+    # did must come from the place that knows, not from a template reading
+    # a coincidence. Without it the row rendered as an unlabelled empty box
+    # and the one thing it exists to say went unsaid (review of e7029f2).
+    cleared_by_a_person: bool = False
 
     @property
     def empties_the_field(self) -> bool:
@@ -155,6 +181,14 @@ def _approved_values(db: Session, booking_id) -> dict[str, list[BeoProposalField
 
 
 def _approval_note(rows: list[BeoProposalField], current: str) -> str | None:
+    if not current:
+        # An empty current value matches any approval whose applied_value
+        # was empty or NULL, and the screen would then badge a blank field
+        # "approved by Sally on 3 Sep" for something Sally never approved.
+        # Unreachable until losses() began reporting cleared fields; a false
+        # statement about who authorised a value is the one claim this whole
+        # branch exists to stop the system making (review of 55f39ac).
+        return None
     for row in reversed(rows):
         if _render_text(row.applied_value) == current:
             # No %-d: it is a glibc extension and raises on Windows, where
@@ -185,10 +219,49 @@ def was_hand_edited(db: Session, document: Document) -> BookingEvent | None:
 def losses(db: Session, document: Document | None, fresh: dict) -> list[ContentLoss]:
     """The human-written values `fresh` would destroy, in field order.
 
-    Empty when there is nothing to lose -- no current document, or every
-    protected field either unchanged or holding only a generated
-    placeholder. An empty result means a regenerate is safe to run
-    straight through, which is the ordinary case.
+    A field is reported when its value would change, unless:
+
+      - the current value is one of the generator's own placeholders. Its
+        sentence, nobody else's, so replacing it loses nothing. This is a
+        flat skip and deliberately not a question about authorship: even
+        where the record names the field, a placeholder is still not a
+        person's words;
+      - the current value is EMPTY and either no one has recorded writing
+        it, or what would replace it is a placeholder or blank too --
+        nothing to nothing is not a loss anybody needs to decide about.
+
+    That second clause is the change. An empty field used to be skipped
+    unconditionally, so a value a person had deliberately cleared was
+    refilled by the next regenerate without a word -- proved live before
+    this commit: `music` cleared and recorded, the booking still naming a
+    DJ, and losses() returned nothing at all. Clearing a field is a
+    decision, and the record is what lets this tell it apart from a field
+    nobody has ever filled in.
+
+    WHAT THIS DOES NOT DO, and why. It does not treat the record's SILENCE
+    as evidence. A field the record fails to name is still reported exactly
+    as before, so consulting the record can only ADD a warning, never
+    remove one.
+
+    The temptation is obvious -- the record would strip out every warning
+    about a value the generator itself produced, which is most of the noise
+    on this screen. It is wrong today because a record can be partial. A
+    draft written before the record existed carries no record at all; the
+    first hand-edit after it shipped creates one naming that single field,
+    and every older human value on the document goes unnamed. Trusting
+    silence would leave exactly those values unprotected -- an allergy note
+    typed last month, invisible to the guard, destroyed by the next
+    regenerate. That is Aaron's original incident, reached through the very
+    mechanism built to prevent it, and it is how the first attempt at this
+    redesign failed (reverted, 2026-09-07).
+
+    Making silence trustworthy needs a way to know a record is COMPLETE --
+    that it has been present since the content was created, so anything it
+    omits really is the generator's. That is a separate change and is not
+    made here.
+
+    An empty result means a regenerate is safe to run straight through,
+    which is the ordinary case.
 
     This is a READ. A caller that intends to write must hold the document's
     row lock across both, or another approval can land in between and be
@@ -200,11 +273,34 @@ def losses(db: Session, document: Document | None, fresh: dict) -> list[ContentL
     current_content = document.content or {}
     approved = _approved_values(db, document.booking_id)
 
+    # Who wrote what, where anybody has said so. Read, never inferred: a
+    # field the record does not name is NOT therefore the generator's, for
+    # the reason set out below.
+    authored = content_authorship.authored(current_content)
+
     found: list[ContentLoss] = []
     for spec in PROTECTED_FIELDS:
         current = spec.render(current_content.get(spec.name))
         incoming = spec.render(fresh.get(spec.name))
-        if current == incoming or _is_disposable(current):
+        if current == incoming:
+            continue
+        if current in GENERATED_PLACEHOLDERS:
+            # The generator's own sentence. Nobody wrote it, so replacing
+            # it loses nothing -- true whatever the record says, which is
+            # why this stays a skip rather than becoming a question about
+            # authorship.
+            continue
+        if not current and (spec.name not in authored or _is_disposable(incoming)):
+            # Empty and unclaimed: a field nobody has filled in yet, and
+            # filling it in is the regenerate doing its job.
+            #
+            # Empty, claimed, but the incoming value is a placeholder or
+            # blank too: nothing to nothing. Reporting it put half the new
+            # warnings on this screen in front of a person deciding about
+            # a change from no words to no words -- wearing the "would be
+            # emptied" badge, which is the loudest thing on the page. A
+            # screen nobody reads is the silence this module exists to
+            # end, so it stays quiet here (review of 55f39ac).
             continue
         found.append(
             ContentLoss(
@@ -213,6 +309,7 @@ def losses(db: Session, document: Document | None, fresh: dict) -> list[ContentL
                 current=current,
                 incoming=incoming,
                 approved_note=_approval_note(approved.get(spec.name, []), current),
+                cleared_by_a_person=_was_cleared(current_content.get(spec.name), current),
             )
         )
     return found
