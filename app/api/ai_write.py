@@ -118,6 +118,19 @@ def propose_event_order_values(
 def read_event_order_proposal(reference: str, ctx: AiContext = Depends(require_ai)):
     """What is still awaiting approval, and what happened to the last ask.
 
+    Both halves, which took reading the LATEST proposal rather than the
+    latest PENDING one. applied_value and edited_before_approval -- the
+    calibration signal this endpoint exists for, the difference between
+    what was proposed and what a human actually approved -- are written as
+    each field is decided, and deciding the last one resolves the
+    proposal. Reading only pending rows therefore returned `proposal:
+    null` at the exact moment the answer became available, and the tool
+    description promised the opposite.
+
+    `status` is the discriminator, not the presence of the object: pending
+    means somebody still has to look, resolved/superseded/rules_blocked
+    mean the ask is over. Per field, `state` says the same thing.
+
     A read, behind the read gate. It sat behind require_ai_write until the
     2026-09-06 review pointed out that enforce_write_budget MUTATES state:
     once the budget had tripped, this GET re-disabled writes the moment
@@ -125,7 +138,7 @@ def read_event_order_proposal(reference: str, ctx: AiContext = Depends(require_a
     natural behaviour.
     """
     booking = _booking_by_reference(ctx, reference)
-    proposal = beo_proposals.pending_proposal(ctx.db, booking.id)
+    proposal = beo_proposals.latest_proposal(ctx.db, booking.id)
     if proposal is None:
         return {"reference": booking.reference_code, "proposal": None, "as_of": ctx.as_of_iso}
     return {

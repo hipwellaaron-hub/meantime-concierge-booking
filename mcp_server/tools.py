@@ -241,7 +241,12 @@ TOOLS: list[dict] = [
             "Field states: pending (awaiting a human), approved (written to the Event Order), "
             "rejected, superseded (a newer proposal replaced it before anyone looked), "
             "blocked (the house rules refused the proposal it belonged to).\n\n"
-            "Returns `proposal: null` when nothing is outstanding."
+            "This is the MOST RECENT proposal, decided or not -- so a resolved one still "
+            "shows what a human did with it. Read `status` to tell them apart: pending "
+            "means somebody still has to look, resolved/superseded/rules_blocked mean the "
+            "ask is over. `proposal: null` means nothing has ever been proposed on this "
+            "booking. Only the latest is returned, so a newer ask hides an older decided "
+            "one -- read this before proposing, not as a history of every correction."
         ),
         "inputSchema": {
             "type": "object",

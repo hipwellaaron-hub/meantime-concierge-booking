@@ -140,6 +140,43 @@ def pending_proposal(db: Session, booking_id: uuid.UUID) -> BeoProposal | None:
     ).first()
 
 
+def latest_proposal(db: Session, booking_id: uuid.UUID) -> BeoProposal | None:
+    """The newest proposal for this booking, whatever became of it.
+
+    pending_proposal answers "is anything outstanding". This answers "what
+    happened to the last ask", which is a different question and the one
+    the calibration read needs: applied_value and edited_before_approval
+    only exist once a human has DECIDED a field, and deciding the last one
+    resolves the proposal -- so a reader restricted to pending rows goes
+    blank at the exact moment the answer appears.
+
+    One proposal, not a history. A newer ask -- including one the house
+    rules blocked -- hides the decided one behind it, which is right for
+    the read immediately before the next propose and is why this is not a
+    record of every correction ever made.
+
+    created_at alone does not order these. It is `now()`, which in Postgres
+    is the TRANSACTION's start time, so two proposals created in one
+    transaction carry the same timestamp to the microsecond -- every test
+    that makes two, and any future caller that batches. Superseding is what
+    tells those apart: _supersede_older marks the older pending proposals
+    when a new one lands, so a superseded row always has something newer
+    behind it and belongs last. Two rows that tie with neither superseding
+    the other (a blocked ask does not supersede) are ordered by id: stable,
+    so nothing flickers between runs, and arbitrary, which is the honest
+    answer when nothing in the data says which came first.
+    """
+    return db.scalars(
+        select(BeoProposal)
+        .where(BeoProposal.booking_id == booking_id)
+        .order_by(
+            BeoProposal.created_at.desc(),
+            (BeoProposal.status == STATUS_SUPERSEDED).asc(),
+            BeoProposal.id.desc(),
+        )
+    ).first()
+
+
 def _proposal_lock(db: Session, booking_id: uuid.UUID) -> None:
     """Serialise proposals for one booking, so "supersede whatever was
     pending, then insert" cannot interleave with itself and leave two
