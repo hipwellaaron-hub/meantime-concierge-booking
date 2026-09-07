@@ -27,6 +27,7 @@ structures too would produce a screen nobody reads, and a screen nobody
 reads is the silence this module exists to end.
 """
 
+import datetime as dt
 import hashlib
 import logging
 from collections.abc import Callable
@@ -180,7 +181,25 @@ def _approved_values(db: Session, booking_id) -> dict[str, list[BeoProposalField
     return by_field
 
 
-def _approval_note(rows: list[BeoProposalField], current: str) -> str | None:
+def _approval_note(
+    rows: list[BeoProposalField], current: str, *, hand_edited_at: dt.datetime | None = None
+) -> str | None:
+    """"This exact text was approved" -- not "this field was approved once".
+
+    The badge is the screen's only statement about WHO put a value there,
+    and it is made from string equality between the value on the document
+    and something approved earlier. That is enough when nothing has
+    happened since. It is not enough once somebody has hand-edited the
+    draft: approve a sentence, edit it away, edit it back, and the screen
+    credits the approver for text the editor typed.
+
+    The authorship record cannot settle it, because an approval records
+    authorship too -- both paths run through the same writer. What can is
+    the timing: hand-edits are logged per document VERSION, so if one
+    post-dates the approval this cannot say whether it touched THIS field,
+    and it says nothing rather than guessing. Fewer badges, no false ones
+    (review of 62df22f).
+    """
     if not current:
         # An empty current value matches any approval whose applied_value
         # was empty or NULL, and the screen would then badge a blank field
@@ -191,6 +210,12 @@ def _approval_note(rows: list[BeoProposalField], current: str) -> str | None:
         return None
     for row in reversed(rows):
         if _render_text(row.applied_value) == current:
+            if hand_edited_at is not None and (row.decided_at is None or hand_edited_at > row.decided_at):
+                # Somebody typed into this draft after the approval. Which
+                # field they touched is not recorded, so the honest answer
+                # is silence: an earlier matching approval would be older
+                # still, so there is nothing further back worth checking.
+                return None
             # No %-d: it is a glibc extension and raises on Windows, where
             # the tests run.
             when = row.decided_at.strftime("%d %b %Y").lstrip("0") if row.decided_at else "an earlier date"
@@ -210,6 +235,36 @@ def was_hand_edited(db: Session, document: Document) -> BookingEvent | None:
             BookingEvent.event_type == "document_edited",
             BookingEvent.field_name == f"{document.type.value}_version",
             BookingEvent.new_value == str(document.version),
+        )
+        .order_by(BookingEvent.created_at.desc())
+        .limit(1)
+    ).first()
+
+
+def _last_hand_edit_at(db: Session, document: Document) -> dt.datetime | None:
+    """When a document of this type on this booking was last hand-edited,
+    in ANY version.
+
+    Deliberately not was_hand_edited(), which is scoped to one version
+    because the screen uses it to say "this draft was hand-edited". The
+    approval badge asks a different question -- is this TEXT still the
+    approved text -- and text outlives versions: a regenerate that keeps a
+    value carries it into a new version that has no edit events of its own.
+    Scoped per version, the badge came back after that regenerate and
+    credited the approver for words somebody had typed on the version
+    before (review of d24aba5, proved live).
+
+    The cost is real and is the same trade already made for an approval
+    with no timestamp: after any hand-edit, approvals on this booking's
+    documents of this type go unbadged until a newer approval. Fewer true
+    badges, no false ones.
+    """
+    return db.scalars(
+        select(BookingEvent.created_at)
+        .where(
+            BookingEvent.booking_id == document.booking_id,
+            BookingEvent.event_type == "document_edited",
+            BookingEvent.field_name == f"{document.type.value}_version",
         )
         .order_by(BookingEvent.created_at.desc())
         .limit(1)
@@ -272,6 +327,11 @@ def losses(db: Session, document: Document | None, fresh: dict) -> list[ContentL
         return []
     current_content = document.content or {}
     approved = _approved_values(db, document.booking_id)
+    # One query, not one per field. A hand-edit after an approval makes the
+    # approval badge unprovable for every field, because hand-edits are
+    # logged per document version rather than per field -- and across
+    # versions, because the text a badge describes outlives them.
+    hand_edited_at = _last_hand_edit_at(db, document)
 
     # Who wrote what, where anybody has said so. Read, never inferred: a
     # field the record does not name is NOT therefore the generator's, for
@@ -308,7 +368,9 @@ def losses(db: Session, document: Document | None, fresh: dict) -> list[ContentL
                 label=spec.label,
                 current=current,
                 incoming=incoming,
-                approved_note=_approval_note(approved.get(spec.name, []), current),
+                approved_note=_approval_note(
+                    approved.get(spec.name, []), current, hand_edited_at=hand_edited_at
+                ),
                 cleared_by_a_person=_was_cleared(current_content.get(spec.name), current),
             )
         )
