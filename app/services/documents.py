@@ -45,6 +45,15 @@ def lock_current_for_update(db: Session, booking_id: uuid.UUID, doc_type: Docume
     read and the write is silently reverted and the audit line still says
     the value was kept (proved live with two sessions, 2026-09-06). The
     same shape update_content_fields already uses for the same reason.
+
+    populate_existing is what makes the lock mean anything. Without it the
+    ORM hands back whatever is already in this Session's identity map --
+    the attributes as they were BEFORE the lock was granted -- so the row
+    is locked and the caller reads pre-lock content anyway. Both callers
+    prime the map first: the wizard through get_prior_beo_internal_notes,
+    which reads this very row unlocked, and the staff regenerate through
+    the page it renders from. The approval this was written to protect was
+    therefore invisible, and the regenerate ran straight through.
     """
     return db.execute(
         select(Document)
@@ -54,6 +63,7 @@ def lock_current_for_update(db: Session, booking_id: uuid.UUID, doc_type: Docume
             Document.is_current.is_(True),
         )
         .with_for_update()
+        .execution_options(populate_existing=True)
     ).scalar_one_or_none()
 
 
