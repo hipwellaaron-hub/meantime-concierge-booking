@@ -1,0 +1,277 @@
+"""Which fields of a document a PERSON wrote, recorded rather than guessed.
+
+Regenerating a document rebuilds its content from the booking. For
+everything the booking computes -- the timeline, the food order, totals,
+the room -- that is the whole point. For the fields a person writes in
+their own words it is destruction: an approved allergy note, a
+hand-negotiated contract clause. Deciding which is which is the question
+this module answers, and it answers it from a record.
+
+The record is a POSITIVE set: `content["_authored"]` lists the keys a
+human has written. It starts absent, and any writer can create it -- but
+only by recording an actual name. No function here turns "no record" into
+an empty record, because those two states send a reader in opposite
+directions: absent means "go and read the audit trail", empty means
+"nothing here is a person's, help yourself".
+
+That direction is deliberate, and it is the second attempt. The first
+recorded the opposite -- the keys the GENERATOR produced -- so only the
+generator could ever initialise it, a document written before the feature
+could never acquire one and stayed permanently "unknowable", and a
+document nobody stamped claimed every field as human (2026-09-07 review,
+reverted). Recording what a person did is smaller, initialisable by
+whoever does it, and says nothing about content nobody has touched.
+
+HOW A CALLER USES THIS. Two rules, both learned the hard way:
+
+  1. Give `record` the content you are about to STORE, never a fragment.
+     A partial dict -- `update_content_fields`' `changes`, say -- carries
+     no record of its own, so recording against it produces a record
+     naming only those keys, and merging that over the stored content
+     erases every other name. Merge first, record second. `carry` is for
+     the other shape: moving a record onto freshly rebuilt content.
+  2. Call `record`/`forget`/`carry` LAST, after any other edit, and assign
+     the result. All three deep-copy, which protects a nested value you
+     edit on the RESULT; none can protect one you edited on the loaded
+     object before calling, because by then the damage is done. This
+     includes `carry`, whose copy is of `fresh` -- and `carry` is the one
+     a regenerate actually reaches for.
+
+Rule 2 exists because `document.content` is a JSONB column with no
+mutation tracking, and SQLAlchemy decides whether to emit an UPDATE by
+comparing the attribute against the value it loaded, by EQUALITY. So the
+dict you assign must compare unequal to the loaded one. Mutating in place
+fails that; an early draft of this module did exactly that and
+recommended it. A SHALLOW copy fails it too, but only where the top level
+does not change -- the second edit to an already-recorded field, and a
+`forget` of a name that was not in the record -- and a later draft
+claimed the shallow copy always failed, which was false. Every one of
+those cases is now a test, and so is the ordering rule.
+
+Reads tolerate anything; writes do not. `authored` and `has_record` take
+whatever a JSONB column can hold and degrade to "no record", because a
+malformed row must not be the thing that breaks a document page. `record`
+and `forget` refuse content that is not a dict, and refuse an unusable
+field name, because that is a caller with a bug. `carry` sits on both
+sides: it reads `previous` as tolerantly as any other stored row, and
+refuses a `fresh` that is not a dict.
+
+What this module does NOT do:
+
+  - it does not decide whether a value may be overwritten. Absent
+    authorship means "no record on THIS content" -- true of a document
+    written before the record existed, and equally true of content the
+    generator has just built. Telling those apart needs the booking's
+    audit trail, which is the caller's;
+  - it does not inspect the text. Whether a value looks like a generated
+    placeholder is a separate question with a separate answer.
+
+Nothing consumes this yet. It is the record; the readers come next.
+"""
+
+import copy
+from collections.abc import Iterable
+
+# Stored inside the document's content dict. Underscore-prefixed, like
+# `_reference`, so it travels with the content and the client-facing
+# templates -- which address content by name -- never render it.
+AUTHORED_KEY = "_authored"
+
+
+def _is_field_name(key: object) -> bool:
+    """A real content field name. Whitespace is not one: a form that posts
+    a space, or a caller stripping input, would otherwise write a
+    permanent junk member that reads as real authorship."""
+    return isinstance(key, str) and bool(key.strip()) and not key.startswith("_")
+
+
+def _names_to_write(keys: Iterable[str]) -> set[str]:
+    """The names a writer asked to record, refusing anything unusable.
+
+    Metadata keys are dropped rather than refused: a caller legitimately
+    passes a whole content dict's keys, and `_reference` appearing there
+    is not a mistake. Anything that is not a usable name at all IS a
+    mistake, and a caller with a bug should hear about it rather than
+    have this guess.
+
+    The reason is the caller's bug, not the resulting record: `record(content,
+    [])` legitimately records nothing, so "it would leave a record saying
+    nobody wrote anything" cannot be the justification.
+    """
+    if isinstance(keys, (str, bytes)):
+        # A string is iterable, so record(content, "dietaries") would
+        # record seven letters and no field. The likeliest typo at any
+        # call site, and it must not pass quietly. Named by the type
+        # actually passed, or the message sends a caller who passed bytes
+        # looking for a str they never wrote.
+        raise TypeError(
+            f"keys must be a collection of field names, not a single {type(keys).__name__}"
+        )
+    try:
+        keys = list(keys)
+    except TypeError as exc:
+        raise TypeError(f"keys must be a collection of field names; got {keys!r}") from exc
+    unusable = [k for k in keys if not isinstance(k, str) or not k.strip()]
+    if unusable:
+        raise TypeError(f"field names must be non-empty, non-blank strings; got {unusable!r}")
+    return {k for k in keys if _is_field_name(k)}
+
+
+def _stored(content: object) -> set[str] | None:
+    """The recorded names, or None when there is no record to read.
+
+    A member that is not a usable name is dropped, not fatal: discarding
+    a whole record over one bad entry would silently forget the real
+    names beside it, and forgetting a person's authorship is the failure
+    this module exists to prevent.
+
+    But a record whose members are ALL unusable is not a record. Reading
+    it as one would say "authorship was recorded and nobody wrote
+    anything", which sends a reader the opposite way from "no record" --
+    the first invites an overwrite, the second sends it to the audit
+    trail. An explicitly empty record is still a record.
+
+    Only a list is a record: that is what JSONB returns and what `record`
+    writes. A set cannot be stored at all (psycopg raises at flush), and
+    reading one would invite a caller to build one by hand.
+    """
+    if not isinstance(content, dict):
+        return None
+    stored = content.get(AUTHORED_KEY)
+    if not isinstance(stored, list):
+        return None
+    names = {k for k in stored if _is_field_name(k)}
+    if not names and len(stored) > 0:
+        return None
+    return names
+
+
+def authored(content: object) -> set[str]:
+    """The keys a person has written, as far as anything has recorded.
+
+    An empty set means no human write has been RECORDED -- not that none
+    happened. See the module docstring on why that is not the same
+    question as whether a value may be overwritten.
+
+    Names are returned as recorded, including any for a field the content
+    no longer holds. Dropping those would make this subtractive, and a
+    caller holding a partial dict would silently erase authorship it
+    could not see. The cost is that a name can outlive its field: if the
+    key is later re-created by the generator, the record still calls it a
+    person's, so a reader keeps a generated value and the audit line says
+    a human's words were kept when none were. `forget` is how a caller
+    that knows a field has been handed back to the generator says so.
+    """
+    return _stored(content) or set()
+
+
+def has_record(content: object) -> bool:
+    """Whether authorship was ever recorded on this content at all.
+
+    The difference between "a person wrote nothing here" and "nobody has
+    ever recorded anything here" is exactly what separates freshly
+    generated content from content that predates the record, so it has to
+    be askable.
+    """
+    return _stored(content) is not None
+
+
+def _checked_names(content: object, keys: Iterable[str]) -> set[str]:
+    """Validate both arguments BEFORE any copying, so a caller's bug costs
+    an exception rather than a deep copy of a whole document. Returns only
+    the names: `content` comes back unchanged, and returning it read as
+    though this normalised or copied it, which it does not."""
+    if not isinstance(content, dict):
+        raise TypeError(f"content must be a dict to record authorship on; got {type(content).__name__}")
+    return _names_to_write(keys)
+
+
+def _with_record(content: dict, names: set[str]) -> dict:
+    """A deep copy of `content` whose record is exactly `names`.
+
+    The one place the record is written. Sorted, so that re-writing the
+    same names produces a dict EQUAL to the loaded one and SQLAlchemy
+    emits nothing -- a no-op save must not rewrite the row.
+    """
+    updated = copy.deepcopy(content)
+    updated[AUTHORED_KEY] = sorted(names)
+    return updated
+
+
+def record(content: dict, keys: Iterable[str]) -> dict:
+    """A deep copy of `content` with `keys` also recorded as a person's.
+
+    Give it the content you are about to store, not a fragment -- see the
+    module docstring, rule 1.
+
+    Purely additive: it never removes a name. Creating the record when
+    there was not one is what lets a document written before this feature
+    acquire real, per-field authorship the first time somebody writes to
+    it.
+
+    But it will not create an EMPTY one. With no usable name to record and
+    no record already present, this returns the content unchanged, because
+    writing `_authored: []` there would turn "nobody has ever recorded
+    here, go and read the audit trail" into "recorded, and nobody wrote
+    anything, help yourself" -- on a document that predates the feature,
+    where a declared allergy may be sitting in a field a person typed.
+    That is the reversal the first attempt was reverted for, and an empty
+    `changes` dict reaching the writer is enough to trigger it, so it is
+    refused here rather than left to a caller to remember.
+    """
+    names = _checked_names(content, keys)
+    if not names and not has_record(content):
+        return copy.deepcopy(content)
+    # Read the prior record through authored(), which keeps the real names
+    # beside an unreadable member AND drops the unusable ones -- so a
+    # record carrying junk is cleaned as it is rewritten, rather than
+    # carrying that junk forward for ever.
+    return _with_record(content, authored(content) | names)
+
+
+def forget(content: dict, keys: Iterable[str]) -> dict:
+    """A deep copy of `content` with `keys` no longer recorded as a person's.
+
+    For the case where a human value is deliberately replaced by a
+    regenerated one: the new value is the generator's, and saying so is
+    what stops one regenerate laundering the next one's decision.
+
+    Content with no record is returned unchanged (but still copied) --
+    forgetting is not a write, and it must not conjure a record that then
+    reads as "a person wrote nothing here".
+    """
+    dropping = _checked_names(content, keys)
+    stored = _stored(content)
+    if stored is None:
+        return copy.deepcopy(content)
+    return _with_record(content, stored - dropping)
+
+
+def carry(fresh: dict, *, previous: object) -> dict:
+    """A deep copy of freshly rebuilt `fresh` carrying `previous`'s record.
+
+    A rebuild throws the content away and builds it again, so the record
+    goes with it unless somebody moves it. This is that move. Rule 2
+    applies here as much as to `record` and `forget`: the copy protects a
+    nested value edited on the RESULT, not one already edited on `fresh`.
+
+    `previous` is keyword-only. Both arguments are content dicts, so a
+    swap would raise nothing and quietly return the PREVIOUS version's
+    text as the rebuild's -- discarding the regenerate entirely while
+    every log line says it succeeded. Content-to-be-written comes first
+    here, as in `record` and `forget`; the keyword makes the other order
+    unspellable rather than merely discouraged.
+
+    It does NOT conjure a record: if the previous version never had one,
+    the result has none either. Doing it the obvious way --
+    `record(fresh, authored(previous))` -- would once have turned "this
+    document predates the record" into "recorded, and nobody wrote
+    anything"; `record` now refuses that itself, and this stays explicit
+    because an empty record on `previous` must still CARRY as an empty
+    record, which is a different answer from no record at all.
+    """
+    if not isinstance(fresh, dict):
+        raise TypeError(f"fresh content must be a dict; got {type(fresh).__name__}")
+    if not has_record(previous):
+        return copy.deepcopy(fresh)
+    return _with_record(fresh, authored(fresh) | authored(previous))
