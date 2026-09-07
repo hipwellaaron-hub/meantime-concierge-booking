@@ -377,18 +377,39 @@ def losses(db: Session, document: Document | None, fresh: dict) -> list[ContentL
     return found
 
 
-def fingerprint(found: list[ContentLoss]) -> str:
-    """Identifies the exact set of losses a human was shown.
+def fingerprint(found: list[ContentLoss], pending: list[dict]) -> str:
+    """Identifies the exact question a human was shown.
 
     The confirmation screen carries this back, and the write refuses if it
     no longer matches -- a compare-and-set, the same shape as every other
     toggle in this codebase. It guards against answering a question about
     values that have since changed; it is NOT a substitute for the row
     lock, because on its own it leaves a window between check and write.
+
+    The question is BOTH halves of that screen. It covers the losses,
+    which is what a person decides about, and the pending proposals, which
+    is what the regenerate will invalidate -- and which are the whole
+    reason the screen appears at all when nothing is at risk. A proposal
+    approved, rejected or superseded in between changes what going ahead
+    costs, so it has to change the token too (Aaron: "If a regenerate
+    silently invalidates pending work, I will hit exactly that error
+    without knowing why. Tell me before, not after.")
+
+    `pending` is not optional, deliberately. A default would let one of
+    the two call sites -- the render that mints the token and the write
+    that checks it -- be updated without the other, and a token that
+    disagrees with itself refuses every regenerate forever.
+
+    Each pending row is folded in by its field row id, which is what
+    changes when a proposal is replaced by a newer one, and by its field
+    name, which is stable per row (the relationship is ordered by it), so
+    the digest does not depend on query order.
     """
     digest = hashlib.sha256()
     for loss in found:
         digest.update(f"{loss.field}\x00{loss.current}\x00{loss.incoming}\x00".encode("utf-8"))
+    for row in pending:
+        digest.update(f"pending\x00{row.get('id')}\x00{row.get('field')}\x00".encode("utf-8"))
     return digest.hexdigest()[:32]
 
 

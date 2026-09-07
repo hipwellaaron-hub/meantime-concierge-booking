@@ -601,7 +601,7 @@ def _render_regenerate_confirmation(request, db, booking, doc_type, current, los
             "document": current,
             "losses": losses,
             "pending_proposal_rows": pending,
-            "expect": document_regeneration.fingerprint(losses),
+            "expect": document_regeneration.fingerprint(losses, pending),
             "hand_edit": document_regeneration.was_hand_edited(db, current),
         },
         status_code=409,
@@ -634,15 +634,20 @@ def generate_document_confirmed(
     # (proved live with two sessions, 2026-09-06 review).
     current = documents_service.lock_current_for_update(db, booking.id, doc_type)
     losses = document_regeneration.losses(db, current, content)
-    if not losses:
-        # Nothing to lose. Any pending proposal was named on the screen the
-        # human just came from, so this is them saying go ahead.
+    # Read here, above the straight-through write, and not only inside the
+    # refusal below. A screen shown because of pending work alone reached
+    # a confirm with no losses -- which returned before the compare-and-set
+    # ran at all, so the one screen whose entire purpose is "tell me
+    # before, not after" was the one screen whose answer was never checked.
+    pending = _pending_proposal_rows(db, booking, doc_type, current)
+    if not losses and not pending:
+        # Nothing at risk and nothing outstanding: the ordinary one click,
+        # with no question asked and none to check.
         documents_service.create_new_version(db, booking, doc_type, content, actor=_actor(staff))
         return _redirect_to_detail(booking_id)
-    if document_regeneration.fingerprint(losses) != expect:
+    if document_regeneration.fingerprint(losses, pending) != expect:
         # Nothing is written; the lock is released when the request ends
         # and get_db closes the session.
-        pending = _pending_proposal_rows(db, booking, doc_type, current)
         return _render_regenerate_confirmation(request, db, booking, doc_type, current, losses, staff, pending)
 
     # Only the fields this person was actually ASKED about. Being a
@@ -663,7 +668,10 @@ def generate_document_confirmed(
     merged = document_regeneration.apply_choices(content, current, keep_fields)
     documents_service.create_new_version(
         db, booking, doc_type, merged, actor=_actor(staff),
-        regenerated_note=document_regeneration.summarise(losses, keep_fields),
+        # With no losses there was no keep decision, so there is none to
+        # record -- the screen was shown for the pending work alone, and
+        # summarise() would only say "no human values affected".
+        regenerated_note=document_regeneration.summarise(losses, keep_fields) if losses else None,
     )
     return _redirect_to_detail(booking_id)
 

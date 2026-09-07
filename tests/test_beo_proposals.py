@@ -1587,8 +1587,12 @@ def test_an_approval_that_lands_first_makes_the_regenerate_re_ask():
         try:
             bk = first.get(booking_type, booking_id)
             fresh = generate_beo_content(bk)
-            shown = dr.losses(first, documents_service.get_current(first, booking_id, DocumentType.beo), fresh)
-            expect = dr.fingerprint(shown)
+            document = documents_service.get_current(first, booking_id, DocumentType.beo)
+            shown = dr.losses(first, document, fresh)
+            # Both halves of the token, exactly as the route computes it:
+            # the approval below changes the losses AND removes the pending
+            # row, and either alone must refuse the stale decision.
+            expect = dr.fingerprint(shown, beo_proposals.review_rows(first, booking_id, document=document))
         finally:
             first.close()
 
@@ -1604,7 +1608,8 @@ def test_an_approval_that_lands_first_makes_the_regenerate_re_ask():
             fresh = generate_beo_content(bk)
             current = documents_service.lock_current_for_update(second, booking_id, DocumentType.beo)
             now = dr.losses(second, current, fresh)
-            assert dr.fingerprint(now) != expect, "the stale decision must be refused"
+            still_pending = beo_proposals.review_rows(second, booking_id, document=current)
+            assert dr.fingerprint(now, still_pending) != expect, "the stale decision must be refused"
             assert "coeliac" in current.content["dietaries"]
         finally:
             second.close()
