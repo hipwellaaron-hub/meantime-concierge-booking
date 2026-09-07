@@ -118,6 +118,43 @@ GENERATED_PLACEHOLDERS = frozenset({
 })
 
 
+def _read_music_as_split(content: dict) -> dict:
+    """Content with a legacy merged music value read as `music`.
+
+    The Event Order prints one Music section, `music or
+    music_entertainment` (document.html), so the two keys are two
+    spellings of one value and "would this be lost" is a question about the
+    section, not about a key. Asked per key it came out backwards: a
+    document whose merged field held a person's "Live band, 8pm-11pm" and a
+    rebuild carrying a split `music` produced a loss row saying Music &
+    entertainment would be EMPTIED, and keeping it wrote the merged value
+    back UNDERNEATH the new `music`, where the template never shows it.
+    The confirmation screen, the regenerate audit line and the wizard's
+    outstanding items all said the words were kept; the run sheet printed
+    the other value. Half a booking's entertainment, lost with three
+    separate assurances that it had not been.
+
+    No companion is needed to go with it. The template prefers `music`, a
+    kept `music` is non-empty by definition, and generated content only
+    ever puts None or the [REVIEW] prompt in the merged field -- so
+    whatever is left there afterwards cannot print and cannot be mistaken
+    for somebody's words on the next pass.
+
+    Read here rather than fixed in the table because the shapes are not
+    equivalent: only the legacy spelling is rewritten, and only when it is
+    what prints. A merged value sitting behind a split `music` is dead
+    weight, and the generator's own [REVIEW] prompt is not a person's
+    words -- the same two exclusions beo_proposals._printed_legacy_music
+    makes for the same reason.
+    """
+    legacy = content.get("music_entertainment")
+    if content.get("music") or not isinstance(legacy, str):
+        return content
+    if not legacy.strip() or legacy.lstrip().startswith(REVIEW):
+        return content
+    return {**content, "music": legacy, "music_entertainment": None}
+
+
 def _is_disposable(rendered: str) -> bool:
     """True when the current value holds nothing a human would miss."""
     return not rendered or rendered in GENERATED_PLACEHOLDERS
@@ -325,7 +362,7 @@ def losses(db: Session, document: Document | None, fresh: dict) -> list[ContentL
     """
     if document is None:
         return []
-    current_content = document.content or {}
+    current_content = _read_music_as_split(document.content or {})
     approved = _approved_values(db, document.booking_id)
     # One query, not one per field. A hand-edit after an approval makes the
     # approval badge unprovable for every field, because hand-edits are
@@ -422,7 +459,9 @@ def apply_choices(fresh: dict, document: Document, keep_fields: set[str]) -> dic
     contract path.
     """
     content = dict(fresh)
-    current_content = document.content or {}
+    # The same reading the question was asked about, or a kept answer
+    # writes back something the person was never shown.
+    current_content = _read_music_as_split(document.content or {})
     for name in keep_fields:
         spec = _BY_NAME.get(name)
         if spec is None:
