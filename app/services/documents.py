@@ -36,6 +36,11 @@ def get_current(db: Session, booking_id: uuid.UUID, doc_type: DocumentType) -> D
     ).scalar_one_or_none()
 
 
+# How many times the locked read may come back empty while an unlocked
+# read still finds a current document. See lock_current_for_update.
+_LOCK_ATTEMPTS = 5
+
+
 def lock_current_for_update(db: Session, booking_id: uuid.UUID, doc_type: DocumentType) -> Document | None:
     """The current document, locked FOR UPDATE.
 
@@ -54,17 +59,53 @@ def lock_current_for_update(db: Session, booking_id: uuid.UUID, doc_type: Docume
     which reads this very row unlocked, and the staff regenerate through
     the page it renders from. The approval this was written to protect was
     therefore invisible, and the regenerate ran straight through.
+
+    RETRIED, because a lock that waits its turn can be handed nothing at
+    all. The statement takes its snapshot before the other transaction
+    commits, so it sees only the row that transaction holds and blocks on
+    it; when that commit lands, Postgres re-evaluates the row it was
+    waiting on (EvalPlanQual), finds is_current now false, and skips it --
+    and the replacement row is not in this statement's snapshot. The query
+    returns NOTHING while a current document plainly exists.
+
+    That empty answer is the dangerous one, because every caller reads it
+    as "this booking has no document yet": losses() has nothing to compare
+    against and returns [], no confirmation screen is shown, and the new
+    version replaces a declared allergy with the generator's placeholder
+    while the audit trail records a plain document_created and no
+    regenerate note (proved through the real route with two threads on
+    real Postgres -- 303 where the same race with this loop in place gives
+    409 and keeps the allergy).
+
+    A new statement gets a new snapshot at READ COMMITTED, so looking
+    again is the whole repair -- WITHOUT committing or rolling back
+    between attempts, which would end the caller's transaction and release
+    every lock this request holds, including the one just taken. None is
+    returned only once an unlocked read agrees there is no current row,
+    which is the genuine first-generate case; exhausting the attempts
+    means a current row exists and could not be locked, and saying
+    "nothing here" to that is the silent overwrite this exists to stop.
     """
-    return db.execute(
-        select(Document)
-        .where(
-            Document.booking_id == booking_id,
-            Document.type == doc_type,
-            Document.is_current.is_(True),
-        )
-        .with_for_update()
-        .execution_options(populate_existing=True)
-    ).scalar_one_or_none()
+    for _ in range(_LOCK_ATTEMPTS):
+        locked = db.execute(
+            select(Document)
+            .where(
+                Document.booking_id == booking_id,
+                Document.type == doc_type,
+                Document.is_current.is_(True),
+            )
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        ).scalar_one_or_none()
+        if locked is not None:
+            return locked
+        if get_current(db, booking_id, doc_type) is None:
+            return None
+    raise RuntimeError(
+        f"could not lock the current {doc_type.value} for booking {booking_id}: "
+        f"a newer version was committed during each of {_LOCK_ATTEMPTS} attempts. "
+        "Answering None would read as 'no document exists' and overwrite it."
+    )
 
 
 def content_fingerprint(content: object, fields: Iterable[str]) -> str:
