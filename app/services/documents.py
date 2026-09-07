@@ -8,6 +8,7 @@ change should require re-reading an email chain to explain.
 import datetime as dt
 import logging
 import uuid
+from collections.abc import Iterable
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -15,6 +16,7 @@ from sqlalchemy.orm import Session
 from app.models import Booking, BookingEvent, Document
 from app.models.document import DocumentStatus, DocumentType
 from app.services import booking as booking_service
+from app.services import content_authorship
 from app.utils import is_valid_email, truncate
 
 logger = logging.getLogger(__name__)
@@ -136,7 +138,15 @@ def create_new_version(
     return document
 
 
-def update_content(db: Session, document: Document, content: dict, *, actor: str) -> Document:
+def update_content(
+    db: Session,
+    document: Document,
+    content: dict,
+    *,
+    actor: str,
+    authored_fields: Iterable[str] = (),
+    placeholders: Iterable[str] = (),
+) -> Document:
     """Hand-edit a draft's content in place. Draft-only, for the same
     reason delete_draft is: a draft was never shown to a client, so
     there's nothing for a client to have seen change under them. Anything
@@ -148,12 +158,37 @@ def update_content(db: Session, document: Document, content: dict, *, actor: str
     enough to know it was hand-edited, by whom and when, without spawning
     a version per keystroke. Regenerating afterward still discards the
     edit and re-derives from the booking, exactly as before.
+
+    `authored_fields` names the keys that hold a person's prose. Whichever
+    of them this save actually CHANGES is recorded as human-written, so a
+    later regenerate can tell the two apart instead of guessing. Callers
+    that are refreshing machine-derived values -- a vendor snapshot, a
+    rebuilt timeline -- pass nothing, which is the default: recording
+    those as somebody's words would freeze exactly the content a
+    regenerate exists to rebuild.
+
+    `placeholders` are the values the generator writes when nothing was
+    captured; a field set to one of them is never recorded as anyone's.
+
+    KNOWN GAP. A caller that built `content` from a read taken before this
+    one -- the edit form does, from the GET that rendered it -- may be
+    unknowingly reverting a value somebody else committed in between. That
+    revert is old last-write-wins behaviour, but recording authorship makes
+    it worse: the reverted text is marked as this caller's own words, so a
+    regenerate then preserves it. Closing that needs a compare-and-set
+    between the page load and the save, which is its own change.
     """
     db.refresh(document, with_for_update=True)
     if document.status != DocumentStatus.draft:
         raise ValueError(f"cannot edit a document that is already {document.status.value} -- only a draft can be edited")
 
-    document.content = content
+    written = content_authorship.changed_fields(
+        document.content, content, candidates=authored_fields, placeholders=placeholders
+    )
+    # Recorded LAST and assigned, per the module's caller rules: `record`
+    # deep-copies, so what it returns is a value SQLAlchemy compares
+    # unequal to the one it loaded, and the UPDATE is actually emitted.
+    document.content = content_authorship.record(content, written)
     db.add(
         BookingEvent(
             booking_id=document.booking_id,
@@ -169,7 +204,14 @@ def update_content(db: Session, document: Document, content: dict, *, actor: str
 
 
 def update_content_fields(
-    db: Session, document: Document, changes: dict, *, actor: str, event_type: str = "document_edited"
+    db: Session,
+    document: Document,
+    changes: dict,
+    *,
+    actor: str,
+    event_type: str = "document_edited",
+    authored_fields: Iterable[str] = (),
+    placeholders: Iterable[str] = (),
 ) -> Document:
     """Merge specific keys into a draft's content, reading it AFTER the row
     lock is taken.
@@ -186,14 +228,24 @@ def update_content_fields(
     (2026-09-06 review). This exists for callers that know exactly which
     keys they are changing: the lock, the read and the write are one
     critical section, so a concurrent change to a different key survives.
+
+    `authored_fields` names the keys that hold a person's prose; see
+    update_content above.
     """
     db.refresh(document, with_for_update=True)
     if document.status != DocumentStatus.draft:
         raise ValueError(f"cannot edit a document that is already {document.status.value} -- only a draft can be edited")
 
+    # Diff BEFORE merging -- it needs the values being replaced -- but
+    # record AFTER, against the merged content. Recording against `changes`
+    # would produce a record naming only those keys, and merging that over
+    # the stored content erases every other name (caller rule 1).
     content = dict(document.content)
+    written = content_authorship.changed_fields(
+        content, changes, candidates=authored_fields, placeholders=placeholders
+    )
     content.update(changes)
-    document.content = content
+    document.content = content_authorship.record(content, written)
     db.add(
         BookingEvent(
             booking_id=document.booking_id,

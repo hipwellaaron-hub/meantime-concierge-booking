@@ -956,7 +956,19 @@ def save_document_edit(
             Decimal(existing_deposit) if existing_deposit is not None else None,
         )
 
-    documents_service.update_content(db, document, content, actor=_actor(staff))
+    # The staff edit form re-posts every field it renders, prefilled, so the
+    # fields that are a person's words are named here and the writer records
+    # only the ones this save actually changes. PROTECTED_FIELD_NAMES is the
+    # same set the regenerate guard asks about, which is the point: the guard
+    # stops guessing which of them a human wrote.
+    documents_service.update_content(
+        db,
+        document,
+        content,
+        actor=_actor(staff),
+        authored_fields=document_regeneration.PROTECTED_FIELD_NAMES,
+        placeholders=document_regeneration.GENERATED_PLACEHOLDERS,
+    )
     return _redirect_to_detail(booking_id)
 
 
@@ -1090,6 +1102,9 @@ def confirm_vendor_bump_in(
         snapshot = build_vendor_snapshot(booking.vendors)
         content["vendors"] = snapshot
         content["event_timeline"] = build_event_timeline(booking, snapshot)
+        # No authored_fields: both keys are machine-derived, and recording
+        # them as a person's words would stop the next regenerate rebuilding
+        # the very snapshot this refresh exists to keep current.
         documents_service.update_content(db, current_beo, content, actor=_actor(staff))
     return _redirect_to_detail(booking_id)
 

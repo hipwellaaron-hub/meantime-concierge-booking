@@ -63,8 +63,13 @@ What this module does NOT do:
     written before the record existed, and equally true of content the
     generator has just built. Telling those apart needs the booking's
     audit trail, which is the caller's;
-  - it does not inspect the text. Whether a value looks like a generated
-    placeholder is a separate question with a separate answer.
+  - it does not judge the text. `changed_fields` compares two values for
+    equality, but whether a value looks like a generated placeholder is a
+    separate question with a separate answer;
+  - it does not decide WHICH fields a person's words belong in. Every
+    caller of `changed_fields` names its own candidates, because "this key
+    holds prose somebody typed" is knowable at the call site and a guess
+    anywhere else.
 
 Nothing consumes this yet. It is the record; the readers come next.
 """
@@ -174,6 +179,121 @@ def has_record(content: object) -> bool:
     be askable.
     """
     return _stored(content) is not None
+
+
+def _comparable(value: object) -> object:
+    """A value normalised for COMPARISON only -- never stored.
+
+    A browser submits a textarea's line breaks as CRLF while the stored
+    JSONB holds LF, so a byte comparison calls every multi-line field
+    changed on every save. Verified rather than assumed: a real form
+    submission of "line one\\nline two" serialises as
+    `t=line+one%0D%0Aline+two`, CR LF (13, 10). The `FormData` API value
+    of the same textarea is plain LF, which is the trap -- checking it
+    that way says CRLF never arrives and this normalisation is dead code.
+
+    Applied recursively, because the agreement's `terms_sections` is a
+    list of dicts whose `body` carries the prose.
+    """
+    if isinstance(value, str):
+        return value.replace("\r\n", "\n").replace("\r", "\n")
+    if isinstance(value, dict):
+        return {k: _comparable(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_comparable(v) for v in value]
+    return value
+
+
+def _written_value(value: object, placeholders: frozenset = frozenset()) -> object:
+    """A field value reduced to what a person can be said to have written.
+
+    Absent, None, "", "   ", `[]` and `{}` are one state: nothing. Without
+    this, a form that writes `content["music"] = music.strip() or None`
+    over a key that was not there records the person as the author of an
+    empty field, and the regenerate then declines to fill in a value they
+    never withheld. The empty container belongs in the same state for the
+    same reason -- an empty list of terms sections is not a clause
+    somebody wrote -- and leaving it out made the rule true of strings
+    only, which would come apart the first time a container-valued field
+    joined the protected set.
+    """
+    normalised = _comparable(value)
+    if normalised is None:
+        return ""
+    if isinstance(normalised, str) and normalised in placeholders:
+        # The generator's "nothing was captured here" reads as nothing on
+        # BOTH sides of the comparison. Only on the incoming side and
+        # clearing a placeholder to blank counts as a write, so the record
+        # claims a person authored an empty field and the regenerate stops
+        # filling in the very value the placeholder was asking for.
+        return ""
+    if isinstance(normalised, str) and not normalised.strip():
+        return ""
+    if isinstance(normalised, (list, dict)) and not normalised:
+        return ""
+    return normalised
+
+
+def changed_fields(
+    stored: object,
+    incoming: object,
+    *,
+    candidates: Iterable[str],
+    placeholders: Iterable[str] = (),
+) -> set[str]:
+    """Which of `candidates` `incoming` actually changes against `stored`.
+
+    The names to record. A staff form re-posts every field it renders,
+    prefilled, so "the form wrote this key" is not evidence a person wrote
+    anything -- one save would otherwise claim all ten free-text fields as
+    hand-written and freeze the lot against regeneration. Only a value
+    that genuinely differs counts.
+
+    `candidates` is required and keyword-only: it is the caller's
+    declaration of which keys hold a person's prose. Passing the whole
+    incoming dict's keys would record `vendors` and `event_timeline` --
+    machine-derived values a regenerate MUST rebuild -- as somebody's
+    words, and the guard built to save an allergy note would start
+    preserving a stale vendor list instead.
+
+    `placeholders` are the values the GENERATOR writes when nothing was
+    captured. A field whose new value is one of them is never recorded,
+    however different it is from what was there: nobody authored the
+    generator's own words. The staff form is what makes this concrete --
+    it writes `content["dietaries"] = dietaries.strip() or NO_DIETARIES`,
+    so clearing the box substitutes the placeholder, and without this the
+    record would claim a person wrote "No dietary requirements declared"
+    and a later regenerate would preserve it as theirs. Losing the
+    previous value is a separate matter, and one the regenerate screen
+    already warns about.
+
+    Keys absent from `incoming` are not considered: a partial `changes`
+    dict says nothing about the keys it omits.
+    """
+    if not isinstance(incoming, dict):
+        raise TypeError(f"incoming content must be a dict; got {type(incoming).__name__}")
+    names = _names_to_write(candidates)
+    if isinstance(placeholders, (str, bytes)):
+        raise TypeError("placeholders must be a collection of values, not a single string")
+    # Text only. The generator's placeholders are sentences, and a field
+    # value can be a list -- terms_sections is -- which is unhashable and
+    # would raise on the membership test below rather than simply not
+    # matching.
+    nobody_wrote = frozenset(_comparable(p) for p in placeholders if isinstance(p, str))
+    before = stored if isinstance(stored, dict) else {}
+    changed = set()
+    for name in names:
+        if name not in incoming:
+            continue
+        submitted = _comparable(incoming[name])
+        if isinstance(submitted, str) and submitted in nobody_wrote:
+            # Whatever was there before, nobody authored the generator's
+            # own sentence. Losing the previous value is a separate matter,
+            # and one the regenerate screen already warns about.
+            continue
+        if _written_value(before.get(name), nobody_wrote) != _written_value(incoming[name], nobody_wrote):
+            changed.add(name)
+    return changed
 
 
 def _checked_names(content: object, keys: Iterable[str]) -> set[str]:

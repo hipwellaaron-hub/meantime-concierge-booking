@@ -49,7 +49,7 @@ from app.models.beo_proposal import (
 )
 from app.models.document import Document, DocumentStatus, DocumentType
 from app.services.document_generation import NO_DIETARIES, REVIEW
-from app.services import beo_rules, documents as documents_service
+from app.services import beo_rules, document_regeneration, documents as documents_service
 from app.services.booking import VOIDED_STATUSES
 
 logger = logging.getLogger(__name__)
@@ -416,10 +416,20 @@ def _apply(
                 )
             )
     _resolve_if_complete(proposal)
-    # Its own event type: "document_edited" is what the regenerate screen
-    # reads as a hand-edit, and an approval is not one.
+    # An approval is a person putting these words on the document -- they
+    # read them, sometimes edited them, and chose to apply them -- so the
+    # fields it changes are recorded as authored. The event type is a
+    # separate question and stays "beo_proposal_applied": the regenerate
+    # screen reads "document_edited" as "somebody typed into this version",
+    # and an approval is not that.
     return documents_service.update_content_fields(
-        db, document, changes, actor=actor, event_type="beo_proposal_applied"
+        db,
+        document,
+        changes,
+        actor=actor,
+        event_type="beo_proposal_applied",
+        authored_fields=document_regeneration.PROTECTED_FIELD_NAMES,
+        placeholders=document_regeneration.GENERATED_PLACEHOLDERS,
     )
 
 

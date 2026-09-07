@@ -108,7 +108,7 @@ _BY_NAME = {f.name: f for f in PROTECTED_FIELDS}
 # (2026-09-06 review -- a substring test silently regenerated over it).
 # test_every_generated_placeholder_is_recognised keeps this in step with
 # the generator.
-_GENERATED_PLACEHOLDERS = frozenset({
+GENERATED_PLACEHOLDERS = frozenset({
     f"{REVIEW} add catering order and service style",
     f"{REVIEW} add bar structure",
     f"{REVIEW} add room layout notes",
@@ -119,7 +119,7 @@ _GENERATED_PLACEHOLDERS = frozenset({
 
 def _is_disposable(rendered: str) -> bool:
     """True when the current value holds nothing a human would miss."""
-    return not rendered or rendered in _GENERATED_PLACEHOLDERS
+    return not rendered or rendered in GENERATED_PLACEHOLDERS
 
 
 @dataclass(frozen=True)
