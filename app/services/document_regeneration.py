@@ -39,7 +39,7 @@ from sqlalchemy.orm import Session
 from app.models import BookingEvent, Document
 from app.models.beo_proposal import FIELD_APPROVED, BeoProposal, BeoProposalField
 from app.services import beo_rules, content_authorship
-from app.services.document_generation import NO_DIETARIES, REVIEW
+from app.services.document_generation import NO_DIETARIES, REVIEW, strip_bar_credit_line
 
 logger = logging.getLogger(__name__)
 
@@ -369,7 +369,14 @@ def losses(db: Session, document: Document | None, fresh: dict) -> list[ContentL
                 current=current,
                 incoming=incoming,
                 approved_note=_approval_note(
-                    approved.get(spec.name, []), current, hand_edited_at=hand_edited_at
+                    approved.get(spec.name, []),
+                    # The bar credit is composed into bar_structure by the
+                    # generator and re-composed on approval; applied_value
+                    # holds the words the person approved, without it. Compare
+                    # like with like, or the badge fails on text nobody
+                    # approved and a true attribution goes missing.
+                    strip_bar_credit_line(current) if spec.name == "bar_structure" else current,
+                    hand_edited_at=hand_edited_at,
                 ),
                 cleared_by_a_person=_was_cleared(current_content.get(spec.name), current),
             )

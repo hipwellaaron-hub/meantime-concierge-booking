@@ -6,6 +6,7 @@ hard blocking are wrong; this is the middle path.
 """
 
 import datetime as dt
+import re
 from decimal import Decimal, InvalidOperation
 
 from app.models import Booking
@@ -420,7 +421,29 @@ def build_total_food_spend(food_total: Decimal | None, deposit_paid: Decimal | N
     }
 
 
-def _bar_structure_with_credit(bar_structure, bar_credit) -> str:
+# A credit line this module composed, so it can be recognised and replaced
+# rather than duplicated. Anchored and specific: it must never match a
+# sentence somebody wrote themselves.
+_CREDIT_LINE_RE = re.compile(
+    r"^\s*\$[\d,]+(?:\.\d{2})? bar credit included, applied on the night\.\s*",
+    re.IGNORECASE,
+)
+
+
+def strip_bar_credit_line(bar_structure: object) -> str:
+    """The bar structure without the credit line this module composed.
+
+    For anything that wants to compare the words a PERSON put in the field
+    against something -- the approval badge does -- the generated line has
+    to come off first, or the comparison fails on text nobody approved and
+    a true badge goes missing (found when approval started re-composing
+    the credit)."""
+    if not isinstance(bar_structure, str):
+        return ""
+    return _CREDIT_LINE_RE.sub("", bar_structure).strip()
+
+
+def bar_structure_with_credit(bar_structure, bar_credit) -> str:
     """A bar credit is a promise the FLOOR has to honour, so it belongs in
     the bar structure the team actually reads on the night -- not only in
     the agreement the client signed. It used to be typed as free text into
@@ -428,8 +451,19 @@ def _bar_structure_with_credit(bar_structure, bar_credit) -> str:
     needed it never saw it.
 
     Stated first, before the structure itself, because it changes how the
-    tab is run from the opening drink."""
-    base = bar_structure or f"{REVIEW} add bar structure"
+    tab is run from the opening drink.
+
+    IDEMPOTENT, and public for that reason. The credit lives inside this
+    field and nowhere else in the Event Order, so anything that REPLACES
+    the field wholesale deletes the promise -- an approved AI proposal did
+    exactly that, with no rule covering it. Approval now re-composes
+    through here, which means the value handed in may already carry a
+    credit line: a stale one the model repeated, or the right one. Any
+    line this module composed is stripped and the current figure written
+    back, so re-composing cannot double it and cannot leave an out-of-date
+    amount standing.
+    """
+    base = _CREDIT_LINE_RE.sub("", bar_structure or "").strip() or f"{REVIEW} add bar structure"
     if bar_credit is not None and bar_credit > 0:
         credit = f"${bar_credit:,.0f} bar credit included, applied on the night."
         return credit + "\n\n" + base
@@ -486,7 +520,7 @@ def generate_beo_content(
             "note": None if food_order_line_items else f"{REVIEW} no food order captured yet",
         },
         "total_food_spend": build_total_food_spend(food_total, deposit_paid),
-        "bar_structure": _bar_structure_with_credit(bar_structure, booking.bar_credit),
+        "bar_structure": bar_structure_with_credit(bar_structure, booking.bar_credit),
         # Also carried as its own field so the Event Order can show the
         # figure without anyone having to read it out of the prose.
         "bar_credit": str(booking.bar_credit),

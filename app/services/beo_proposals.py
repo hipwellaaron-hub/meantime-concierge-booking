@@ -48,7 +48,7 @@ from app.models.beo_proposal import (
     BeoProposalField,
 )
 from app.models.document import Document, DocumentStatus, DocumentType
-from app.services.document_generation import NO_DIETARIES, REVIEW
+from app.services.document_generation import NO_DIETARIES, REVIEW, bar_structure_with_credit
 from app.services import beo_rules, document_regeneration, documents as documents_service
 from app.services.booking import VOIDED_STATUSES
 
@@ -381,6 +381,17 @@ def _apply(
     now = dt.datetime.now(dt.timezone.utc)
     for field_row, applied in decisions:
         changes[field_row.field] = normalise_beo_field(field_row.field, applied)
+        if field_row.field == "bar_structure":
+            # The bar credit is the venue's promise to the client and is
+            # generated INTO this field, printed nowhere else on the Event
+            # Order. A proposal replaces the field whole, so approving one
+            # deleted the promise the floor has to honour, with no rule
+            # covering it. Re-composed here rather than left to the model
+            # to remember, and idempotent, so a proposal that repeated the
+            # line does not end up with two -- or with a stale figure.
+            changes[field_row.field] = bar_structure_with_credit(
+                changes[field_row.field], proposal.booking.bar_credit
+            )
         if field_row.field == "music":
             # The merged legacy field is what the edit form clears on save;
             # leaving it behind would let it out-rank the value approved.
