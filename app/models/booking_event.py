@@ -2,7 +2,7 @@ import datetime as dt
 import enum
 import uuid
 
-from sqlalchemy import DateTime, ForeignKey, String, Text, func
+from sqlalchemy import DateTime, ForeignKey, Index, String, Text, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -21,6 +21,12 @@ class BookingEvent(Base):
     its current state must never require re-reading email chains."""
 
     __tablename__ = "booking_events"
+    # Every read of this table is per-booking and newest-first (the
+    # relationship below, was_hand_edited, the timeline reads). Without it
+    # there was no index at all beyond the primary key -- a Postgres FK
+    # does not create one -- on the append-only log that every write in the
+    # app adds to and nothing ever deletes from. Migration c1a7e4b90d52.
+    __table_args__ = (Index("ix_booking_events_booking_created", "booking_id", "created_at"),)
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     booking_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("bookings.id"), nullable=False)

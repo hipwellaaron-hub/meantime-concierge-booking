@@ -18,7 +18,7 @@ Two constraints are load-bearing rather than decorative:
   with a different spelling would be permanently unreviewable.
 
 Revision ID: a3f6e1c7d094
-Revises: f7d2c4a9b1e3
+Revises: c1a7e4b90d52
 """
 
 import sqlalchemy as sa
@@ -26,7 +26,7 @@ from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision = "a3f6e1c7d094"
-down_revision = "f7d2c4a9b1e3"
+down_revision = "c1a7e4b90d52"
 branch_labels = None
 depends_on = None
 
