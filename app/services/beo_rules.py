@@ -110,17 +110,29 @@ RSA_ABSENT_ON_DOCUMENT = "rsa_absent_on_document"
 
 # Zero-width and formatting characters a copy-paste drags in, which would
 # otherwise split a word in half and walk it past every pattern below.
-_INVISIBLE = dict.fromkeys(map(ord, "​‌‍⁠﻿­"), None)
+_INVISIBLE_CHARS = "​‌‍⁠﻿­"
+_INVISIBLE = dict.fromkeys(map(ord, _INVISIBLE_CHARS), None)
+# The same characters replaced by a space rather than deleted. Deleting is
+# right when an invisible has been pasted INTO a word ("n<ZWSP>ut" -> "nut");
+# it is wrong when one sits BETWEEN two words ("nut<ZWSP>allergy" ->
+# "nutallergy"), which the old substring test did not care about but a
+# word-boundary match does. declared_dietaries reads both spellings and
+# takes the union, so neither paste can hide a declaration.
+_INVISIBLE_AS_SPACE = dict.fromkeys(map(ord, _INVISIBLE_CHARS), " ")
+
+
+def _fold(text: str | None, invisible: dict) -> str:
+    if not text:
+        return ""
+    folded = unicodedata.normalize("NFKC", str(text)).translate(invisible)
+    return folded.replace("’", "'").replace("‘", "'")
 
 
 def normalise(text: str | None) -> str:
     """One spelling of a value for matching: compatibility-normalised, with
     invisible characters and curly quotes folded away. Never used for
     storage -- only for deciding whether a pattern matches."""
-    if not text:
-        return ""
-    folded = unicodedata.normalize("NFKC", str(text)).translate(_INVISIBLE)
-    return folded.replace("’", "'").replace("‘", "'")
+    return _fold(text, _INVISIBLE)
 
 
 # Decoration, supplier and setup language. Anything here in the Dietaries
@@ -138,58 +150,76 @@ _DIETARY_CONTAMINATION = re.compile(
     re.IGNORECASE,
 )
 
-# What a declared dietary requirement looks like. Used to notice one
-# disappearing between the current value and the proposed one -- the
-# "dropped a nut allergy" half of the incident.
+# The plain-word half of the vocabulary. The nut family is built separately
+# below, by rule rather than by list, so nut and peanut are deliberately not
+# here -- a maintainer widening allergen cover adds to _TREE_NUTS or trusts
+# the "ends in nut" rule, and cannot accidentally give a nut word its own
+# token and undo the canonicalisation.
 _DIETARY_TOKENS = (
-    "nut", "peanut", "gluten", "coeliac", "celiac", "dairy", "lactose", "vegan", "vegetarian",
+    "gluten", "coeliac", "celiac", "dairy", "lactose", "vegan", "vegetarian",
     "halal", "kosher", "shellfish", "seafood", "sesame", "egg", "soy", "pescatarian",
     "allerg", "anaphyla", "intoleran", "epipen", "fodmap",
 )
 
-# MATCHED AS WORDS, NEVER AS BARE SUBSTRINGS. The test used to be
-# `token in lowered`, so "nut" fired inside "minutes" and "egg" inside
-# "eggplant". A current value of "Kitchen needs 20 minutes notice." then
-# declared a nut allergy, and any proposal that did not repeat the word
-# was refused for dropping it. Refused, not warned: these rules block by
-# Aaron's ruling, and a blocked proposal is stored and never shown -- so
-# the false match made the transcription silently disappear.
+# HOW A TOKEN IS MATCHED, and why it is neither a bare substring nor a
+# plain \b on both sides. Two attempts have failed here, in opposite
+# directions, and the rule below is shaped by both:
 #
-# The first fix (2bbd23e, reverted) put a boundary on the LEFT of every
-# token, which stopped "minutes" and also stopped "walnuts" and
-# "hazelnuts" -- real nut allergies, spelled as compound words. So the
-# nut family is an explicit vocabulary, each word bounded on both sides,
-# and every member canonicalises to the token "nut": a current value
-# saying "walnut allergy" and a proposal saying "nut allergy" declare the
-# same thing. Not a suffix rule, because "butternut pumpkin" and
-# "doughnuts" are food, not allergies.
+#   - `token in lowered` matched "nut" inside "minutes" and "egg" inside
+#     "eggplant", so a current value of "Kitchen needs 20 minutes notice."
+#     declared a nut allergy and every proposal that did not repeat it was
+#     refused. Refused, not warned: these rules block, so the transcription
+#     was stored and never shown to anybody.
+#   - bounding every token with \b on both sides fixed that and broke the
+#     spellings staff actually type -- "walnuts", "2xvegan", "glutenfree",
+#     "nut-free", "eggless" all stopped declaring, so a real requirement
+#     could be dropped in silence.
 #
-# Stems (allerg-, anaphyla-, intoleran-) match any continuation, because
-# the continuations are all the same requirement. Everything else is a
-# whole word with an optional plural, so "vegetarians" and "eggs" match
-# and "eggplant" does not. "soy" also takes "soya".
-_NUT_FAMILY = (
-    "nut", "peanut", "walnut", "hazelnut", "chestnut", "coconut",
-    "cashew", "almond", "pistachio", "macadamia", "pecan",
-)
+# So the boundary is explicit about what may sit beside a token rather than
+# hoping one character class covers it:
+#   LEFT  -- a non-letter, or a count like "2x" / "12x".
+#   RIGHT -- a non-letter, an optional plural, or a "-free" / "less"
+#            compound ("gluten free", "glutenfree", "nut-free", "eggless").
+_LEFT = r"(?:(?<![a-z])|(?<=\dx))"
+_TAIL = r"(?:[-\s]?free|[-\s]?less)?(?![a-z])"
+
+# Stems, where any continuation is the same requirement: allergy/allergies/
+# allergic/allergen, anaphylaxis/anaphylactic, intolerant/intolerance.
 _DIETARY_STEMS = ("allerg", "anaphyla", "intoleran")
-_DIETARY_SUFFIX = {"soy": r"a?"}
+# Tokens whose compounds are a different word, not a plural.
+_COMPOUND_SUFFIX = {"soy": r"(?:a|beans?|milk)?"}
+
+# ANY word ending in "nut" is a nut: walnut, hazelnut, pinenut, groundnut,
+# brazilnut, chestnut, coconut. A closed list of nut words was the previous
+# attempt and it missed the ones nobody thought of, which on this field is a
+# silent loss of safety data. The exceptions go the other way instead -- a
+# short list of foods that merely end in the letters, where a wrong answer
+# costs a needless refusal rather than a dropped allergy.
+_NOT_A_NUT = ("butter", "dough", "do")          # butternut, doughnut, donut
+# Tree nuts that do not end in "nut".
+_TREE_NUTS = ("cashew", "almond", "pistachio", "macadamia", "pecan")
 
 
 def _word_pattern(word: str) -> str:
     if word in _DIETARY_STEMS:
-        return rf"\b{re.escape(word)}[a-z]*"
-    return rf"\b{re.escape(word)}{_DIETARY_SUFFIX.get(word, r'(?:e?s)?')}\b"
+        return _LEFT + re.escape(word) + r"[a-z]*"
+    return _LEFT + re.escape(word) + _COMPOUND_SUFFIX.get(word, r"(?:e?s)?") + _TAIL
 
+# "nut" plus a plural only -- never the "es" the default allows, or
+# "mi|nut|es" would read as a nut.
+_NUT_PATTERN = (
+    _LEFT + r"[a-z]*" + "".join(f"(?<!{p})" for p in _NOT_A_NUT) + r"nuts?" + _TAIL
+)
 
-# token -> compiled pattern. The nut family shares the "nut" token.
+# token -> compiled pattern. This is what declared_dietaries consults;
+# _DIETARY_TOKENS above only seeds it. "peanut" is its own token AS WELL AS
+# a nut: peanut is a legume and a distinct allergen -- the venue's own
+# catalogue keeps it separate on MenuItem.contains_peanuts -- so swapping a
+# peanut allergy for a tree-nut one has to read as a dropped requirement.
 _DIETARY_PATTERNS: dict[str, re.Pattern] = {
-    "nut": re.compile("|".join(_word_pattern(w) for w in _NUT_FAMILY), re.IGNORECASE),
-    **{
-        token: re.compile(_word_pattern(token), re.IGNORECASE)
-        for token in _DIETARY_TOKENS
-        if token not in ("nut", "peanut")
-    },
+    "nut": re.compile("|".join([_NUT_PATTERN] + [_word_pattern(w) for w in _TREE_NUTS]), re.IGNORECASE),
+    "peanut": re.compile(_word_pattern("peanut"), re.IGNORECASE),
+    **{token: re.compile(_word_pattern(token), re.IGNORECASE) for token in _DIETARY_TOKENS},
 }
 
 # First-person client voice. A run-sheet note has no narrator: "DJ from
@@ -264,12 +294,24 @@ def _excerpt(match: re.Match) -> str:
 def declared_dietaries(text: str | None) -> set[str]:
     """Which dietary requirements a value declares, as canonical tokens.
 
-    Whole words only -- see _DIETARY_PATTERNS. The whole nut family comes
-    back as "nut", so the set difference that decides DROPS_DIETARY treats
-    "walnut allergy" and "nut allergy" as the same declaration.
+    Whole words only -- see _DIETARY_PATTERNS. Every nut comes back as
+    "nut", so the set difference that decides DROPS_DIETARY treats "walnut
+    allergy" and "nut allergy" as one declaration; peanut answers as both
+    "nut" and "peanut", so a peanut allergy cannot be swapped for a tree-nut
+    one without the rule noticing.
+
+    Read against both spellings of an invisible character -- deleted and
+    replaced by a space -- because a paste can put one inside a word or
+    between two, and the union is the only answer that cannot hide a
+    declaration.
     """
-    lowered = normalise(text).lower()
-    return {token for token, pattern in _DIETARY_PATTERNS.items() if pattern.search(lowered)}
+    folded = _fold(text, _INVISIBLE).lower()
+    spaced = _fold(text, _INVISIBLE_AS_SPACE).lower()
+    return {
+        token
+        for token, pattern in _DIETARY_PATTERNS.items()
+        if pattern.search(folded) or pattern.search(spaced)
+    }
 
 
 def looks_like_eighteenth(*, event_type: str | None, event_name: str | None, notes: str | None = None) -> bool:

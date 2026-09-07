@@ -12,11 +12,21 @@ warning nobody sees is worse than a block -- and a blocked proposal is
 stored and never shown to staff. So the false match made a legitimate
 transcription silently vanish. Worse than when it was first found.
 
-The first fix (2bbd23e, reverted) bounded every token on the left, which
-stopped "minutes" and also stopped "walnuts" and "hazelnuts". Those are
-nut allergies. The whole nut family is now an explicit vocabulary that
-canonicalises to "nut", and no test in the suite covered the compound
-case until this file -- the regression was caught by review, not by a test.
+Two attempts have failed here, in opposite directions, and this file exists
+to hold both open at once:
+
+  - the substring test over-matched (minutes, eggplant), refusing real work;
+  - a plain word boundary on both sides under-matched, dropping "walnuts",
+    "2xvegan", "glutenfree" and "nut-free" -- spellings staff actually type,
+    where a miss is a declared requirement leaving the Event Order in
+    silence.
+
+So the boundary names what may sit beside a token (a count on the left, a
+plural or a free/less compound on the right), any word ending in "nut" is a
+nut by RULE with a short list of foods excluded rather than a closed list of
+nuts included, peanut answers as its own allergen as well as a nut, and an
+invisible character pasted from email cannot hide a declaration in either
+direction.
 """
 
 import pytest
@@ -113,13 +123,34 @@ def test_ordinary_spellings_still_declare(text, token):
     assert token in declared_dietaries(text), text
 
 
-@pytest.mark.parametrize("token", beo_rules._DIETARY_TOKENS)
-def test_every_token_in_the_list_still_matches_itself(token):
-    """A token dropped from the pattern table by accident would silently
-    stop being protected. The nut family answers as "nut"."""
+# A FROZEN list, deliberately not derived from _DIETARY_TOKENS. The previous
+# version parametrized over the same tuple that builds the pattern table, so
+# deleting a token deleted its own test case: removing "sesame" left 208
+# tests passing while DROPS_DIETARY quietly stopped protecting a declared
+# sesame allergy (review of 44c84b5). A guard that is generated from the
+# thing it guards cannot notice the thing going missing.
+PROTECTED_VOCABULARY = (
+    "nut", "peanut", "gluten", "coeliac", "celiac", "dairy", "lactose", "vegan",
+    "vegetarian", "halal", "kosher", "shellfish", "seafood", "sesame", "egg", "soy",
+    "pescatarian", "allerg", "anaphyla", "intoleran", "epipen", "fodmap",
+)
+
+
+@pytest.mark.parametrize("token", PROTECTED_VOCABULARY)
+def test_every_protected_requirement_still_declares(token):
+    """Deleting a token from the vocabulary must fail HERE, loudly, rather
+    than quietly stop protecting a requirement."""
     found = declared_dietaries(f"1x {token} requirement")
-    expected = "nut" if token in ("nut", "peanut") else token
-    assert expected in found, (token, found)
+    assert token in found, (token, found)
+
+
+def test_the_vocabulary_has_not_silently_shrunk():
+    """The other half: every plain token the module ships is on the frozen
+    list above, so ADDING one without covering it here fails too."""
+    shipped = set(beo_rules._DIETARY_TOKENS) | {"nut", "peanut"}
+    assert shipped == set(PROTECTED_VOCABULARY), (
+        f"vocabulary changed: {shipped ^ set(PROTECTED_VOCABULARY)}"
+    )
 
 
 def test_the_existing_incident_case_is_unchanged():
@@ -130,3 +161,103 @@ def test_the_existing_incident_case_is_unchanged():
     )
     assert beo_rules.DROPS_DIETARY in result.codes
     assert "nut" in result.as_note()
+
+
+# --- run-together spellings staff actually type (review of 44c84b5) ----------
+
+
+@pytest.mark.parametrize(
+    "text, token",
+    [
+        ("2xvegan", "vegan"), ("12xvegetarian", "vegetarian"), ("1xnut allergy", "nut"),
+        ("glutenfree", "gluten"), ("nutfree", "nut"), ("dairyfree", "dairy"),
+        ("soyfree", "soy"), ("lactosefree", "lactose"), ("eggless", "egg"),
+        ("gluten free", "gluten"), ("nut-free", "nut"),
+    ],
+)
+def test_a_spelling_with_no_space_still_declares(text, token):
+    """A plain word boundary on both sides dropped every one of these, so a
+    requirement typed as shorthand could be dropped by a transcription with
+    nothing said -- and, in the other direction, re-typing "2x vegan" as
+    "2xvegan" was refused as dropping vegan."""
+    assert token in declared_dietaries(text), text
+
+
+def test_shorthand_is_the_same_declaration_as_the_spaced_form():
+    assert not beo_rules.validate(
+        {"dietaries": "2xvegan"}, current={"dietaries": "2 x vegan"}
+    ).blocked
+    assert beo_rules.DROPS_DIETARY in beo_rules.validate(
+        {"dietaries": "no requirements"}, current={"dietaries": "2xvegan, 1x nut allergy"}
+    ).codes
+
+
+# --- any word ending in nut is a nut, by rule not by list --------------------
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["pinenut", "pine nuts", "groundnut", "groundnuts", "brazilnut", "treenut",
+     "chestnut", "coconut", "walnut", "hazelnuts"],
+)
+def test_a_compound_nobody_listed_is_still_a_nut(text):
+    """The previous fix used a closed list and missed exactly the compounds
+    nobody thought of, which on this field is a silent loss of safety data."""
+    assert "nut" in declared_dietaries(text), text
+
+
+@pytest.mark.parametrize("text", ["Roast butternut pumpkin", "Doughnuts", "donuts", "a donut wall"])
+def test_a_food_that_merely_ends_in_nut_is_not_a_nut(text):
+    assert "nut" not in declared_dietaries(text), text
+
+
+@pytest.mark.parametrize("text", ["soybean", "soybeans", "soymilk", "soya", "soy sauce"])
+def test_soy_compounds_declare_soy(text):
+    assert "soy" in declared_dietaries(text), text
+
+
+# --- peanut is its own allergen ----------------------------------------------
+
+
+def test_a_peanut_allergy_declares_both_peanut_and_nut():
+    assert declared_dietaries("1x peanut allergy") >= {"nut", "peanut"}
+    assert "peanut" not in declared_dietaries("1x cashew allergy")
+
+
+def test_swapping_a_peanut_allergy_for_a_tree_nut_is_a_dropped_requirement():
+    """Peanut is a legume and a distinct allergen -- the venue's own
+    catalogue keeps it separate on MenuItem.contains_peanuts. Canonicalising
+    every nut to one token made this substitution invisible."""
+    result = beo_rules.validate(
+        {"dietaries": "1x cashew allergy (anaphylaxis, EpiPen)."},
+        current={"dietaries": "1x peanut allergy (anaphylaxis, EpiPen)."},
+    )
+    assert beo_rules.DROPS_DIETARY in result.codes
+
+    # and the reverse is fine: a tree-nut allergy restated as peanut ADDS
+    assert not beo_rules.validate(
+        {"dietaries": "1x peanut allergy."}, current={"dietaries": "1x nut allergy."}
+    ).blocked
+
+
+# --- an invisible character cannot hide a declaration ------------------------
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["nut\u200ballergy", "gluten\u2060free", "n\u200but allergy", "vegan\u00adx2"],
+)
+def test_a_pasted_invisible_character_cannot_hide_a_requirement(text):
+    """normalise() DELETES invisibles, which rejoins a word split in half
+    ("n<ZWSP>ut") but glues two words together ("nut<ZWSP>allergy") -- and a
+    word-boundary match then sees neither. Both spellings are read and the
+    union taken, so a paste from email or Word cannot drop a declaration."""
+    assert declared_dietaries(text), text
+
+
+def test_an_invisible_between_words_still_blocks_a_drop():
+    result = beo_rules.validate(
+        {"dietaries": "No dietary requirements"},
+        current={"dietaries": "1x nut\u200ballergy (table 4)."},
+    )
+    assert beo_rules.DROPS_DIETARY in result.codes
