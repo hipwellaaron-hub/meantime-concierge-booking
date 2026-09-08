@@ -499,6 +499,61 @@ def losses(db: Session, document: Document | None, fresh: dict) -> list[ContentL
     return found
 
 
+# Protected fields whose emptiness is not a lie on the page, and which
+# therefore do not belong in the staff copy's "not filled in" list.
+#
+#   music_entertainment -- the older spelling of the Music section. After
+#     read_music_as_split, `music` answers for that section under either
+#     shape; naming both would report one gap twice.
+#   internal_notes -- staff scratch that never reaches the client document
+#     at all, so it cannot be mistaken for content on it.
+#   status_text -- optional override for a status the document computes
+#     anyway, so empty prints the real status rather than a plausible lie.
+_NOT_A_GAP_ON_THE_PAGE = frozenset({"music_entertainment", "internal_notes", "status_text"})
+
+
+def unfilled_fields(content: object) -> list[str]:
+    """The fields nobody has filled in, by label, for the staff copy.
+
+    A document prints something plausible for an empty field and there is
+    no way to tell it from a field whose content was lost. Room layout
+    prints the client placeholder "To be confirmed - contact the venue".
+    Special notes prints the generated guest counts. Decorations prints no
+    section at all. Onsite contact printed the CLIENT'S OWN NAME. On
+    HAM-20260911-AKPSO on 2026-09-08 a whole page of typed content never
+    reached the server and the finished document was indistinguishable
+    from one nobody had touched.
+
+    VALUE-BASED, not record-based, and that is the load-bearing decision.
+    `_authored` is not written at generation time at all -- a fresh
+    document has no record -- and its SILENCE is never evidence: almost
+    every document on production predates the record, so asking it would
+    answer "nobody wrote this" about every field of every one of them.
+    That is precisely the reasoning that got the first provenance design
+    reverted (see losses() above). The value knows: a [REVIEW] marker, an
+    empty field, or the generator's own sentence.
+
+    Only keys the content actually HAS, so an agreement is not reported as
+    missing ten Event Order fields and vice versa. The music pair is read
+    the way it prints (read_music_as_split), so a legacy Event Order whose
+    detail sits in the merged field is not called empty, and the section is
+    named once rather than under both of its spellings.
+
+    And only fields that can MISLEAD somebody reading the page. A warning
+    that is always there is furniture -- staff stop reading it, which is
+    the failure this exists to prevent, not a smaller version of it.
+    """
+    values = content if isinstance(content, dict) else {}
+    values = read_music_as_split(values)
+    missing = []
+    for spec in PROTECTED_FIELDS:
+        if spec.name not in values or spec.name in _NOT_A_GAP_ON_THE_PAGE:
+            continue
+        if _is_disposable(spec.render(values.get(spec.name))):
+            missing.append(spec.label)
+    return missing
+
+
 def fingerprint(found: list[ContentLoss], pending: list[dict]) -> str:
     """Identifies the exact question a human was shown.
 
