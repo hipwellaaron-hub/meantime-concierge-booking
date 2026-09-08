@@ -114,7 +114,7 @@
   </p>
 </div>
 {% endif %}
-<form method="post" action="/admin/bookings/{{ booking.id }}/documents/{{ document.id }}/edit">
+<form id="beo-edit-form" method="post" action="/admin/bookings/{{ booking.id }}/documents/{{ document.id }}/edit">
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
   {# Compare-and-set: the values this form was rendered from. The save
      refuses if they have moved, rather than reverting somebody else's
@@ -257,9 +257,23 @@
   <a class="secondary-link" href="/admin/bookings/{{ booking.id }}">Cancel</a>
 </form>
 
+{% if booking.vendors | selectattr("bump_in_time") | rejectattr("bump_in_confirmed") | list %}
+{#
+  These are their OWN forms, not part of the edit above -- a button here
+  submits the bump-in confirmation and navigates away, which discards
+  anything typed into the edit form and not yet saved. That is how a full
+  page of hand-entered content was lost on HAM-20260911-AKPSO on
+  2026-09-08: the audit trail shows the bump-in confirm at 00:14:00 and no
+  document_edited from a save at all. The guard at the bottom of this page
+  now asks before leaving; this note is here so the next person to move
+  this block knows why it is separated and labelled.
+#}
+<p class="muted" style="margin-top:16px;">Separate actions &mdash; these save on their own, and
+  leaving this page will prompt you first if you have unsaved edits above.</p>
+{% endif %}
 {% for vendor in booking.vendors %}
 {% if vendor.bump_in_time is not none and not vendor.bump_in_confirmed %}
-<form class="inline" method="post" action="/admin/bookings/{{ booking.id }}/vendors/{{ vendor.id }}/confirm-bump-in" style="margin-top:8px;">
+<form class="inline bump-in-confirm" method="post" action="/admin/bookings/{{ booking.id }}/vendors/{{ vendor.id }}/confirm-bump-in" style="margin-top:8px;">
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
   <button class="btn" type="submit">Confirm {{ vendor.vendor_type }} bump-in {{ vendor.bump_in_time.strftime('%H:%M') }} ({{ vendor.name }})</button>
 </form>
@@ -339,5 +353,31 @@
   }
   document.getElementById("line-items").addEventListener("input", recalc);
   recalc();
+
+  // UNSAVED CHANGES. Everything on this page is typed into one form, and
+  // every other control on it -- Cancel, the bump-in confirm buttons, any
+  // link in the nav -- navigates away and silently discards the lot. That
+  // is not hypothetical: a full page of hand-entered Event Order content
+  // was lost that way on 2026-09-08, and because several fields print a
+  // generated placeholder when empty, the result looked exactly like
+  // content that had never been entered.
+  //
+  // Marked dirty on the first real edit, cleared when this form is
+  // actually submitted, so saving never prompts.
+  (function () {
+    var form = document.getElementById("beo-edit-form");
+    if (!form) return;
+    var dirty = false;
+    form.addEventListener("input", function () { dirty = true; });
+    form.addEventListener("change", function () { dirty = true; });
+    form.addEventListener("submit", function () { dirty = false; });
+    window.addEventListener("beforeunload", function (event) {
+      if (!dirty) return;
+      // The text is the browser's own; assigning is what arms the prompt.
+      event.preventDefault();
+      event.returnValue = "";
+      return "";
+    });
+  })();
 </script>
 {% endblock %}
