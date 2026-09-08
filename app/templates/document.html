@@ -292,7 +292,7 @@
 {{ beo_section("Music", content.music or content.music_entertainment, staff) }}
 {{ beo_section("Entertainment", content.entertainment, staff) }}
 {{ beo_av(content) }}
-{{ beo_section("Dietaries", content.get("dietaries") or "No dietary requirements declared", staff, always=true) }}
+{{ beo_section("Dietaries", content.get("dietaries") or NO_DIETARIES, staff, always=true) }}
 {{ beo_section("Accessibility", content.accessibility, staff) }}
 {{ beo_section("Decorations", content.decorations, staff) }}
 {{ beo_section("Special Notes", content.special_notes, staff) }}

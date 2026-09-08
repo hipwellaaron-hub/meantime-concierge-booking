@@ -525,38 +525,29 @@ def losses(db: Session, document: Document | None, fresh: dict) -> list[ContentL
 #     at all, so it cannot be mistaken for content on it.
 #   status_text -- optional override for a status the document computes
 #     anyway, so empty prints the real status rather than a plausible lie.
-_NOT_A_GAP_ON_THE_PAGE = frozenset({"music_entertainment", "internal_notes", "status_text"})
-
-# The generator's placeholders that ARE a lie on the page. Every other one
-# is a [REVIEW] prompt -- text that says out loud nobody has answered -- so
-# a field carrying one is a gap by its own admission.
+#   dietaries -- the Dietaries section prints "No dietary requirements
+#     declared" WHATEVER the stored value is: the template supplies that
+#     sentence itself when the field is empty. So the field's emptiness
+#     cannot mislead anybody reading the page, in either direction, and
+#     naming it would put the block on nearly every Event Order (an
+#     Event Order with all ten fields filled in still said "Not filled in
+#     (1): Dietaries" -- proved by running it).
 #
-# NO_DIETARIES is not. "No dietary requirements declared" is a complete,
-# true sentence about a client who declared none, which is most clients:
-# with it in this set, an Event Order with all ten fields filled in still
-# printed "Not filled in (1): Dietaries". Proved by running it. That block
-# would then be on nearly every document, and a warning that is always
-# there is furniture -- staff stop reading it, and it stops working for
-# Room layout, Decorations, Special notes and Onsite contact, which are the
-# fields Preston actually lost.
+#     This entry replaced a narrower attempt that exempted only the
+#     SENTENCE, via a second predicate beside _is_disposable. That left the
+#     empty case listed: a state no writer can produce (both writers coerce
+#     empty to the sentence) and one the page prints identically anyway.
+#     With the field named here, the second predicate had nothing behind it
+#     -- the whole suite passed with it deleted -- so it is gone rather than
+#     left reading as protection.
 #
-# _is_disposable answers a DIFFERENT question -- "may a rebuild overwrite
-# this" -- for which NO_DIETARIES is rightly disposable. The two questions
-# happened to share an answer everywhere else, so they shared a predicate.
-#
-# What this does NOT fix: a client nobody ASKED about dietaries also gets
-# NO_DIETARIES, and the stored value cannot tell that apart from a client
-# who answered none. That ambiguity is generation's to resolve (a
-# [REVIEW] prompt where there is no answer), not this list's -- naming
-# every document to catch some of them is not a smaller version of the
-# fix, it is the failure this exists to prevent.
-_GAP_PLACEHOLDERS = GENERATED_PLACEHOLDERS - {NO_DIETARIES}
-
-
-def _looks_unfilled(rendered: str) -> bool:
-    """True when the page is printing something nobody put there."""
-    return not rendered or rendered in _GAP_PLACEHOLDERS
-
+#     What this does NOT fix: a client nobody ASKED about dietaries gets the
+#     same sentence, and the stored value cannot tell that apart from a
+#     client who answered none. That is generation's to resolve, with a
+#     [REVIEW] prompt where there is no answer.
+_NOT_A_GAP_ON_THE_PAGE = frozenset(
+    {"music_entertainment", "internal_notes", "status_text", "dietaries"}
+)
 
 def unfilled_fields(content: object) -> list[str]:
     """The fields nobody has filled in, by label, for the staff copy.
@@ -595,7 +586,7 @@ def unfilled_fields(content: object) -> list[str]:
     for spec in PROTECTED_FIELDS:
         if spec.name not in values or spec.name in _NOT_A_GAP_ON_THE_PAGE:
             continue
-        if _looks_unfilled(spec.render(values.get(spec.name))):
+        if _is_disposable(spec.render(values.get(spec.name))):
             missing.append(spec.label)
     return missing
 

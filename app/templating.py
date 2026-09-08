@@ -13,7 +13,7 @@ import markupsafe
 from fastapi.templating import Jinja2Templates
 
 from app.services import policy
-from app.services.document_generation import bar_structure_shown
+from app.services.document_generation import NO_DIETARIES, bar_structure_shown
 from app.services.document_regeneration import unfilled_fields as _unfilled_fields
 from app.utils import format_date_dmy as _format_date_dmy
 from app.utils import format_person_name as _format_person_name
@@ -225,6 +225,11 @@ templates.env.globals["meta_pixel_id"] = _settings.meta_pixel_id if _tracking_en
 templates.env.globals["has_venue_logo"] = has_venue_logo
 templates.env.globals["venue_logo_url"] = LOGO_STATIC_PATH
 templates.env.globals["venue_phone"] = policy.VENUE_PHONE
+# The Dietaries section prints this whatever the stored value is -- the
+# template had its own literal copy, so changing the constant would have
+# left the two disagreeing about the one sentence a client reads for an
+# allergy question. document_regeneration reads the same name.
+templates.env.globals["NO_DIETARIES"] = NO_DIETARIES
 
 # Live (not frozen) venue/banking details for the invoice view -- an unpaid
 # invoice must always point at the current account, not whatever was true

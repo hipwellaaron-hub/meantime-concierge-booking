@@ -108,14 +108,26 @@ def test_the_generated_dietaries_sentence_is_not_a_gap(db, loft):
     assert "Dietaries" not in dr.unfilled_fields(content)
 
 
-def test_an_emptied_dietaries_field_is_still_a_gap(db, loft):
-    """The exemption is for the SENTENCE, not for the field. Nothing there
-    at all still prints nothing at all, which is a gap like any other."""
+def test_an_emptied_dietaries_field_is_not_a_gap_either(db, loft):
+    """REPLACES a test of mine that asserted the opposite, on two counts.
+
+    It pinned a state no writer can produce -- generation writes
+    `dietaries or NO_DIETARIES` and the edit form writes
+    `dietaries.strip() or NO_DIETARIES`, so the stored value is never empty
+    -- and its rationale was FALSE: it said an empty field "prints nothing
+    at all". document.html supplies the sentence itself
+    (`content.get("dietaries") or NO_DIETARIES`), so the page reads exactly
+    the same either way. Proved by reading the template.
+
+    Which makes the exemption field-wide, and saying so plainly is better
+    than an exemption that looks narrow and is not. The Dietaries section
+    cannot mislead anybody about whether it was filled in, in either
+    direction, because it prints one sentence whatever is stored.
+    """
     booking = _booking(db, loft)
 
-    gaps = dr.unfilled_fields(generate_beo_content(booking) | {"dietaries": ""})
-
-    assert "Dietaries" in gaps
+    assert "Dietaries" not in dr.unfilled_fields(generate_beo_content(booking) | {"dietaries": ""})
+    assert "Dietaries" not in dr.unfilled_fields(generate_beo_content(booking) | {"dietaries": None})
 
 
 def test_a_review_prompt_is_still_a_gap(db, loft):

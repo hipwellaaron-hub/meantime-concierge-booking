@@ -252,8 +252,8 @@
     <label>Entertainment</label>
     <textarea name="entertainment" rows="2">{{ form_content.entertainment or "" }}</textarea>
 
-    <label>Dietaries <span class="muted">(never blank on the document &mdash; empty here prints "No dietary requirements declared")</span></label>
-    <textarea name="dietaries" rows="2">{{ form_content.get("dietaries") if form_content.get("dietaries") != "No dietary requirements declared" else "" }}</textarea>
+    <label>Dietaries <span class="muted">(never blank on the document &mdash; empty here prints "{{ NO_DIETARIES }}")</span></label>
+    <textarea name="dietaries" rows="2">{{ form_content.get("dietaries") if form_content.get("dietaries") != NO_DIETARIES else "" }}</textarea>
 
     <label>Accessibility</label>
     <textarea name="accessibility" rows="2">{{ form_content.accessibility or "" }}</textarea>
