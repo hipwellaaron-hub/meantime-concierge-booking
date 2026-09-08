@@ -64,15 +64,15 @@ def test_it_does_not_render_as_nothing():
     [
         {"line_items": [HAND_ADDED, GRAZING], "note": None},                      # reordered
         {"line_items": [GRAZING, HAND_ADDED], "note": "anything at all"},          # note differs
-        {"line_items": [GRAZING, {**HAND_ADDED, "category": "platter"}], "note": None},  # category
         {"line_items": [{**GRAZING, "quantity": "2", "unit_price": "250"}, HAND_ADDED], "note": None},
+        {"line_items": [{**GRAZING, "category": ""}, HAND_ADDED], "note": None},   # absent == ""
     ],
 )
 def test_what_is_not_a_loss(other):
-    """A reorder, the generator's own note, which heading a line prints
-    under, and "250" against "250.00" are all the same food order. A warning
-    with no money behind it is noise on the one screen that has to stay worth
-    reading."""
+    """A reorder, the generator's own note, "250" against "250.00", and an
+    empty category against no category key at all are the same food order.
+    A warning with no money behind it is noise on the one screen that has
+    to stay worth reading."""
     assert dr._render_food_order(other) == dr._render_food_order(
         {"line_items": [GRAZING, HAND_ADDED], "note": None}
     )
@@ -84,10 +84,23 @@ def test_what_is_not_a_loss(other):
         {"line_items": [{**GRAZING, "quantity": 3}], "note": None},
         {"line_items": [{**GRAZING, "unit_price": "260.00"}], "note": None},
         {"line_items": [{**GRAZING, "description": "Something else"}], "note": None},
+        {"line_items": [{**GRAZING, "category": "platter"}], "note": None},
         {"line_items": [], "note": None},
     ],
 )
 def test_what_is_a_loss(changed):
+    """The category case MOVED here from the list above, on review.
+
+    It was filed as "which heading a line prints under", i.e. cosmetic. It
+    is not: document.html groups the client's line items by category and an
+    empty one falls into the uncategorised group, so a changed category
+    moves a platter out from under Platters on their Event Order. And the
+    fingerprint compares the stored dict, so a colleague changing only a
+    category refused the save ANYWAY -- while the table, reading this
+    renderer, came back empty under text saying nothing would read
+    differently. Refusing and then declining to say why is worse than
+    either warning or allowing it.
+    """
     assert dr._render_food_order(changed) != dr._render_food_order({"line_items": [GRAZING], "note": None})
 
 

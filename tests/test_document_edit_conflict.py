@@ -565,6 +565,44 @@ def test_a_food_order_that_really_moved_is_still_named(db, booking, admin_client
     assert "4 x Antipasto Platter" in response.text, "the four this form typed are not on the screen"
 
 
+def test_a_category_only_change_is_refused_AND_explained(db, booking, admin_client):
+    """The fingerprint compares the stored dict, so a colleague changing
+    only a line's category refused the save -- and the renderer ignored
+    category, so the table came back EMPTY under text saying none of the
+    fields would read differently. Proved by running it.
+
+    Refusing a save and then declining to say why is the exact shape of
+    unhelpfulness this screen exists to end. And category is not cosmetic:
+    document.html groups the client's line items by it.
+    """
+    document = _beo_with_a_platter(db, booking)
+    form = _edit_form(admin_client, booking, document)
+    form.update({
+        "item_descriptions": ["Antipasto Platter"],
+        "item_quantities": ["4"],
+        "item_unit_prices": ["85.00"],
+        "item_categories": [""],
+    })
+
+    theirs = dict(document.content)
+    lines = [dict(line) for line in theirs["food_order"]["line_items"]]
+    lines[0]["category"] = "platter"
+    theirs["food_order"] = {"line_items": lines, "note": None}
+    documents_service.update_content(db, document, theirs, actor="staff:other", authored_fields=PROTECTED)
+
+    response = admin_client.post(
+        f"/admin/bookings/{booking.id}/documents/{document.id}/edit",
+        data=form,
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 409
+    listed = re.findall(r"<td><strong>([^<]+)</strong></td>", response.text)
+    assert listed == ["Food order"], f"refused with no reason given: {listed}"
+    assert "(platter)" in response.text, "the heading their line sits under is not shown"
+    assert "None of the fields on this form would read differently" not in response.text
+
+
 def test_the_fingerprint_covers_the_food_order(db, booking, admin_client):
     """CLOSED, deliberately, by the commit that protected the food order.
 

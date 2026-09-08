@@ -76,11 +76,22 @@ def _render_food_order(value: object) -> str:
     while protecting nothing. Proved by running it before this existed.
 
     Not the stored dict either. `note` holds the generator's own "[REVIEW] no
-    food order captured yet" and `category` only picks which heading a line
-    prints under, so neither is a value anybody would miss. Sorted, because a
+    food order captured yet", which is nobody's words. Sorted, because a
     reorder costs nobody anything and a warning about one is a warning staff
     learn to click through -- and this screen only works while it is worth
     reading.
+
+    `category` IS included, and an earlier version of this docstring was
+    wrong to say it "only picks which heading a line prints under, so it is
+    not a value anybody would miss". It picks the heading on the CLIENT'S
+    Event Order (document.html groups line items by it, and an empty one
+    falls into the uncategorised group), so moving a platter out from under
+    Platters is a visible change to their document. Worse, the fingerprint
+    compares the stored dict and therefore refused the save anyway: a
+    colleague changing only a category produced a 409 whose table was EMPTY
+    and whose text said none of the fields would read differently. Proved by
+    running it. Refusing a save and then declining to say why is the exact
+    shape of unhelpfulness this screen exists to end.
     """
     if not isinstance(value, dict):
         return ""
@@ -93,9 +104,14 @@ def _render_food_order(value: object) -> str:
             continue
         # "item" is the pre-rename key document.html still reads.
         description = _render_text(item.get("description") or item.get("item"))
+        # Absent and "" are one state: the form posts "" for a line nobody
+        # gave a heading, the generator omits the key entirely, and both
+        # print under the same uncategorised group.
+        category = _render_text(item.get("category"))
         lines.append(
             f"{_render_amount(item.get('quantity'))} x {description}"
             f" @ {_render_amount(item.get('unit_price'))}"
+            + (f" ({category})" if category else "")
         )
     return "\n".join(sorted(lines))
 
