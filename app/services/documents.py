@@ -308,10 +308,30 @@ def lock_draft_for_update(db: Session, document: Document) -> Document:
     So callers that read, decide, and then write take the lock here first,
     making the read and the write one critical section -- the same shape
     update_content_fields already has for the same reason.
+
+    AND that it is still the CURRENT version, which is a separate question.
+    Superseding a row does not change its status, so a draft that a
+    regenerate replaced is still a draft and satisfied the check above --
+    the row is locked by id, so the lock is granted on a version nobody
+    will ever read again. Proved by running it: a staff member typing into
+    an edit form opened before someone regenerated got a 303 and their
+    words landed on a row whose is_current is False, while the live Event
+    Order still said "[REVIEW] add room layout notes". Content typed by a
+    human, gone, and the redirect indistinguishable from a successful save.
+
+    beo_proposals._locked_draft has made exactly this check since
+    2026-09-06 with a comment saying it was proved live then. It was never
+    carried across to the edit form, which is the busier path.
     """
     db.refresh(document, with_for_update=True)
     if document.status != DocumentStatus.draft:
         raise ValueError(f"cannot edit a document that is already {document.status.value} -- only a draft can be edited")
+    if not document.is_current:
+        raise ValueError(
+            f"this is v{document.version} of the {document.type.value} and a newer version has "
+            "replaced it -- saving here would write onto a version nobody can read. Reload the "
+            "booking and edit the current one."
+        )
     return document
 
 
@@ -616,6 +636,18 @@ def mark_sent(db: Session, document: Document, *, actor: str) -> Document:
     db.refresh(document, with_for_update=True)
     if document.status != DocumentStatus.draft:
         raise ValueError(f"cannot send a document that is already {document.status.value}")
+    if not document.is_current:
+        # Same trap as lock_draft_for_update above: superseding does not
+        # change a status, so a replaced draft is still a draft. Sending it
+        # flipped the row to `sent` -- proved by running it -- while the
+        # public route gates on is_current, so the link staff had just
+        # "sent" 410s. For an agreement it also takes a room hold
+        # (auto_hold_on_send below) off the back of a document the client
+        # can never open.
+        raise ValueError(
+            f"this is v{document.version} of the {document.type.value} and a newer version has "
+            "replaced it -- its link would not work. Reload the booking and send the current one."
+        )
     contact = document.booking.contact
     if contact is None or not is_valid_email(contact.email):
         raise ValueError(
