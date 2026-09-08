@@ -894,9 +894,16 @@ def edit_document_form(
 
 
 def _submitted_food_order(descriptions, quantities, unit_prices, categories) -> dict:
-    """The food order THIS form just submitted, in the stored shape.
+    """The food order THIS form just submitted, in the shape it was typed.
 
-    Only for the conflict screen: it is what differing_fields compares and
+    NOT the stored shape, which an earlier version of this line claimed: a
+    quantity stays the string the browser sent rather than becoming an int,
+    because the refused form is re-rendered from this and a half-typed "4x"
+    has to come back as "4x". The comparison is what adapts --
+    document_regeneration.differing_protected_fields asks the food order's
+    own renderer, so the two shapes are one value.
+
+    Only for the conflict screen: it is what that comparison reads and
     what the refused form is re-rendered from. Without it, a refusal caused
     by the food order names nothing in its table and hands the staff member
     back the STORED lines instead of the ones they just typed -- proved live
@@ -1028,12 +1035,13 @@ def save_document_edit(
         # somebody's real text counted as nothing, so the table came back
         # empty and the page said nothing at all (review of 84916a7).
         # differing_fields is the same normalisation without that skip.
-        moved = content_authorship.differing_fields(
-            stored,
-            submitted,
-            candidates=document_regeneration.PROTECTED_FIELD_NAMES,
-            placeholders=document_regeneration.GENERATED_PLACEHOLDERS,
-        )
+        #
+        # Through each field's own renderer, which is what
+        # differing_protected_fields adds: this form posts a quantity as the
+        # string "4" where the document stores the int 4, so a raw compare
+        # named the food order on EVERY refusal with identical text in both
+        # columns.
+        moved = document_regeneration.differing_protected_fields(stored, submitted)
         # Rendered through each field's own renderer, so an agreement's
         # terms_sections reads as its clauses rather than as a repr of a
         # list of dicts -- this is the screen somebody decides the fate of

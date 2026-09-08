@@ -554,6 +554,37 @@ def unfilled_fields(content: object) -> list[str]:
     return missing
 
 
+def differing_protected_fields(stored: object, submitted: dict) -> set[str]:
+    """Which protected fields `submitted` would REPLACE on `stored`, asked
+    of the values as they RENDER rather than as they are stored.
+
+    content_authorship.differing_fields compares stored values, which is
+    right for text and wrong for everything else. The edit form posts a
+    quantity as the string "4" where the document holds the int 4, so the
+    two food-order dicts differed on every submission and the conflict
+    screen named Food order as moved on EVERY refusal -- with identical
+    text in both of its columns. Proved by running it. A warning that is
+    always there is furniture, and this is the one screen whose whole job
+    is telling somebody the truth about what they are about to overwrite.
+
+    Rendering first also makes this screen ask the same question the
+    regenerate screen asks: losses() has always compared rendered values,
+    so without this one document's field could read as changed on one
+    screen and unchanged on the other. It covers the same hazard for
+    terms_sections, whose two shapes are a list of dicts, and for any
+    non-string field added to the table later -- which is the point of
+    asking the field's own renderer rather than special-casing this one.
+    """
+    specs = {spec.name: spec for spec in PROTECTED_FIELDS}
+    before = stored if isinstance(stored, dict) else {}
+    return content_authorship.differing_fields(
+        {name: spec.render(before.get(name)) for name, spec in specs.items() if name in before},
+        {name: spec.render(submitted.get(name)) for name, spec in specs.items() if name in submitted},
+        candidates=PROTECTED_FIELD_NAMES,
+        placeholders=GENERATED_PLACEHOLDERS,
+    )
+
+
 def fingerprint(found: list[ContentLoss], pending: list[dict]) -> str:
     """Identifies the exact question a human was shown.
 

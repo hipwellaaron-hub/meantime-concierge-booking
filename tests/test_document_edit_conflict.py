@@ -489,6 +489,82 @@ def test_an_agreement_conflict_shows_clauses_not_a_python_repr(db, booking, admi
 # --- what this check does NOT cover ------------------------------------------
 
 
+def _beo_with_a_platter(db, booking, quantity=4):
+    from decimal import Decimal
+
+    content = generate_beo_content(
+        booking,
+        [{"item": "Antipasto Platter", "quantity": quantity, "unit_price": "85.00"}],
+        deposit_paid=Decimal("0.00"),
+    )
+    content["dietaries"] = "none"
+    return documents_service.create_new_version(db, booking, DocumentType.beo, content, actor="test")
+
+
+def test_an_unchanged_food_order_is_not_named_on_the_conflict_screen(db, booking, admin_client):
+    """The form posts a quantity as the string "4"; the document stores the
+    int 4. Comparing the raw dicts made the food order read as moved on
+    EVERY refusal, with identical text in both columns -- proved by running
+    it. A warning that is always there is furniture, and this is the one
+    screen whose whole job is telling somebody the truth about what they
+    are about to overwrite."""
+    document = _beo_with_a_platter(db, booking)
+    form = _edit_form(admin_client, booking, document)
+    form.update({
+        "item_descriptions": ["Antipasto Platter"],
+        "item_quantities": ["4"],
+        "item_unit_prices": ["85.00"],
+    })
+
+    # Somebody else moves a DIFFERENT field, so the save is refused.
+    documents_service.update_content_fields(
+        db, document, {"dietaries": "1x severe nut allergy (table 4)."},
+        actor="staff:other", authored_fields=PROTECTED,
+    )
+
+    response = admin_client.post(
+        f"/admin/bookings/{booking.id}/documents/{document.id}/edit",
+        data=form,
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 409
+    listed = re.findall(r"<td><strong>([^<]+)</strong></td>", response.text)
+    assert listed == ["Dietaries"], f"the food order did not move, yet it was named: {listed}"
+
+
+def test_a_food_order_that_really_moved_is_still_named(db, booking, admin_client):
+    """The other half, so the fix cannot be "stop looking at the food order".
+    A quantity a colleague actually changed is still reported, and the two
+    columns say different things."""
+    document = _beo_with_a_platter(db, booking, quantity=4)
+    form = _edit_form(admin_client, booking, document)
+    form.update({
+        "item_descriptions": ["Antipasto Platter"],
+        "item_quantities": ["4"],
+        "item_unit_prices": ["85.00"],
+    })
+
+    theirs = dict(document.content)
+    theirs["food_order"] = {
+        "line_items": [{"description": "Antipasto Platter", "quantity": 8, "unit_price": "85.00"}],
+        "note": None,
+    }
+    documents_service.update_content(db, document, theirs, actor="staff:other", authored_fields=PROTECTED)
+
+    response = admin_client.post(
+        f"/admin/bookings/{booking.id}/documents/{document.id}/edit",
+        data=form,
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 409
+    listed = re.findall(r"<td><strong>([^<]+)</strong></td>", response.text)
+    assert listed == ["Food order"], f"the food order moved and was not named: {listed}"
+    assert "8 x Antipasto Platter" in response.text, "their eight platters are not on the screen"
+    assert "4 x Antipasto Platter" in response.text, "the four this form typed are not on the screen"
+
+
 def test_the_fingerprint_covers_the_food_order(db, booking, admin_client):
     """CLOSED, deliberately, by the commit that protected the food order.
 
