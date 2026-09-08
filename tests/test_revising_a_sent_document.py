@@ -235,6 +235,66 @@ def test_a_legacy_document_is_refused(db, loft):
     assert "legacy" in str(exc.value)
 
 
+# --- and only the version that is actually current ----------------------------
+
+
+def test_a_superseded_version_cannot_be_revised(db, loft):
+    """The hole in the first cut of Revise, and the same class of defect it
+    was built to close: content disappearing without a word.
+
+    Superseding does not change a row's STATUS, so v1 of a twice-sent Event
+    Order is still `sent` and satisfied every other check here. Revising it
+    copied v1's content forward as v3 and discarded v2's -- proved by
+    running it before this refusal existed.
+    """
+    booking = _booking(db, loft, "Superseded")
+    v1 = _sent_beo(db, booking, room_layout_notes="Long tables, no dance floor")
+    v2 = _sent_beo(db, booking, room_layout_notes=TYPED)
+    assert v1.status == DocumentStatus.sent, "a superseded row keeps its status -- that is the trap"
+
+    with pytest.raises(ValueError) as exc:
+        documents_service.revise(db, v1, actor="staff:aaron")
+
+    assert "no longer the current version" in str(exc.value)
+    assert f"v{v2.version} is" in str(exc.value), "it should name the version to revise instead"
+    current = documents_service.get_current(db, booking.id, DocumentType.beo)
+    assert current.id == v2.id, "an older version was copied forward over the newer one"
+    assert current.content["room_layout_notes"] == TYPED
+
+
+def test_the_back_button_cannot_revise_the_version_it_just_replaced(admin_client, db, loft):
+    """No race is needed to reach it. Revise, land on the edit form, press
+    Back: the cached booking page still offers Revise on the version that
+    was just superseded, and the second click threw away the draft the
+    first click had made."""
+    booking = _booking(db, loft, "Revise Back Button")
+    sent = _sent_beo(db, booking, room_layout_notes=TYPED)
+    csrf = _csrf(admin_client, booking.id)
+
+    first = admin_client.post(
+        f"/admin/bookings/{booking.id}/documents/{sent.id}/revise",
+        data={"csrf_token": csrf},
+        follow_redirects=False,
+    )
+    assert first.status_code == 303
+    draft_id = first.headers["location"].rsplit("/", 2)[1]
+
+    again = admin_client.post(
+        f"/admin/bookings/{booking.id}/documents/{sent.id}/revise",
+        data={"csrf_token": csrf},
+        follow_redirects=False,
+    )
+
+    assert again.status_code == 409, "the stale page revised a superseded version"
+    # The MESSAGE, not just the status. Refusing it as "already a draft"
+    # would also be a 409 and would mean the request had been quietly
+    # redirected onto a different version -- which is not the same as
+    # telling the staff member their page is stale.
+    assert "no longer the current version" in again.json()["detail"]
+    current = documents_service.get_current(db, booking.id, DocumentType.beo)
+    assert str(current.id) == draft_id, "the draft made by the first click was discarded"
+
+
 # --- Aaron's second ruling: the window is visible -----------------------------
 
 

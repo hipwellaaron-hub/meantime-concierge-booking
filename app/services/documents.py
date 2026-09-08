@@ -173,8 +173,19 @@ def revise(db: Session, document: Document, *, actor: str) -> Document:
     changing one means a new agreement they sign again, not a quiet
     supersession that un-signs the gate on a confirmed booking at 11pm.
 
+    ONLY THE CURRENT VERSION. Superseding does not change a row's status,
+    so v1 of a twice-sent document is still `sent` and passed every check
+    below -- revising it copied v1's content forward as v3 and discarded
+    v2's. Proved by running it: v2's typed room layout was simply gone from
+    the current version. No race is needed to get there; Revise, then the
+    browser Back button, then Revise again is enough, and the second click
+    throws away the draft the first one just made.
+
     Locked and re-read first, like every other write here that reads
-    content and then writes from it.
+    content and then writes from it -- and the row it locks is the CURRENT
+    one, which is the row every other writer of this document contends on.
+    Locking the passed row instead left a concurrent regenerate free to
+    supersede it while this was reading it.
 
     Not deep-copied. That looks like it should be needed -- content is
     nested JSONB and this module's other writers all copy -- but
@@ -183,7 +194,19 @@ def revise(db: Session, document: Document, *, actor: str) -> Document:
     way. I wrote the deepcopy, mutation-checked it, and it survived because
     there was nothing behind it.
     """
-    db.refresh(document, with_for_update=True)
+    current = lock_current_for_update(db, document.booking_id, document.type)
+    if current is None or current.id != document.id:
+        raise ValueError(
+            f"this is v{document.version} of the {document.type.value} and it is no longer the "
+            "current version"
+            + (f" -- v{current.version} is" if current is not None else "")
+            + ". Revising it would copy older content forward and supersede the newer version. "
+            "Reload the booking and revise the current one."
+        )
+    # The locked, freshly-read row -- populate_existing means this is the
+    # same object with the database's values, so nothing below reads a
+    # field that was loaded before the lock was taken.
+    document = current
     if document.is_legacy:
         raise ValueError(
             f"the current {document.type.value} is a legacy record of what was signed in iVvy -- "
