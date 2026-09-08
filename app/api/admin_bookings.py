@@ -752,6 +752,33 @@ def send_document(
     return _redirect_to_detail(booking_id)
 
 
+def _refuse_if_legacy(booking_id: uuid.UUID, document: Document) -> None:
+    """A legacy iVvy record is not a document this app can render.
+
+    Its content is _legacy_content() -- {legacy, source, source_ref, note}
+    and none of the fields document.html reads. Rendering it anyway does
+    not fail loudly: it produced a normal-looking "Booking Agreement" page
+    carrying a SIGNED badge and none of the agreed terms, and a 28KB PDF
+    named <ref>-Agreement-v1-INTERNAL.pdf. Proved by running both routes.
+    A file that looks that authoritative and says nothing is worse in a
+    dispute than an error, and the real signed contract is sitting in
+    legacy_file one route away.
+
+    The three client routes have refused legacy documents all along
+    (app.api.documents) and every write path in app.services.documents
+    guards on it. These two staff read routes were the gap.
+    """
+    if document.is_legacy:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "this is a legacy iVvy record, not a document this app generated -- its content is "
+                "a placeholder. The signed original is at "
+                f"/admin/bookings/{booking_id}/documents/{document.id}/legacy-file"
+            ),
+        )
+
+
 @router.get("/{booking_id}/documents/{document_id}/pdf")
 def download_document_pdf_for_staff(
     booking_id: uuid.UUID,
@@ -776,12 +803,15 @@ def download_document_pdf_for_staff(
 
     Any version, not just the current one, and any status: this is the
     staff record of what a document says, and a draft is exactly the thing
-    somebody needs to read before sending it.
+    somebody needs to read before sending it. Except a legacy iVvy record,
+    which is not a document this app can render at all -- see
+    _refuse_if_legacy above.
     """
     _get_booking_or_404(db, booking_id)
     document = db.get(Document, document_id)
     if document is None or document.booking_id != booking_id:
         raise HTTPException(status_code=404, detail="Document not found on this booking")
+    _refuse_if_legacy(booking_id, document)
     html = templates.get_template("document.html").render(
         document=document, booking=document.booking, is_pdf=True, is_staff_preview=True
     )
@@ -812,6 +842,7 @@ def preview_document(
     document = db.get(Document, document_id)
     if document is None or document.booking_id != booking_id:
         raise HTTPException(status_code=404, detail="Document not found on this booking")
+    _refuse_if_legacy(booking_id, document)
     return templates.TemplateResponse(
         request, "document.html", {"document": document, "booking": document.booking, "is_staff_preview": True}
     )

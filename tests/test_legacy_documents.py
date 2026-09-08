@@ -70,6 +70,32 @@ def test_client_invoice_routes_404_a_legacy_deposit(pub_client, db, loft):
     assert pub_client.get(f"/i/{inv.access_token}/pdf").status_code == 404
 
 
+def test_the_staff_read_routes_refuse_a_legacy_document(admin_client, db, loft):
+    """The client routes have always refused these. The two STAFF read
+    routes did not, and they did not fail loudly either: rendering
+    _legacy_content() through document.html produced a normal-looking
+    "Booking Agreement" page carrying a SIGNED badge and none of the agreed
+    terms, and a 28KB PDF named <ref>-Agreement-v1-INTERNAL.pdf. Proved by
+    running both.
+
+    A file that looks that authoritative and says nothing is worse in a
+    dispute than an error -- and the real signed contract is one route
+    away, which is what the refusal now points at."""
+    b = _booking(db, loft)
+    doc = legacy_documents.attach_agreement_pdf(db, b, pdf=PDF, filename="a.pdf", source_ref="IVVY1", actor="staff")
+
+    preview = admin_client.get(f"/admin/bookings/{b.id}/documents/{doc.id}/preview")
+    pdf = admin_client.get(f"/admin/bookings/{b.id}/documents/{doc.id}/pdf")
+
+    assert preview.status_code == 409
+    assert pdf.status_code == 409
+    assert "legacy-file" in pdf.json()["detail"], "it should say where the real one is"
+    # And the route it points at still serves the signed original.
+    original = admin_client.get(f"/admin/bookings/{b.id}/documents/{doc.id}/legacy-file")
+    assert original.status_code == 200
+    assert original.content == PDF
+
+
 # --- double count: legacy deposit first, final invoice months later -----------
 
 
