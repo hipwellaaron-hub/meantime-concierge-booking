@@ -96,6 +96,28 @@ def test_the_staff_read_routes_refuse_a_legacy_document(admin_client, db, loft):
     assert original.content == PDF
 
 
+def test_a_record_only_legacy_agreement_is_not_sent_to_a_route_that_404s(admin_client, db, loft):
+    """The refusal pointed at /legacy-file unconditionally. That route
+    requires legacy_file, and the migration importer creates record-only
+    agreements with none -- the booking page has a branch for exactly that
+    state ("record only -- attach the signed PDF below"). Pointing at it
+    would have replaced one dead end with another."""
+    b = _booking(db, loft)
+    doc = create_new_version(db, b, DocumentType.agreement, {"legacy": True}, actor="staff")
+    legacy_documents.mark_agreement_legacy(doc, source_ref="IVVY9", booking=b)
+    db.flush()
+    assert doc.legacy_file is None
+
+    resp = admin_client.get(f"/admin/bookings/{b.id}/documents/{doc.id}/pdf")
+
+    assert resp.status_code == 409
+    detail = resp.json()["detail"]
+    assert "legacy-file" not in detail, "it pointed at a route that 404s for this record"
+    assert "attach one" in detail, "and it should say what to do instead"
+    # The route it declined to name would indeed have 404ed.
+    assert admin_client.get(f"/admin/bookings/{b.id}/documents/{doc.id}/legacy-file").status_code == 404
+
+
 # --- double count: legacy deposit first, final invoice months later -----------
 
 

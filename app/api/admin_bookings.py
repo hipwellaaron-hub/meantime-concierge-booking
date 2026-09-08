@@ -755,26 +755,41 @@ def send_document(
 def _refuse_if_legacy(booking_id: uuid.UUID, document: Document) -> None:
     """A legacy iVvy record is not a document this app can render.
 
-    Its content is _legacy_content() -- {legacy, source, source_ref, note}
-    and none of the fields document.html reads. Rendering it anyway does
-    not fail loudly: it produced a normal-looking "Booking Agreement" page
-    carrying a SIGNED badge and none of the agreed terms, and a 28KB PDF
-    named <ref>-Agreement-v1-INTERNAL.pdf. Proved by running both routes.
-    A file that looks that authoritative and says nothing is worse in a
-    dispute than an error, and the real signed contract is sitting in
-    legacy_file one route away.
+    A record attached through attach_agreement_pdf holds _legacy_content()
+    -- {legacy, source, source_ref, note} and none of the fields
+    document.html reads. Rendering it does not fail loudly: it produced a
+    normal-looking "Booking Agreement" page carrying a SIGNED badge and
+    none of the agreed terms, and a 28KB PDF named
+    <ref>-Agreement-v1-INTERNAL.pdf. Proved by running both routes. A file
+    that looks that authoritative and says nothing is worse in a dispute
+    than an error.
+
+    Records stamped by mark_agreement_legacy instead -- the migration
+    importer builds those Documents itself -- can hold other content
+    entirely. The refusal is on is_legacy, not on the content shape, for
+    exactly that reason: what makes these unrenderable is that they are a
+    record of something signed elsewhere, not what happens to be in the
+    JSONB.
 
     The three client routes have refused legacy documents all along
     (app.api.documents) and every write path in app.services.documents
     guards on it. These two staff read routes were the gap.
+
+    The message names the signed original only when there IS one: a
+    record-only legacy agreement has legacy_file None, and that route 404s,
+    so pointing at it would replace one dead end with another.
     """
     if document.is_legacy:
+        where = (
+            f" The signed original is at "
+            f"/admin/bookings/{booking_id}/documents/{document.id}/legacy-file"
+            if document.legacy_file is not None
+            else " No signed PDF has been attached to it yet -- attach one from the booking page."
+        )
         raise HTTPException(
             status_code=409,
             detail=(
-                "this is a legacy iVvy record, not a document this app generated -- its content is "
-                "a placeholder. The signed original is at "
-                f"/admin/bookings/{booking_id}/documents/{document.id}/legacy-file"
+                "this is a legacy iVvy record, not a document this app generated." + where
             ),
         )
 
