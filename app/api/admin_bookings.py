@@ -1418,11 +1418,22 @@ def _refresh_draft_beo_timeline(db: Session, booking, *, actor: str, vendors=Non
     visible. One function now, so the next confirm-style action cannot
     quietly skip it.
 
-    A sent or signed document is NEVER mutated -- staff regenerate, per the
-    existing document rules -- so this is a no-op on anything but a draft.
-    An already-sent Event Order goes on saying "requested" until it is
-    regenerated. That is the correct answer for a document a client already
-    holds, not a gap in this function.
+    A sent or signed document is NEVER mutated, so this is a no-op on
+    anything but a draft. That is the correct answer for a document a
+    client already holds, not a gap in this function.
+
+    An already-sent Event Order therefore goes on saying "requested" until
+    a new version is made. This used to say "until it is regenerated",
+    which is now the wrong advice: Regenerate rebuilds from the booking and
+    puts hand-entered content through the loss screen, which is a heavy
+    price for two words on a run sheet. The route since Revise shipped is
+
+        Confirm  ->  Revise  ->  open the edit form and Save  ->  Send
+
+    because save_document_edit rebuilds event_timeline from the booking
+    through this same builder, so a save with no edits typed at all
+    re-says the line. Proved end to end in
+    tests/test_confirming_reaches_a_sent_event_order.py.
 
     `vendors` defaults to keeping whatever snapshot is stored: confirming
     setup access should change the setup access line and nothing else. Pass
