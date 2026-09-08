@@ -332,6 +332,27 @@ def test_the_notice_does_not_name_a_button_that_was_not_pressed(admin_client, db
     assert "Revised" not in notice, "a regenerate was reported as a revise"
 
 
+def test_the_agreement_row_says_it_too(admin_client, db, loft):
+    """The badge is written out twice in booking_detail.html, once per
+    document row, and every test exercised only the BEO one -- so the
+    agreement copy could be reverted and stay green. The agreement is the
+    contract, so it is the row where a client silently holding a dead link
+    matters most."""
+    booking = _booking(db, loft, "Agreement No Link")
+    agreement = documents_service.create_new_version(
+        db, booking, DocumentType.agreement, generate_agreement_content(booking), actor="staff:test"
+    )
+    documents_service.mark_sent(db, agreement, actor="staff:test")
+    documents_service.revise(db, agreement, actor="staff:aaron")
+
+    page = admin_client.get(f"/admin/bookings/{booking.id}")
+
+    assert documents_service.is_mid_revision(db, booking.id, DocumentType.agreement) is True
+    agreement_row = page.text[page.text.index("<td>Agreement</td>"):page.text.index("<td>BEO</td>")]
+    assert "no working link" in agreement_row, "the agreement row does not say the client has no link"
+    assert "Revised" not in agreement_row, "and it must not name a button that may not have been pressed"
+
+
 def test_the_notice_does_not_read_every_version_of_the_document(db, loft):
     """It runs on every booking-page render, once per document type. Asking
     for whole Document rows pulled the JSONB content of every version ever
