@@ -32,6 +32,7 @@ from app.models.wizard_session import WizardSessionStatus
 from app.schemas.enquiry import EVENT_TYPES, EnquiryCreate
 from app.services import booking as booking_service
 from app.services import policy
+from app.services.pdf import render_html_to_pdf
 from app.services.contact_matching import (
     find_contact_by_email,
     find_or_create_contact,
@@ -744,6 +745,48 @@ def send_document(
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return _redirect_to_detail(booking_id)
+
+
+@router.get("/{booking_id}/documents/{document_id}/pdf")
+def download_document_pdf_for_staff(
+    booking_id: uuid.UUID,
+    document_id: uuid.UUID,
+    request: Request,
+    db: Session = Depends(get_db),
+    staff: StaffUser = Depends(require_staff),
+):
+    """The INTERNAL copy of the document, as a PDF.
+
+    The client PDF at /d/{token}/pdf is the clean render, and until now it
+    was the only one -- the admin's own "Download PDF" link pointed at it.
+    So the file staff download and read on a phone in the venue was the one
+    designed to hide staff-facing detail: a [REVIEW] marker that shows on
+    the web preview becomes "To be confirmed - contact the venue" there.
+    That is how a page of missing content went unnoticed on
+    HAM-20260911-AKPSO (Aaron, 2026-09-08: "the PDF is what I download and
+    what gets read on a phone in the venue, and that's where I missed it").
+
+    Named -INTERNAL so it cannot be mistaken for the client's copy if it is
+    ever forwarded. The client copy is still one click away.
+
+    Any version, not just the current one, and any status: this is the
+    staff record of what a document says, and a draft is exactly the thing
+    somebody needs to read before sending it.
+    """
+    _get_booking_or_404(db, booking_id)
+    document = db.get(Document, document_id)
+    if document is None or document.booking_id != booking_id:
+        raise HTTPException(status_code=404, detail="Document not found on this booking")
+    html = templates.get_template("document.html").render(
+        document=document, booking=document.booking, is_pdf=True, is_staff_preview=True
+    )
+    doc_label = "Agreement" if document.type.value == "agreement" else "BEO"
+    filename = f"{document.booking.reference_code}-{doc_label}-v{document.version}-INTERNAL.pdf"
+    return Response(
+        content=render_html_to_pdf(html),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.get("/{booking_id}/documents/{document_id}/preview", response_class=HTMLResponse)

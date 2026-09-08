@@ -53,6 +53,9 @@
 
   /* Event Order (screen) -- reference-format layout */
   .beo-card { max-width: 860px; }
+  .unfilled-block { border: 1px solid #b00020; border-left-width: 4px; border-radius: 4px;
+    padding: 8px 10px; margin: 10px 0; font-size: 0.85rem; background: #fff6f6; }
+  .unfilled-block .unfilled-note { color: #6b7268; font-size: 0.78rem; margin-top: 3px; }
   .beo-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; }
   .beo-header h1 { font-size: 1.35rem; margin: 0; }
   .beo-header .date-line { font-weight: 600; margin: 0.15rem 0 0.1rem; }
@@ -118,6 +121,9 @@
 
   /* Event Order (PDF). Two columns MUST be a table -- xhtml2pdf has no
      CSS columns/flex/grid; same approach as .pdf-terms above. */
+  .unfilled-block { border: 0.6pt solid #b00020; border-left-width: 2pt; padding: 4pt 5pt;
+    margin: 5pt 0; font-size: 7.5pt; background: #fff6f6; }
+  .unfilled-block .unfilled-note { color: #6b7268; font-size: 6.8pt; margin-top: 1.5pt; }
   .beo-header { width: 100%; margin-bottom: 4pt; }
   .beo-header td { vertical-align: top; padding: 0; border: none; }
   .beo-header h1 { font-size: 14pt; margin: 0; }
@@ -148,6 +154,25 @@
    `staff` is true only on the staff preview (never the client view or the
    PDF): with it, [REVIEW] prompts show raw; without it, client_safe swaps
    them for a neutral placeholder. ---- #}
+{#
+  The staff copy names what nobody has filled in. Without it an empty field
+  and a field whose content was lost print identically -- the room layout
+  placeholder reads like a decision, decorations print no section at all,
+  and onsite contact used to print the client's own name.
+
+  Computed at render time, so it is true of every document that already
+  exists without regenerating any of them.
+#}
+{% macro unfilled_block(gaps) %}
+{% if gaps %}
+<div class="unfilled-block">
+  <b>Not filled in ({{ gaps | length }}):</b> {{ gaps | join(", ") }}
+  <div class="unfilled-note">Staff copy only. These fields print a default or nothing at all
+    on the client's copy, so a gap and a lost value look the same there.</div>
+</div>
+{% endif %}
+{% endmacro %}
+
 {% macro beo_section(title, value, staff, always=false) %}
 {% set safe = value | client_safe(staff) %}
 {% if safe or always %}
@@ -355,10 +380,16 @@
   </div>
 </div>
 {% elif is_pdf %}
-{# Event Order print layout, matching the reference iVvy document. The
-   PDF route is public-token only -- is_staff_preview is never set here,
-   so every field passes through client_safe in client mode and internal
-   notes are structurally unreachable. #}
+{# Event Order print layout, matching the reference iVvy document.
+   Rendered for BOTH the client PDF (public token, is_staff_preview unset)
+   and the staff PDF (admin only, is_staff_preview set). It used to be
+   client-only, and `staff` was forced false whenever is_pdf was true --
+   which is exactly why a gap that was visible on the staff web preview was
+   invisible on the PDF Aaron actually downloads and reads in the venue.
+   Client renders still pass every field through client_safe in client
+   mode; internal content appears only when a staff route asked for it. #}
+{% set staff = is_staff_preview %}
+{% set gaps = document.content | unfilled_fields if staff else [] %}
 {% set content = document.content %}
 {% set ref = content._reference %}
 {% set client_name = (ref.get("client_name") or (booking.contact.name if booking.contact else None)) | person_name %}
@@ -385,7 +416,7 @@
       <td>
         <span class="k">Event Coordinator:</span> {{ venue_contact_name }}<br>
         <span class="k">Client:</span> {{ client_name or "—" }}{% if ref.get("client_phone") %} ({{ ref.client_phone }}){% endif %}<br>
-        <span class="k">Onsite Contact:</span> {{ (content.get("onsite_contact") | person_name) or client_name or "—" }}
+        <span class="k">Onsite Contact:</span> {# Never the client's name on the staff copy: an unfilled onsite contact that prints a name reads as a decision, and on the night that is the number somebody calls. #}{{ (content.get("onsite_contact") | person_name) or (none if staff else client_name) or "—" }}
       </td>
       <td class="right">
         <span class="k">Event Order:</span> EO-{{ booking.reference_code }}-v{{ document.version }}<br>
@@ -394,6 +425,8 @@
       </td>
     </tr>
   </table>
+
+  {{ unfilled_block(gaps) }}
 
   <table class="beo-band">
     <tr>
@@ -407,10 +440,13 @@
   <table class="beo-cols">
     <tr>
       <td class="col-left" width="50%">
-        {{ beo_left_column(content, false) }}
+        {# staff, not a hardcoded false: the client render passes false anyway
+           because is_staff_preview is unset, and hardcoding it here was the
+           second place the PDF was made blind to staff-facing markers. #}
+        {{ beo_left_column(content, staff) }}
       </td>
       <td class="col-right" width="50%">
-        {{ beo_right_column(content, false, document) }}
+        {{ beo_right_column(content, staff, document) }}
       </td>
     </tr>
   </table>
@@ -473,9 +509,10 @@
   </section>
   {% endfor %}
   {% else %}
+  {% set staff = is_staff_preview %}
+  {% set gaps = document.content | unfilled_fields if staff else [] %}
   {% set content = document.content %}
   {% set ref = content._reference %}
-  {% set staff = is_staff_preview and not is_pdf %}
   {% set client_name = (ref.get("client_name") or (booking.contact.name if booking.contact else None)) | person_name %}
 
   <div class="beo-header">
@@ -493,11 +530,13 @@
     </div>
   </div>
 
+  {{ unfilled_block(gaps) }}
+
   <div class="beo-meta">
     <div>
       <span class="k">Event Coordinator:</span> {{ venue_contact_name }}<br>
       <span class="k">Client:</span> {{ client_name or "—" }}{% if ref.get("client_phone") and not is_floor_app %} ({{ ref.client_phone }}){% endif %}<br>
-      <span class="k">Onsite Contact:</span> {{ (content.get("onsite_contact") | person_name) or client_name or "—" }}
+      <span class="k">Onsite Contact:</span> {# Never the client's name on the staff copy: an unfilled onsite contact that prints a name reads as a decision, and on the night that is the number somebody calls. #}{{ (content.get("onsite_contact") | person_name) or (none if staff else client_name) or "—" }}
     </div>
     <div class="right">
       <span class="k">Event Order:</span> EO-{{ booking.reference_code }}-v{{ document.version }}<br>
