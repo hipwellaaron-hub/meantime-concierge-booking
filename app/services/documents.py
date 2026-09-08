@@ -108,6 +108,97 @@ def lock_current_for_update(db: Session, booking_id: uuid.UUID, doc_type: Docume
     )
 
 
+def is_mid_revision(db: Session, booking_id: uuid.UUID, doc_type: DocumentType) -> bool:
+    """Whether this booking's client is holding a link that no longer works.
+
+    True when the current version of `doc_type` is a DRAFT and an earlier
+    version was already sent: the public route gates on is_current, so the
+    link the client has 410s, and the replacement has not gone out yet.
+
+    QUERIED, not read off booking.documents. The relationship is only
+    correct on a freshly loaded booking, and this is a notice about a
+    client having no working link -- the one thing it must not do is fail
+    to appear because a caller happened to hold a stale collection. It cost
+    a test failure to find that out, which is the cheap way.
+    """
+    versions = list(
+        db.scalars(
+            select(Document).where(Document.booking_id == booking_id, Document.type == doc_type)
+        )
+    )
+    current = next((d for d in versions if d.is_current), None)
+    if current is None or current.status != DocumentStatus.draft:
+        return False
+    return any(
+        d.status in (DocumentStatus.sent, DocumentStatus.viewed, DocumentStatus.signed)
+        for d in versions
+        if not d.is_current
+    )
+
+
+REVISED_NOTE = "copied forward from the sent version and reopened for editing"
+
+
+def revise(db: Session, document: Document, *, actor: str) -> Document:
+    """Reopen a SENT document for editing by copying it forward.
+
+    The edit form refuses anything that is not a draft, so until now the
+    only way to change one word of a sent Event Order was Regenerate --
+    which rebuilds from the booking and destroys whatever was typed. That
+    is exactly how HAM-20260912-2R11Q lost a page of hand-entered content
+    on 2026-09-07: saved at 23:41, regenerated at 23:52, gone.
+
+    This copies the CURRENT content forward into a new draft. Nothing is
+    rebuilt, so there is nothing to destroy -- losses() against a copy of
+    itself is empty by construction rather than by a guard doing its job.
+
+    What it costs the client is what Regenerate already costs them: their
+    link dies the moment a new version exists, because the public route
+    gates on is_current. It does NOT rewrite what they are holding
+    underneath them, which is the thing that would be unacceptable.
+
+    A SIGNED AGREEMENT is refused outright (Aaron's ruling, 2026-09-08): a
+    signed contract is the client's evidence of what they agreed to, and
+    changing one means a new agreement they sign again, not a quiet
+    supersession that un-signs the gate on a confirmed booking at 11pm.
+
+    Locked and re-read first, like every other write here that reads
+    content and then writes from it.
+
+    Not deep-copied. That looks like it should be needed -- content is
+    nested JSONB and this module's other writers all copy -- but
+    create_new_version commits and refreshes, so the new version's content
+    is reloaded from its own row and shares nothing with this one either
+    way. I wrote the deepcopy, mutation-checked it, and it survived because
+    there was nothing behind it.
+    """
+    db.refresh(document, with_for_update=True)
+    if document.is_legacy:
+        raise ValueError(
+            f"the current {document.type.value} is a legacy record of what was signed in iVvy -- "
+            "it can't be revised; the signed original stands"
+        )
+    if document.type == DocumentType.agreement and document.status == DocumentStatus.signed:
+        raise ValueError(
+            "this agreement has been signed -- revising it would supersede the contract the client "
+            "agreed to. Issue a new agreement for them to sign instead."
+        )
+    if document.status not in (DocumentStatus.sent, DocumentStatus.viewed):
+        raise ValueError(
+            f"only a sent {document.type.value} needs revising -- this one is "
+            f"{document.status.value}"
+            + (" and can be edited directly" if document.status == DocumentStatus.draft else "")
+        )
+    return create_new_version(
+        db,
+        document.booking,
+        document.type,
+        dict(document.content),
+        actor=actor,
+        revised_note=REVISED_NOTE,
+    )
+
+
 def content_fingerprint(content: object, fields: Iterable[str]) -> str:
     """Identifies the values an edit form was rendered from.
 
@@ -196,13 +287,21 @@ def create_new_version(
     *,
     actor: str,
     regenerated_note: str | None = None,
+    revised_note: str | None = None,
 ) -> Document:
     """`regenerated_note` records what a human chose to keep and what they
     let go when this version replaced one carrying their own words. It is
     written in the SAME transaction as the version: committing the version
     first and the note afterwards would let a crash in between leave the
     values discarded with no record of the decision -- and that record is
-    Aaron's stated measure of whether the feature is working."""
+    Aaron's stated measure of whether the feature is working.
+
+    `revised_note` is the other shape: this version was COPIED from the one
+    before it rather than rebuilt from the booking. The trail has to tell
+    the two apart -- `document_created` alone cannot, and
+    `document_regenerated` is only written when a regenerate actually lost
+    something, so a revise would otherwise be indistinguishable from a
+    regenerate that happened to lose nothing."""
     if booking.parent_booking_id is not None:
         # A linked child (see app.services.booking.add_linked_space) is
         # just a second room for the parent's event -- its own documents
@@ -253,6 +352,17 @@ def create_new_version(
                 field_name=f"{doc_type.value}_version",
                 old_value=str(previous.version) if previous else None,
                 new_value=truncate(f"v{next_version}: {regenerated_note}", 500),
+                actor=actor,
+            )
+        )
+    if revised_note is not None:
+        db.add(
+            BookingEvent(
+                booking_id=booking.id,
+                event_type="document_revised",
+                field_name=f"{doc_type.value}_version",
+                old_value=str(previous.version) if previous else None,
+                new_value=truncate(f"v{next_version}: {revised_note}", 500),
                 actor=actor,
             )
         )

@@ -295,8 +295,14 @@ def check_imminent_without_beo(bookings, *, today: dt.date) -> list[Finding]:
             continue
         if b.status not in (BookingStatus.confirmed, BookingStatus.tentative):
             continue
+        # "Has an Event Order ever been ISSUED", not "is the current one
+        # sent". A revise (and a regenerate) leaves a draft current while
+        # earlier versions stay sent, so gating on is_current made Triage
+        # say "no Event Order has been issued" about a booking whose client
+        # had one in their inbox. A false sentence on Triage is how staff
+        # learn to stop reading Triage.
         has_beo = any(
-            d.type == DocumentType.beo and d.is_current
+            d.type == DocumentType.beo
             and d.status in (DocumentStatus.sent, DocumentStatus.viewed, DocumentStatus.signed)
             for d in b.documents
         )

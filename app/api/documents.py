@@ -40,13 +40,38 @@ def _is_live(document) -> bool:
     return document.booking.status not in VOIDED_STATUSES and document.is_current
 
 
-def _unavailable_response(request: Request, document) -> HTMLResponse:
+BEING_UPDATED_MESSAGE = (
+    "This document is being updated. Please check back shortly -- you'll be sent a new link "
+    "once it's ready."
+)
+NO_LONGER_ACTIVE_MESSAGE = "This link is no longer active. Get in touch and we'll help directly."
+
+
+def _being_updated(db: Session, document) -> bool:
+    """Whether the replacement for this link is still a DRAFT.
+
+    Between a staff member pressing Revise and pressing Send, the client
+    holds a link to a superseded version and there is no new one to give
+    them yet. Telling them "this link is no longer active" is true and
+    useless: nothing has gone wrong and they do not need to ring anybody.
+    Most of these windows are minutes; the ones that are not are exactly
+    the ones where a client should be told to wait rather than to chase
+    (Aaron's ruling, 2026-09-08).
+
+    A version superseded by another SENT one is the other case -- they were
+    given a newer link -- and keeps the ordinary message.
+    """
+    current = documents_service.get_current(db, document.booking_id, document.type)
+    return current is not None and current.status == DocumentStatus.draft
+
+
+def _unavailable_response(request: Request, document, *, being_updated: bool = False) -> HTMLResponse:
     return templates.TemplateResponse(
         request, "link_unavailable.html",
         {
             "booking": document.booking,
             "contact_email": policy.VENUE_CONTACT_EMAIL,
-            "message": "This link is no longer active. Get in touch and we'll help directly.",
+            "message": BEING_UPDATED_MESSAGE if being_updated else NO_LONGER_ACTIVE_MESSAGE,
         },
         status_code=410,
     )
@@ -79,7 +104,7 @@ def view_document(token: str, request: Request, db: Session = Depends(get_db)):
         # admin instead.
         raise HTTPException(status_code=404, detail="Document not found")
     if not _is_live(document):
-        return _unavailable_response(request, document)
+        return _unavailable_response(request, document, being_updated=_being_updated(db, document))
 
     document = documents_service.record_view(db, document)
 
@@ -101,7 +126,7 @@ def download_document_pdf(token: str, request: Request, db: Session = Depends(ge
         # admin instead.
         raise HTTPException(status_code=404, detail="Document not found")
     if not _is_live(document):
-        return _unavailable_response(request, document)
+        return _unavailable_response(request, document, being_updated=_being_updated(db, document))
 
     html = templates.get_template("document.html").render(document=document, booking=document.booking, is_pdf=True)
     pdf_bytes = render_html_to_pdf(html)

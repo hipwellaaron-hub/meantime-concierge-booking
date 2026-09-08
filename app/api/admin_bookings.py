@@ -370,6 +370,16 @@ def booking_detail(
             touches_differ=booking.first_touch_attribution != booking.last_touch_attribution,
             conversion_dispatches=list(booking.conversion_dispatches),
             legacy_mismatches=legacy_documents.legacy_mismatches(booking),
+            # Which document types are mid-revision: a draft is current and
+            # an earlier version of the same type has already been sent, so
+            # the client is holding a link that 410s until this one goes
+            # out. Aaron: "I'd rather see at a glance that a client
+            # currently has no link."
+            awaiting_resend={
+                doc_type.value
+                for doc_type in DocumentType
+                if documents_service.is_mid_revision(db, booking.id, doc_type)
+            },
             # Prefilled into the "create final invoice" form so the hand
             # path and the wizard path date an invoice the same way. Staff
             # can still type over it -- the route takes whatever is posted.
@@ -681,6 +691,36 @@ def generate_document_confirmed(
         regenerated_note=document_regeneration.summarise(losses, keep_fields) if losses else None,
     )
     return _redirect_to_detail(booking_id)
+
+
+@router.post("/{booking_id}/documents/{document_id}/revise", dependencies=[Depends(require_csrf)])
+def revise_document(
+    booking_id: uuid.UUID,
+    document_id: uuid.UUID,
+    request: Request,
+    db: Session = Depends(get_db),
+    staff: StaffUser = Depends(require_staff),
+):
+    """Reopen a sent document for editing by copying it forward.
+
+    The alternative was Regenerate, which rebuilds from the booking and
+    destroys hand-entered content -- the reason every other guard in this
+    module exists. Nothing is rebuilt here, so nothing can be lost.
+
+    Redirects to the new draft's edit form rather than the booking page:
+    somebody clicking Revise is mid-sentence, not browsing.
+    """
+    booking = _get_booking_or_404(db, booking_id)
+    document = db.get(Document, document_id)
+    if document is None or document.booking_id != booking_id:
+        raise HTTPException(status_code=404, detail="Document not found on this booking")
+    try:
+        draft = documents_service.revise(db, document, actor=_actor(staff))
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return RedirectResponse(
+        url=f"/admin/bookings/{booking.id}/documents/{draft.id}/edit", status_code=303
+    )
 
 
 @router.post("/{booking_id}/documents/{document_id}/send", dependencies=[Depends(require_csrf)])
