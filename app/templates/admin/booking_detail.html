@@ -333,12 +333,19 @@
           </form>
           {% if "agreement" in awaiting_resend %}
           {#
-            The window between Revise and Send: the client's old link 410s
-            and the new one is not out yet. Said plainly here because it is
-            invisible otherwise -- the row just reads "draft" as though
-            nothing had ever been sent.
+            An earlier version went out and the current one is a draft, so
+            the client's old link 410s and the new one is not out yet. Said
+            plainly because it is invisible otherwise -- the row just reads
+            "draft" as though nothing had ever been sent.
+
+            Worded from the STATE, not from an action. Revise produces it
+            and so does Regenerate, and is_mid_revision cannot tell them
+            apart -- so a badge that said "Revised" named the wrong button
+            after a regenerate, and those two differ in exactly the way
+            this whole area is about. Aaron asked to "see at a glance that
+            a client currently has no link", which is the state.
           #}
-          <div class="badge wine" style="display:block; margin-bottom:6px;">Revised &mdash; the client has no working link until you send this</div>
+          <div class="badge wine" style="display:block; margin-bottom:6px;">The client has no working link until you send this</div>
           {% endif %}
           {% if current_agreement and current_agreement.status.value == "draft" %}
           <form class="inline" method="post" action="/admin/bookings/{{ booking.id }}/documents/{{ current_agreement.id }}/send">
@@ -390,12 +397,19 @@
           </form>
           {% if "beo" in awaiting_resend %}
           {#
-            The window between Revise and Send: the client's old link 410s
-            and the new one is not out yet. Said plainly here because it is
-            invisible otherwise -- the row just reads "draft" as though
-            nothing had ever been sent.
+            An earlier version went out and the current one is a draft, so
+            the client's old link 410s and the new one is not out yet. Said
+            plainly because it is invisible otherwise -- the row just reads
+            "draft" as though nothing had ever been sent.
+
+            Worded from the STATE, not from an action. Revise produces it
+            and so does Regenerate, and is_mid_revision cannot tell them
+            apart -- so a badge that said "Revised" named the wrong button
+            after a regenerate, and those two differ in exactly the way
+            this whole area is about. Aaron asked to "see at a glance that
+            a client currently has no link", which is the state.
           #}
-          <div class="badge wine" style="display:block; margin-bottom:6px;">Revised &mdash; the client has no working link until you send this</div>
+          <div class="badge wine" style="display:block; margin-bottom:6px;">The client has no working link until you send this</div>
           {% endif %}
           {% if current_beo and current_beo.status.value == "draft" %}
           <form class="inline" method="post" action="/admin/bookings/{{ booking.id }}/documents/{{ current_beo.id }}/send">

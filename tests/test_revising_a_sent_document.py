@@ -311,6 +311,27 @@ def test_the_booking_page_says_the_client_has_no_working_link(admin_client, db, 
     assert "no working link until you send this" in after.text
 
 
+def test_the_notice_does_not_name_a_button_that_was_not_pressed(admin_client, db, loft):
+    """Regenerate leaves the same state Revise does -- an earlier version
+    sent, the current one a draft -- and is_mid_revision cannot tell them
+    apart. A badge reading "Revised" therefore named the wrong button after
+    a regenerate, and those two differ in exactly the way this whole area
+    is about: one cannot lose hand-entered content and the other can."""
+    booking = _booking(db, loft, "Regenerated Not Revised")
+    sent = _sent_beo(db, booking, room_layout_notes=TYPED)
+    # A plain regenerate: rebuilt from the booking, not copied forward.
+    documents_service.create_new_version(
+        db, booking, DocumentType.beo, generate_beo_content(booking), actor="staff:test"
+    )
+    assert documents_service.is_mid_revision(db, booking.id, DocumentType.beo) is True
+
+    page = admin_client.get(f"/admin/bookings/{booking.id}")
+
+    assert "no working link" in page.text, "the client has no link and the page should say so"
+    notice = page.text[page.text.index("no working link") - 200:page.text.index("no working link")]
+    assert "Revised" not in notice, "a regenerate was reported as a revise"
+
+
 def test_the_notice_does_not_read_every_version_of_the_document(db, loft):
     """It runs on every booking-page render, once per document type. Asking
     for whole Document rows pulled the JSONB content of every version ever
