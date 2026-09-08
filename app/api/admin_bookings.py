@@ -1208,6 +1208,52 @@ def review_beo_proposal(
     return _redirect_to_detail(booking_id)
 
 
+# Sentinel for _refresh_draft_beo_timeline: rebuild the vendor snapshot from
+# the booking rather than keeping the one already stored.
+_REBUILD_VENDORS = object()
+
+
+def _refresh_draft_beo_timeline(db: Session, booking, *, actor: str, vendors=None) -> None:
+    """Re-say the run sheet after confirming something it reports.
+
+    Setup access and a vendor's bump-in both print as "requested, pending
+    confirmation" until staff confirm them, and both are composed into the
+    stored Event Order at generation. Confirming the fact without
+    re-composing the document leaves the document saying pending forever --
+    which is why HAM-20260911-AKPSO and HAM-20260912-2R11Q still read
+    "requested, pending confirmation" after Aaron had confirmed the times to
+    both clients in writing. The bump-in handler always did this refresh;
+    the setup-access handler never did, and nothing made that asymmetry
+    visible. One function now, so the next confirm-style action cannot
+    quietly skip it.
+
+    A sent or signed document is NEVER mutated -- staff regenerate, per the
+    existing document rules -- so this is a no-op on anything but a draft.
+    An already-sent Event Order goes on saying "requested" until it is
+    regenerated. That is the correct answer for a document a client already
+    holds, not a gap in this function.
+
+    `vendors` defaults to keeping whatever snapshot is stored: confirming
+    setup access should change the setup access line and nothing else. Pass
+    _REBUILD_VENDORS to rebuild it from the booking, which is what
+    confirming a bump-in needs.
+
+    No authored_fields on the write: both keys are machine-derived, and
+    recording them as a person's words would stop the next regenerate
+    rebuilding the very values this refresh exists to keep current.
+    """
+    if booking is None:
+        return
+    current_beo = documents_service.get_current(db, booking.id, DocumentType.beo)
+    if current_beo is None or current_beo.status != DocumentStatus.draft:
+        return
+    content = dict(current_beo.content)
+    if vendors is _REBUILD_VENDORS:
+        content["vendors"] = build_vendor_snapshot(booking.vendors)
+    content["event_timeline"] = build_event_timeline(booking, content.get("vendors"))
+    documents_service.update_content(db, current_beo, content, actor=actor)
+
+
 @router.post("/{booking_id}/vendors/{vendor_id}/confirm-bump-in", dependencies=[Depends(require_csrf)])
 def confirm_vendor_bump_in(
     booking_id: uuid.UUID,
@@ -1237,20 +1283,9 @@ def confirm_vendor_bump_in(
     )
     db.commit()
 
-    # A current DRAFT BEO gets its stored vendor snapshot refreshed so the
-    # document stops saying "requested". A sent/signed document is never
-    # mutated -- staff regenerate, per the existing document rules.
-    current_beo = documents_service.get_current(db, booking_id, DocumentType.beo)
-    if current_beo is not None and current_beo.status == DocumentStatus.draft:
-        booking = db.get(Booking, booking_id)
-        content = dict(current_beo.content)
-        snapshot = build_vendor_snapshot(booking.vendors)
-        content["vendors"] = snapshot
-        content["event_timeline"] = build_event_timeline(booking, snapshot)
-        # No authored_fields: both keys are machine-derived, and recording
-        # them as a person's words would stop the next regenerate rebuilding
-        # the very snapshot this refresh exists to keep current.
-        documents_service.update_content(db, current_beo, content, actor=_actor(staff))
+    _refresh_draft_beo_timeline(
+        db, db.get(Booking, booking_id), actor=_actor(staff), vendors=_REBUILD_VENDORS
+    )
     return _redirect_to_detail(booking_id)
 
 
@@ -1579,6 +1614,10 @@ def confirm_setup_access(
         booking_service.confirm_setup_access(db, booking, actor=_actor(staff))
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    # Confirming the booking fact is only half the job: the Event Order
+    # composed "requested, pending confirmation" into its run sheet at
+    # generation, and without this it goes on saying so.
+    _refresh_draft_beo_timeline(db, booking, actor=_actor(staff))
     return _redirect_to_detail(booking_id)
 
 
