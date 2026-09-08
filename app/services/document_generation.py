@@ -562,7 +562,10 @@ def generate_beo_content(
         "_reference": {
             "reference_code": booking.reference_code,
             "event_name": booking.event_name,
-            "space_name": booking.space.name,
+            # Both rooms -- see Booking.all_space_names. Frozen here for
+            # the record; the band renders it live so an already-sent
+            # document is not stuck naming one room.
+            "space_name": booking.all_space_names,
             "adult_count": booking.adult_count,
             "child_count": booking.child_count,
             # Display-cased: a client who typed "ruby hipwell" into the
@@ -586,7 +589,10 @@ def generate_agreement_content(booking: Booking) -> dict:
     terms_sections = _terms_sections(booking)
     return {
         "venue": policy.VENUE_TRADING_NAME,
-        "space_name": space.name,
+        # Both rooms. The agreement header is frozen at generation on
+        # purpose (a signed contract reflects what was agreed), so
+        # unlike the Event Order band this has to be right HERE.
+        "space_name": booking.all_space_names,
         "event_name": booking.event_name,
         "event_date": _format_date(booking.event_date),
         "start_time": _format_time(booking.start_time),

@@ -400,7 +400,7 @@
       <td>{{ content.event_timeline.start_time_display or content.event_timeline.start_time }} – {{ content.event_timeline.end_time_display or content.event_timeline.end_time }}</td>
       <td>{{ booking.event_name }}</td>
       <td>Attendees: {{ ref.adult_count + ref.child_count }}</td>
-      <td>{{ ref.space_name or booking.space.name }}</td>
+      <td>{{ booking.all_space_names }}</td>
     </tr>
   </table>
 
@@ -510,7 +510,7 @@
     <span>{{ content.event_timeline.start_time_display or content.event_timeline.start_time }} – {{ content.event_timeline.end_time_display or content.event_timeline.end_time }}</span>
     <span>{{ booking.event_name }}</span>
     <span>Attendees: {{ ref.adult_count + ref.child_count }}</span>
-    <span>{{ ref.space_name or booking.space.name }}</span>
+    <span>{{ booking.all_space_names }}</span>
   </div>
 
   <div class="beo-cols">

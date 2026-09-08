@@ -382,6 +382,40 @@ class Booking(Base):
         remote_side=[id], back_populates="linked_bookings"
     )
     linked_bookings: Mapped[list["Booking"]] = relationship(back_populates="parent_booking")
+
+    @property
+    def all_space_names(self) -> str:
+        """Every room this event actually occupies, parent room first.
+
+        A linked second room (see app.services.booking.add_linked_space) is
+        the SAME event in another space, so anything printing "the room" on
+        a document has to print this and never `space.name`. An Event Order
+        headed with one room on a two-room night tells the floor team the
+        other level is not theirs -- proved live on HAM-20260912-2R11Q, a
+        121-guest Saturday across The Mezzanine and The Loft whose Event
+        Order header read "The Mezzanine" while its body referred to both.
+        The floor board already prints both (staff_app._booking_payload),
+        so the document was contradicting the board staff work from.
+
+        " + " is the separator the board already uses, so the two finally
+        read the same string.
+
+        Cancelled, dead and archived children drop out. Deliberately NOT
+        TERMINAL_STATUSES, which includes `completed` -- a finished
+        two-room event's Event Order must still name both rooms. Guest
+        counts are NOT summed anywhere near this: a linked child carries
+        its own pax, and adding them would print a number nobody booked.
+        """
+        root = self.parent_booking or self
+        names = [root.space.name] if root.space else []
+        names += [
+            child.space.name
+            for child in root.linked_bookings
+            if child.space
+            and child.status
+            not in (BookingStatus.cancelled, BookingStatus.dead, BookingStatus.archived)
+        ]
+        return " + ".join(names)
     # Proposed Event Order values awaiting approval, newest last. Nothing
     # here has touched the document: see app.services.beo_proposals.
     beo_proposals: Mapped[list["BeoProposal"]] = relationship(
