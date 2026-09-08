@@ -267,6 +267,32 @@ def create_new_version(
     return document
 
 
+def _fields_this_save_changed(stored: object, incoming: dict) -> str | None:
+    """The names of the content keys a save actually changed, for the audit.
+
+    The trail recorded THAT a version was hand-edited and never WHICH fields
+    it touched, so "did that edit change the food order?" could not be
+    answered from the log at all. On 2026-09-08 it had to be inferred by
+    comparing a document's food total against an invoice cut before the
+    edit -- arithmetic, on a question the log should simply answer.
+
+    differing_fields, not changed_fields: writing the generator's own
+    placeholder over somebody's real text IS a change worth recording, and
+    changed_fields deliberately skips it.
+
+    `_authored` never appears, and this does not filter for it: every name
+    goes through content_authorship._names_to_write, which refuses anything
+    starting with an underscore. A second guard here would be one nothing
+    can break -- I wrote one, mutation-checked it, and it survived because
+    there was nothing behind it.
+    """
+    before = stored if isinstance(stored, dict) else {}
+    changed = content_authorship.differing_fields(
+        before, incoming, candidates=set(before) | set(incoming)
+    )
+    return truncate(", ".join(sorted(changed)), 500) or None
+
+
 def update_content(
     db: Session,
     document: Document,
@@ -310,6 +336,8 @@ def update_content(
     written = content_authorship.changed_fields(
         document.content, content, candidates=authored_fields, placeholders=placeholders
     )
+    # Read BEFORE the content is replaced, and before `record` rewrites it.
+    changed = _fields_this_save_changed(document.content, content)
     # Recorded LAST and assigned, per the module's caller rules: `record`
     # deep-copies, so what it returns is a value SQLAlchemy compares
     # unequal to the one it loaded, and the UPDATE is actually emitted.
@@ -319,6 +347,12 @@ def update_content(
             booking_id=document.booking_id,
             event_type="document_edited",
             field_name=f"{document.type.value}_version",
+            # WHICH fields moved. new_value stays the version number and
+            # field_name stays "<type>_version": three readers match on
+            # exactly those two (document_regeneration.was_hand_edited and
+            # _last_hand_edit_at, and the production audit), so this goes in
+            # the one column document_edited leaves empty.
+            old_value=changed,
             new_value=str(document.version),
             actor=actor,
         )
@@ -369,6 +403,9 @@ def update_content_fields(
     written = content_authorship.changed_fields(
         content, changes, candidates=authored_fields, placeholders=placeholders
     )
+    # Against `changes` alone: this call merges specific keys, so the keys it
+    # did not touch are not part of what it changed.
+    changed = _fields_this_save_changed(content, changes)
     content.update(changes)
     document.content = content_authorship.record(content, written)
     db.add(
@@ -376,6 +413,7 @@ def update_content_fields(
             booking_id=document.booking_id,
             event_type=event_type,
             field_name=f"{document.type.value}_version",
+            old_value=changed,
             new_value=str(document.version),
             actor=actor,
         )
