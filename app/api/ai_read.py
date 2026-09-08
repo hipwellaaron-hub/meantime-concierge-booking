@@ -23,6 +23,7 @@ from app.database import get_db
 from app.models import Booking, Contact, MenuItem, Space
 from app.models.document import DocumentStatus, DocumentType
 from app.models.invoice import InvoiceStatus, InvoiceType
+from app.services import documents as documents_service
 from app.services import ai_availability, ai_pipeline, policy
 from app.services import catalogue as catalogue_service
 
@@ -530,6 +531,16 @@ def booking_events(
                 "event_type": e.event_type,
                 "field_name": e.field_name,
                 "old_value": e.old_value,
+                # For a document edit and an applied proposal, old_value is
+                # not a previous value at all -- it is the list of content
+                # keys that save changed. The admin page renders it beside
+                # the field for that reason; a reader consuming JSON has no
+                # column heading to correct it, so the meaning is named.
+                **(
+                    {"changed_fields": [f for f in (e.old_value or "").split(", ") if f]}
+                    if e.event_type in documents_service.FIELD_LIST_IN_OLD_VALUE
+                    else {}
+                ),
                 "new_value": e.new_value,
                 "actor": e.actor,
             }

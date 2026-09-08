@@ -445,6 +445,10 @@ def create_new_version(
 # those names into 3. That is the screen used to reconstruct exactly the
 # incidents this record exists to explain, so it is the last one that may
 # read wrong.
+# Deliberately not listed: beo_proposal_created and beo_proposal_blocked put
+# the AI's SOURCE TEXT in old_value (field names go in field_name), which is
+# a third shape again, not a field list. Naming them here would make this
+# constant lie about what it selects; their display is a separate question.
 FIELD_LIST_IN_OLD_VALUE = ("document_edited", "beo_proposal_applied")
 
 

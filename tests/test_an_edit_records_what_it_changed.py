@@ -23,6 +23,7 @@ from app.services import document_regeneration as dr
 from app.services import documents as documents_service
 from app.services.booking import create_booking
 from app.services.document_generation import generate_beo_content
+from tests.test_ai_access import ai_client  # noqa: F401  -- the AI credential fixture
 
 
 def _booking(db, space, name="Edit Audit"):
@@ -82,6 +83,58 @@ def test_the_audit_table_does_not_print_the_field_list_under_old(admin_client, d
     assert "dietaries" in cells[2], f"the changed field is not named beside the version: {cells}"
     assert cells[3] == "", f'a field list was printed under "Old": {cells}'
     assert cells[4] == str(document.version)
+
+
+def test_an_applied_proposal_is_covered_too_not_just_an_edit(admin_client, db, loft):
+    """The second half of FIELD_LIST_IN_OLD_VALUE had nothing behind it:
+    deleting "beo_proposal_applied" from the tuple left every test green.
+    update_content_fields writes the same field list, so the same column
+    misreads it -- and an applied proposal is a change to a client-facing
+    document made by an AI suggestion a human approved, which is the last
+    row anybody should have to squint at."""
+    import re
+
+    booking = _booking(db, loft, "Applied Proposal Audit")
+    document = _beo(db, booking)
+    documents_service.update_content_fields(
+        db, document, {"dietaries": "2x vegetarian, 1x coeliac."},
+        actor="staff:aaron", authored_fields=dr.PROTECTED_FIELD_NAMES,
+        event_type="beo_proposal_applied",
+    )
+
+    page = admin_client.get(f"/admin/bookings/{booking.id}")
+
+    row = re.search(r"<tr>((?:(?!</tr>).)*?beo_proposal_applied(?:(?!</tr>).)*)</tr>", page.text, re.S)
+    assert row is not None, "no beo_proposal_applied row on the audit table"
+    cells = [re.sub(r"<[^>]+>", "", cell).strip() for cell in re.findall(r"<td[^>]*>(.*?)</td>", row.group(1), re.S)]
+    assert "dietaries" in cells[2], f"the changed field is not named beside the version: {cells}"
+    assert cells[3] == "", f'a field list was printed under "Old": {cells}'
+
+
+def test_the_ai_reader_is_told_what_the_field_list_is(ai_client, db, loft):
+    """The admin page has a column heading to correct the meaning. A reader
+    consuming the JSON has nothing, so the same value arrives under a key
+    called old_value and reads as a previous value. Through the real
+    endpoint, because the point is what the consumer receives."""
+    booking = _booking(db, loft, "AI Reader Audit")
+    document = _beo(db, booking)
+    content = dict(document.content)
+    content["dietaries"] = "1x severe nut allergy (table 4)."
+    content["room_layout_notes"] = "Rounds of 8."
+    documents_service.update_content(
+        db, document, content, actor="staff:aaron", authored_fields=dr.PROTECTED_FIELD_NAMES
+    )
+
+    resp = ai_client.get(f"/api/ai/bookings/{booking.id}/events")
+
+    assert resp.status_code == 200, resp.text
+    edited = [e for e in resp.json()["events"] if e["event_type"] == "document_edited"]
+    assert len(edited) == 1, resp.json()["events"]
+    assert edited[0]["changed_fields"] == ["dietaries", "room_layout_notes"]
+    # Every other event still has no such key, so nothing reads it as one.
+    others = [e for e in resp.json()["events"] if e["event_type"] != "document_edited"]
+    assert others, "there should be other events to contrast with"
+    assert all("changed_fields" not in e for e in others)
 
 
 def test_an_edit_names_the_field_it_changed(db, loft):
