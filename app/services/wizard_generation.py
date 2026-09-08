@@ -427,13 +427,30 @@ def generate_beo_and_invoice(db: Session, session: WizardSession, *, actor: str)
         # produced. Compared value by value rather than as "authored minus
         # kept", because a field the wizard rebuilds identically still holds
         # their words.
-        beo_content = content_authorship.carry(beo_content, previous=current.content)
+        #
+        # Read the SAME way losses() and apply_choices() just read it. A
+        # legacy Event Order's merged music value has been promoted into
+        # `music` above, and the record renamed with it; carrying from the
+        # RAW content would bring the old name forward instead, and the
+        # forget below would then drop it for a key that is now None --
+        # leaving the person's words sitting in `music` under an empty
+        # record, which says nobody wrote anything here.
+        #
+        # One reading, used for all three, so the question, the answer and
+        # the record agree. Only the carry is observable: once the record
+        # names `music`, forgetting `music_entertainment` is a no-op, so
+        # the basis the forget compares against cannot be caught by a test
+        # (mutation-checked -- reverting those two survives). They stay on
+        # the same reading because two bases for one comparison is how the
+        # original defect got in, not because a test would notice.
+        previous_content = document_regeneration.read_music_as_split(current.content or {})
+        beo_content = content_authorship.carry(beo_content, previous=previous_content)
         beo_content = content_authorship.forget(
             beo_content,
             content_authorship.differing_fields(
-                current.content,
+                previous_content,
                 beo_content,
-                candidates=content_authorship.authored(current.content),
+                candidates=content_authorship.authored(previous_content),
                 placeholders=document_regeneration.GENERATED_PLACEHOLDERS,
             ),
         )

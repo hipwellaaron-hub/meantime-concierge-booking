@@ -118,7 +118,7 @@ GENERATED_PLACEHOLDERS = frozenset({
 })
 
 
-def _read_music_as_split(content: dict) -> dict:
+def read_music_as_split(content: dict) -> dict:
     """Content with a legacy merged music value read as `music`.
 
     The Event Order prints one Music section, `music or
@@ -134,11 +134,31 @@ def _read_music_as_split(content: dict) -> dict:
     the other value. Half a booking's entertainment, lost with three
     separate assurances that it had not been.
 
-    No companion is needed to go with it. The template prefers `music`, a
-    kept `music` is non-empty by definition, and generated content only
-    ever puts None or the [REVIEW] prompt in the merged field -- so
-    whatever is left there afterwards cannot print and cannot be mistaken
-    for somebody's words on the next pass.
+    THE RECORD TRAVELS WITH THE VALUE. If the authorship record named
+    `music_entertainment`, the promoted content records `music` and
+    forgets the old name -- a RENAME, never a new claim. Silence stays
+    silence: content with no record still has none afterwards, and a
+    document nobody has stamped is not stamped here.
+
+    Without it the words arrive somewhere the record does not describe,
+    and the next writer drops the name for a key that is now empty. Proved
+    through the client wizard: a legacy Event Order whose merged field was
+    recorded as a person's came out with the words in `music` and
+    `_authored` EMPTY -- has_record True, authored() empty, which is this
+    module's positive encoding for "nothing here is a person's". The same
+    document's outstanding items said "Music kept from the previous Event
+    Order". The record asserted the opposite of the note beside it.
+
+    The staff edit form already reaches the same answer from the other
+    direction: it prefills the Music box from `music or
+    music_entertainment`, saves the value into `music`, and records
+    `music`. This is the regenerate side agreeing with it.
+
+    No companion field is needed to go with the value. The template
+    prefers `music`, a kept `music` is non-empty by definition, and
+    generated content only ever puts None or the [REVIEW] prompt in the
+    merged field -- so whatever is left there afterwards cannot print and
+    cannot be mistaken for somebody's words on the next pass.
 
     Read here rather than fixed in the table because the shapes are not
     equivalent: only the legacy spelling is rewritten, and only when it is
@@ -152,7 +172,12 @@ def _read_music_as_split(content: dict) -> dict:
         return content
     if not legacy.strip() or legacy.lstrip().startswith(REVIEW):
         return content
-    return {**content, "music": legacy, "music_entertainment": None}
+    promoted = {**content, "music": legacy, "music_entertainment": None}
+    if "music_entertainment" in content_authorship.authored(content):
+        promoted = content_authorship.forget(
+            content_authorship.record(promoted, ["music"]), ["music_entertainment"]
+        )
+    return promoted
 
 
 def _is_disposable(rendered: str) -> bool:
@@ -362,7 +387,7 @@ def losses(db: Session, document: Document | None, fresh: dict) -> list[ContentL
     """
     if document is None:
         return []
-    current_content = _read_music_as_split(document.content or {})
+    current_content = read_music_as_split(document.content or {})
     approved = _approved_values(db, document.booking_id)
     # One query, not one per field. A hand-edit after an approval makes the
     # approval badge unprovable for every field, because hand-edits are
@@ -461,7 +486,7 @@ def apply_choices(fresh: dict, document: Document, keep_fields: set[str]) -> dic
     content = dict(fresh)
     # The same reading the question was asked about, or a kept answer
     # writes back something the person was never shown.
-    current_content = _read_music_as_split(document.content or {})
+    current_content = read_music_as_split(document.content or {})
     for name in keep_fields:
         spec = _BY_NAME.get(name)
         if spec is None:

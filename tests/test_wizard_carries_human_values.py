@@ -274,3 +274,115 @@ def test_the_current_document_is_locked_before_it_is_read(db, loft, menu_items, 
 
     assert response.status_code == 200, response.text
     assert locked, "the current Event Order was read without FOR UPDATE"
+
+
+# --- the same claim for the field with two spellings ---------------------------
+#
+# The Event Order prints ONE Music section (`music or music_entertainment`),
+# so d7b2fbf reads a legacy document's merged value as `music` before both
+# the comparison and the write. The words then arrive on a key the record
+# does not describe -- and the very next line dropped the old name for a key
+# that is now empty, leaving the words with an EMPTY record: has_record True,
+# authored() empty, which is this module's positive encoding for "nothing
+# here is a person's". The wizard's own outstanding item said the opposite.
+#
+# These go through the client's HTTP route deliberately. A test of the
+# reading alone passes while the bug survives intact -- proved by mutation:
+# the rename in place, the wizard's comparison reverted, and the record is
+# empty again.
+
+LEGACY_MUSIC = "Live band 8pm-11pm, then DJ. Sound limiter briefed."
+
+
+def _booking_whose_music_is_in_the_old_spelling(db, loft, *, recorded=True, allergy=False):
+    """An Event Order written before the music field was split: the detail
+    lives in `music_entertainment`, there is no `music`, and a person wrote
+    it. `recorded=False` is the document that predates the record itself."""
+    booking = _make_booking(db, loft, event_date=dt.date(2027, 4, 10))
+    change_status(db, booking, BookingStatus.confirmed, actor="test")
+
+    content = generate_beo_content(booking)
+    content["music"] = None
+    content["music_entertainment"] = LEGACY_MUSIC
+    if allergy:
+        content["dietaries"] = ALLERGY
+    if recorded:
+        names = ["music_entertainment"] + (["dietaries"] if allergy else [])
+        content = ca.record(content, names)
+    documents_service.create_new_version(db, booking, DocumentType.beo, content, actor="staff:test")
+    return booking
+
+
+def _submit(db, booking, menu_items, client):
+    session = wizard_service.get_or_create_session(db, booking, actor="client")
+    _complete_all_steps(db, session, menu_items)
+    response = client.post(f"/w/{session.access_token}/review", json={})
+    assert response.status_code == 200, response.text
+    db.expire_all()
+    return response.json(), documents_service.get_current(db, booking.id, DocumentType.beo)
+
+
+def test_a_promoted_music_value_keeps_its_authorship(db, loft, menu_items, client):
+    """The words move to the key the Event Order prints, and the record
+    moves with them. Before this they arrived unrecorded, and the document
+    positively asserted that a person's words were the generator's."""
+    booking = _booking_whose_music_is_in_the_old_spelling(db, loft)
+
+    body, current = _submit(db, booking, menu_items, client)
+
+    assert current.content["music"] == LEGACY_MUSIC, "the words the section prints"
+    assert current.content["music_entertainment"] is None
+    assert ca.authored(current.content) == {"music"}, (
+        f"the record must describe where the words actually are: {current.content.get('_authored')}"
+    )
+    # ...and the note beside it says the same thing.
+    assert any("Music kept from the previous Event Order" in item for item in body["outstanding_items"]), (
+        body["outstanding_items"]
+    )
+
+
+def test_a_document_that_never_had_a_record_does_not_acquire_one(db, loft, menu_items, client):
+    """Silence stays silence. Moving a name is a rename, never a new claim
+    -- and conjuring one here would re-commit the reversal that got the
+    2026-09-07 design reverted: a document nobody stamped claiming a person
+    wrote it."""
+    booking = _booking_whose_music_is_in_the_old_spelling(db, loft, recorded=False)
+
+    _, current = _submit(db, booking, menu_items, client)
+
+    assert current.content["music"] == LEGACY_MUSIC, "the words are still kept"
+    assert ca.has_record(current.content) is False, (
+        f"a record was invented: {current.content.get('_authored')}"
+    )
+
+
+def test_the_rename_leaves_every_other_recorded_name_alone(db, loft, menu_items, client):
+    """A rename of one name must not be a rewrite of the record."""
+    booking = _booking_whose_music_is_in_the_old_spelling(db, loft, allergy=True)
+
+    _, current = _submit(db, booking, menu_items, client)
+
+    assert ca.authored(current.content) == {"music", "dietaries"}, current.content.get("_authored")
+    assert current.content["dietaries"] == ALLERGY
+    assert current.content["music"] == LEGACY_MUSIC
+
+
+def test_the_next_regenerate_still_sees_a_person_behind_the_words(db, loft, menu_items, client):
+    """Why the record matters here at all: it is what a later reader
+    consults to tell a person's words from the generator's."""
+    booking = _booking_whose_music_is_in_the_old_spelling(db, loft)
+    _, current = _submit(db, booking, menu_items, client)
+
+    assert "music" in ca.authored(current.content)
+
+    # And the guard still protects the value itself. Membership, not
+    # equality: a bare rebuild from the booking also loses every other
+    # answer the client gave through the wizard, so the row list is long
+    # and asserting it exactly would be asserting what I meant rather than
+    # what a regenerate does.
+    fresh = generate_beo_content(booking, music="Something else entirely.")
+    rows = {loss.field: loss for loss in dr.losses(db, current, fresh)}
+    assert "music" in rows, sorted(rows)
+    assert rows["music"].current == LEGACY_MUSIC
+    assert rows["music"].incoming == "Something else entirely."
+    assert "music_entertainment" not in rows, "still one question about one section"

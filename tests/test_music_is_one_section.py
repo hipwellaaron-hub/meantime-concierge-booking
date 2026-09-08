@@ -244,7 +244,7 @@ def test_the_confirmation_screen_shows_both_values(admin_client, db, loft):
     ],
 )
 def test_the_legacy_spelling_is_read_as_music(content, expected):
-    read = document_regeneration._read_music_as_split(content)
+    read = document_regeneration.read_music_as_split(content)
     assert read["music"] == expected
     assert read["music_entertainment"] is None
 
@@ -258,7 +258,7 @@ def test_what_is_not_a_persons_words_is_never_promoted(merged):
     all stay exactly where they are."""
     content = {"music": None, "music_entertainment": merged}
 
-    read = document_regeneration._read_music_as_split(content)
+    read = document_regeneration.read_music_as_split(content)
 
     assert read is content, f"{merged!r} was rewritten"
 
@@ -266,7 +266,7 @@ def test_what_is_not_a_persons_words_is_never_promoted(merged):
 def test_a_split_music_is_never_overwritten_by_the_older_spelling():
     content = {"music": "Chill playlist", "music_entertainment": LEGACY}
 
-    assert document_regeneration._read_music_as_split(content) is content
+    assert document_regeneration.read_music_as_split(content) is content
 
 
 def test_the_reading_does_not_mutate_the_document_content():
@@ -274,6 +274,6 @@ def test_the_reading_does_not_mutate_the_document_content():
     rewriting it in place would edit the row they were only inspecting."""
     content = {"music": None, "music_entertainment": LEGACY}
 
-    document_regeneration._read_music_as_split(content)
+    document_regeneration.read_music_as_split(content)
 
     assert content == {"music": None, "music_entertainment": LEGACY}
