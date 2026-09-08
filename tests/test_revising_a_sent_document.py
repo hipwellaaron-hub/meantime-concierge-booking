@@ -311,6 +311,34 @@ def test_the_booking_page_says_the_client_has_no_working_link(admin_client, db, 
     assert "no working link until you send this" in after.text
 
 
+def test_the_notice_does_not_read_every_version_of_the_document(db, loft):
+    """It runs on every booking-page render, once per document type. Asking
+    for whole Document rows pulled the JSONB content of every version ever
+    generated across the wire to answer a two-boolean question."""
+    from sqlalchemy import event
+
+    booking = _booking(db, loft, "Revise Cost")
+    sent = _sent_beo(db, booking, room_layout_notes=TYPED)
+    documents_service.revise(db, sent, actor="staff:aaron")
+
+    statements = []
+
+    def capture(conn, cursor, statement, parameters, context, executemany):
+        collapsed = " ".join(statement.split()).upper()
+        if collapsed.startswith("SELECT") and "DOCUMENTS" in collapsed:
+            statements.append(collapsed)
+
+    bind = db.get_bind()
+    event.listen(bind, "after_cursor_execute", capture)
+    try:
+        assert documents_service.is_mid_revision(db, booking.id, DocumentType.beo) is True
+    finally:
+        event.remove(bind, "after_cursor_execute", capture)
+
+    assert statements, "no query was emitted -- it read a cached collection instead"
+    assert not any("DOCUMENTS.CONTENT" in s for s in statements), statements
+
+
 def test_the_notice_goes_away_once_it_is_sent(admin_client, db, loft):
     booking = _booking(db, loft, "Revise Window Gone")
     sent = _sent_beo(db, booking, room_layout_notes=TYPED)

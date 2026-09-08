@@ -131,19 +131,25 @@ def is_mid_revision(db: Session, booking_id: uuid.UUID, doc_type: DocumentType) 
     client having no working link -- the one thing it must not do is fail
     to appear because a caller happened to hold a stale collection. It cost
     a test failure to find that out, which is the cheap way.
+
+    TWO COLUMNS, not whole rows. The booking page calls this once per
+    document type on every render, and selecting Document loaded the JSONB
+    content of every version ever generated for the booking -- hundreds of
+    KB across the wire to answer a two-boolean question about a document
+    nobody is reading here.
     """
-    versions = list(
-        db.scalars(
-            select(Document).where(Document.booking_id == booking_id, Document.type == doc_type)
+    versions = db.execute(
+        select(Document.is_current, Document.status).where(
+            Document.booking_id == booking_id, Document.type == doc_type
         )
-    )
-    current = next((d for d in versions if d.is_current), None)
+    ).all()
+    current = next((row for row in versions if row.is_current), None)
     if current is None or current.status != DocumentStatus.draft:
         return False
     return any(
-        d.status in (DocumentStatus.sent, DocumentStatus.viewed, DocumentStatus.signed)
-        for d in versions
-        if not d.is_current
+        row.status in (DocumentStatus.sent, DocumentStatus.viewed, DocumentStatus.signed)
+        for row in versions
+        if not row.is_current
     )
 
 
