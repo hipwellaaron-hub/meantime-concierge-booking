@@ -75,6 +75,28 @@
 </div>
 {% endif %}
 
+{#
+  What the document is still missing, AS AT THE LAST SAVE. The wording
+  matters: this reflects stored content, not what is typed in the boxes
+  below, so it goes stale the moment you start typing and is honest again
+  the moment you save.
+
+  That is exactly what makes it useful. Save, come back, and if a field is
+  still listed here your save did not land -- which is the thing nobody
+  could see on HAM-20260911-AKPSO, where a whole page of typing never
+  reached the server and the finished document looked untouched.
+#}
+{% set gaps = document.content | unfilled_fields %}
+{% if gaps %}
+<div class="card" style="border-left:4px solid var(--ember);">
+  <h2 style="margin-top:0;">Not filled in as at the last save ({{ gaps | length }})</h2>
+  <p style="margin:0;">{{ gaps | join(", ") }}</p>
+  <p class="muted" style="font-size:0.85rem; margin:6px 0 0;">These print a default, or nothing at
+    all, on the client's copy &mdash; so a gap and a lost value look the same there. This list is
+    the stored document, not the boxes below: save and it will refresh.</p>
+</div>
+{% endif %}
+
 {% if conflict %}
 <div class="card" style="border-left:4px solid #b00020;">
   <h2 style="margin-top:0;">This document changed while you had it open</h2>

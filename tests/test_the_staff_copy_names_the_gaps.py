@@ -338,3 +338,55 @@ def client(db, hamilton):
         yield TestClient(app)
     finally:
         app.dependency_overrides.clear()
+
+
+# --- and before you send it ---------------------------------------------------
+
+
+def test_the_edit_form_names_the_gaps_before_you_send(admin_client, db, loft):
+    """Aaron: "the admin shows it before you generate." Same helper, so the
+    edit screen and the document can never disagree about what is missing."""
+    booking = _booking(db, loft, "Gaps Form")
+    document = _beo(db, booking)
+
+    page = admin_client.get(f"/admin/bookings/{booking.id}/documents/{document.id}/edit")
+
+    assert page.status_code == 200
+    assert "Not filled in as at the last save" in page.text
+    assert "Room layout notes" in page.text
+    assert "Decorations" in page.text
+
+
+def test_a_save_that_lands_clears_the_field_from_the_list(admin_client, db, loft):
+    """The Preston detection, stated as a test: save, come back, and if the
+    field is STILL listed then the save did not land."""
+    import re
+
+    booking = _booking(db, loft, "Gaps Form Save")
+    document = _beo(db, booking)
+    page = admin_client.get(f"/admin/bookings/{booking.id}/documents/{document.id}/edit")
+    csrf = re.search(r'name="csrf_token" value="([^"]+)"', page.text).group(1)
+    expect = re.search(r'name="content_expect" value="([^"]+)"', page.text).group(1)
+    assert "Room layout notes" in page.text
+
+    admin_client.post(
+        f"/admin/bookings/{booking.id}/documents/{document.id}/edit",
+        data={"csrf_token": csrf, "content_expect": expect, "room_layout_notes": TYPED_LAYOUT},
+        follow_redirects=False,
+    )
+
+    after = admin_client.get(f"/admin/bookings/{booking.id}/documents/{document.id}/edit")
+    gaps_block = after.text[after.text.index("Not filled in as at the last save"):][:600]
+    assert "Room layout notes" not in gaps_block, "the save landed but the list still says it did not"
+    assert "Decorations" in gaps_block, "and the ones still empty are still named"
+
+
+def test_the_form_says_the_list_is_the_stored_document(admin_client, db, loft):
+    """It goes stale as soon as you type, so it has to say so -- otherwise
+    it becomes the next thing that looks true and is not."""
+    booking = _booking(db, loft, "Gaps Form Stale")
+    document = _beo(db, booking)
+
+    page = admin_client.get(f"/admin/bookings/{booking.id}/documents/{document.id}/edit")
+
+    assert "not the boxes below" in page.text
