@@ -411,6 +411,17 @@ def create_new_version(
     return document
 
 
+# Event types whose `old_value` holds the NAMES of the fields a save
+# changed rather than a previous value. Written by _fields_this_save_changed
+# below and read by the booking page's audit table, which has a column
+# headed "Old" -- without this the trail printed "Old: dietaries,
+# room_layout_notes / New: 3", which parses as the version changing from
+# those names into 3. That is the screen used to reconstruct exactly the
+# incidents this record exists to explain, so it is the last one that may
+# read wrong.
+FIELD_LIST_IN_OLD_VALUE = ("document_edited", "beo_proposal_applied")
+
+
 def _fields_this_save_changed(stored: object, incoming: dict) -> str | None:
     """The names of the content keys a save actually changed, for the audit.
 

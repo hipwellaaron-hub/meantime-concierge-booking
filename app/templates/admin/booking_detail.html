@@ -687,8 +687,17 @@
         <tr>
           <td class="muted" style="white-space:nowrap;">{{ event.created_at | sydney_time }}</td>
           <td>{{ event.event_type }}</td>
-          <td class="muted">{{ event.field_name or "" }}</td>
-          <td class="muted">{{ event.old_value or "" }}</td>
+          {#
+            For most events old_value is the previous value, and the column
+            headed "Old" means exactly that. For a document edit and an
+            applied proposal it is the LIST OF FIELDS the save changed, so
+            printing it there read as "beo_version went from dietaries,
+            room_layout_notes to 3". It belongs beside the field it
+            describes, not under a heading it contradicts.
+          #}
+          {% set names_the_fields = event.event_type in field_list_events %}
+          <td class="muted">{{ event.field_name or "" }}{% if names_the_fields and event.old_value %} &middot; changed {{ event.old_value }}{% endif %}</td>
+          <td class="muted">{{ "" if names_the_fields else (event.old_value or "") }}</td>
           <td class="muted">{{ event.new_value or "" }}</td>
           <td class="muted">{{ event.actor }}</td>
         </tr>

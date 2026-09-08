@@ -376,6 +376,11 @@ def booking_detail(
             # the client is holding a link that 410s until this one goes
             # out. Aaron: "I'd rather see at a glance that a client
             # currently has no link."
+            # The audit table's "Old" column means the previous value on
+            # every row but these, where it holds the names of the fields a
+            # save changed. Named here so the reader and the writer cannot
+            # drift apart.
+            field_list_events=documents_service.FIELD_LIST_IN_OLD_VALUE,
             awaiting_resend={
                 doc_type.value
                 for doc_type in DocumentType

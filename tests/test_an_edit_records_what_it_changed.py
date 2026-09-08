@@ -53,6 +53,37 @@ def _edit_event(db, booking):
     return events[0]
 
 
+def test_the_audit_table_does_not_print_the_field_list_under_old(admin_client, db, loft):
+    """The names go in old_value, and the booking page's audit table has a
+    column headed "Old" that means the previous value on every other row.
+    So the trail read "beo_version | Old: dietaries | New: 2" -- the
+    version changing from a field name into 2.
+
+    This is the screen used to reconstruct exactly the incidents this
+    record exists to explain, so it is the last one that may read wrong.
+    """
+    import re
+
+    booking = _booking(db, loft, "Edit Audit Table")
+    document = _beo(db, booking)
+    content = dict(document.content)
+    content["dietaries"] = "1x severe nut allergy (table 4)."
+    documents_service.update_content(
+        db, document, content, actor="staff:aaron", authored_fields=dr.PROTECTED_FIELD_NAMES
+    )
+
+    page = admin_client.get(f"/admin/bookings/{booking.id}")
+
+    assert page.status_code == 200
+    row = re.search(r"<tr>((?:(?!</tr>).)*?document_edited(?:(?!</tr>).)*)</tr>", page.text, re.S)
+    assert row is not None, "no document_edited row on the audit table"
+    cells = [re.sub(r"<[^>]+>", "", cell).strip() for cell in re.findall(r"<td[^>]*>(.*?)</td>", row.group(1), re.S)]
+    # When | Event | Field | Old | New | Actor
+    assert "dietaries" in cells[2], f"the changed field is not named beside the version: {cells}"
+    assert cells[3] == "", f'a field list was printed under "Old": {cells}'
+    assert cells[4] == str(document.version)
+
+
 def test_an_edit_names_the_field_it_changed(db, loft):
     booking = _booking(db, loft)
     document = _beo(db, booking)
