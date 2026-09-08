@@ -349,6 +349,29 @@ def test_the_client_is_told_the_document_is_being_updated(client, db, loft):
     assert "check back shortly" in page.text.lower()
 
 
+def test_a_cancelled_bookings_client_is_not_promised_a_new_link(client, db, loft):
+    """_is_live fails for two different reasons and only one of them means
+    a replacement is coming. Revise a sent Event Order, then cancel the
+    booking, and the client opening their old link was told to check back
+    shortly for a link that would never arrive."""
+    from app.models.booking import BookingStatus
+    from app.services.booking import change_status
+
+    booking = _booking(db, loft, "Revise Cancelled")
+    sent = _sent_beo(db, booking, room_layout_notes=TYPED)
+    token = sent.access_token
+    documents_service.revise(db, sent, actor="staff:aaron")
+    change_status(db, booking, BookingStatus.cancelled, actor="staff:aaron", reason="client cancelled")
+    db.flush()
+
+    page = client.get(f"/d/{token}")
+
+    assert page.status_code == 410
+    assert "being updated" not in page.text, "a cancelled booking promised a new link"
+    assert "check back shortly" not in page.text.lower()
+    assert "no longer active" in page.text
+
+
 def test_a_superseded_link_still_says_it_is_dead_once_the_new_one_is_out(client, db, loft):
     """The other case: they were given a newer link, so "no longer active"
     is the honest answer and "check back shortly" would be a lie."""

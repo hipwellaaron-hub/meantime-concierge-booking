@@ -60,7 +60,16 @@ def _being_updated(db: Session, document) -> bool:
 
     A version superseded by another SENT one is the other case -- they were
     given a newer link -- and keeps the ordinary message.
+
+    So is a VOIDED booking. _is_live fails for two different reasons, and
+    only one of them is "a replacement is on its way": a client whose event
+    has been cancelled was being told to check back shortly for a link that
+    is never coming, which is a worse sentence than the plain one. Proved
+    over HTTP before this line existed -- revise a sent Event Order, cancel
+    the booking, and the dead link promised a new one.
     """
+    if document.booking.status in VOIDED_STATUSES:
+        return False
     current = documents_service.get_current(db, document.booking_id, document.type)
     return current is not None and current.status == DocumentStatus.draft
 
