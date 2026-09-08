@@ -1,8 +1,19 @@
 """Document versioning and lifecycle. A new version always supersedes the
-previous one rather than overwriting it -- the old row, and the token that
-points at it, stay exactly as they were. Every transition is also logged
-to booking_events for the same reason booking status changes are: no state
-change should require re-reading an email chain to explain.
+previous one rather than overwriting it: the old row and its token are
+never changed, so what a client was sent can always be read back by staff
+(admin ... /preview shows any version).
+
+That is about the RECORD, not about the client's link. Superseding a
+version also stops its token resolving -- the public route gates on
+is_current, so the client gets a 410 until the new version is sent. Both
+Regenerate and Revise do this. Do not read "the row is untouched" as "the
+link keeps working"; an earlier version of this docstring did, and so did
+the comment on Document.is_current, and a design was scoped against the
+wrong premise because of it.
+
+Every transition is also logged to booking_events for the same reason
+booking status changes are: no state change should require re-reading an
+email chain to explain.
 """
 
 import datetime as dt

@@ -46,9 +46,17 @@ class Document(Base):
 
     # True only for the newest version of (booking_id, type) -- enforced by
     # the partial unique index below, so "get the current BEO" is a plain
-    # indexed lookup instead of a MAX(version) scan. Superseded versions
-    # keep is_current=False forever: they are never deleted or edited, so a
-    # link that was already sent keeps resolving to exactly what was sent.
+    # indexed lookup instead of a MAX(version) scan.
+    #
+    # It also decides whether a client's link still works. app/api/documents
+    # ._is_live gates on it, so the moment a new version exists the old
+    # token returns 410 and the client has nothing to open until the new
+    # version is sent. That is deliberate -- it is what stopped a superseded
+    # sign link from still being signable (Sophie Mavridis, 2026-09-04) --
+    # but it is the opposite of what this comment used to say, which was
+    # that "a link that was already sent keeps resolving to exactly what was
+    # sent". Superseded rows are indeed never deleted or edited; they are
+    # simply no longer reachable by their token.
     is_current: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
     access_token: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, default=generate_access_token)
