@@ -32,7 +32,11 @@ from app.models.document import DocumentType
 from app.services import document_regeneration as dr
 from app.services import documents as documents_service
 from app.services.booking import create_booking
-from app.services.document_generation import generate_agreement_content, generate_beo_content
+from app.services.document_generation import (
+    NO_DIETARIES,
+    generate_agreement_content,
+    generate_beo_content,
+)
 
 TYPED_LAYOUT = "Rounds of 8, dance floor centre."
 
@@ -77,12 +81,52 @@ def test_a_filled_field_drops_off_the_list(db, loft):
     assert "Decorations" in gaps, "the others are untouched"
 
 
-def test_the_generated_dietaries_sentence_counts_as_a_gap(db, loft):
-    """"No dietary requirements declared" is a sentence that reads like a
-    decision. Nobody declared it."""
+def test_the_generated_dietaries_sentence_is_not_a_gap(db, loft):
+    """REVERSED on review, deliberately, and the reasoning is worth keeping.
+
+    The first version of this test said "No dietary requirements declared"
+    reads like a decision nobody made, and counted it as a gap. That is
+    true of a client nobody asked -- but the same sentence is also what a
+    client who declared none produces, and that is most clients. So the
+    block appeared on an Event Order with all ten fields filled in, saying
+    "Not filled in (1): Dietaries". Proved by running it.
+
+    On nearly every document, that is furniture: staff stop reading the
+    block, and it stops working for Room layout, Decorations, Special notes
+    and Onsite contact -- the fields Preston actually lost, and the reason
+    the block exists at all.
+
+    The never-asked case is real and is NOT fixed here. It is generation's
+    to fix, by writing a [REVIEW] prompt where there is no answer instead
+    of a sentence that asserts one. Naming every document to catch some of
+    them is not a smaller version of that fix.
+    """
+    booking = _booking(db, loft)
+    content = generate_beo_content(booking)
+    assert content["dietaries"] == NO_DIETARIES, "the generator still writes the sentence"
+
+    assert "Dietaries" not in dr.unfilled_fields(content)
+
+
+def test_an_emptied_dietaries_field_is_still_a_gap(db, loft):
+    """The exemption is for the SENTENCE, not for the field. Nothing there
+    at all still prints nothing at all, which is a gap like any other."""
     booking = _booking(db, loft)
 
-    assert "Dietaries" in dr.unfilled_fields(generate_beo_content(booking))
+    gaps = dr.unfilled_fields(generate_beo_content(booking) | {"dietaries": ""})
+
+    assert "Dietaries" in gaps
+
+
+def test_a_review_prompt_is_still_a_gap(db, loft):
+    """The other generated placeholders say out loud that nobody answered,
+    so they stay gaps -- the exemption is one sentence, not the whole set."""
+    booking = _booking(db, loft)
+
+    gaps = dr.unfilled_fields(generate_beo_content(booking))
+
+    assert "Bar structure" in gaps, "the [REVIEW] prompts are still gaps"
+    assert "Catering order & service style" in gaps
 
 
 def test_it_does_not_report_fields_the_document_does_not_have(db, loft):
