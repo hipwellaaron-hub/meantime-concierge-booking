@@ -510,7 +510,14 @@
   {% endfor %}
   {% else %}
   {% set staff = is_staff_preview %}
-  {% set gaps = document.content | unfilled_fields if staff else [] %}
+  {# `staff or is_floor_app`, not `staff` alone. The floor app's own screen
+     is the other thing read on a phone in the venue, and it is where an
+     unfilled Room layout or Onsite contact costs somebody something on the
+     night. It is not `staff`: is_floor_app deliberately keeps the client's
+     wording for [REVIEW] prompts, and widening that is a separate decision
+     from naming the gaps. (The floor app's shareable PDF renders with
+     neither flag and stays clean.) #}
+  {% set gaps = document.content | unfilled_fields if (staff or is_floor_app) else [] %}
   {% set content = document.content %}
   {% set ref = content._reference %}
   {% set client_name = (ref.get("client_name") or (booking.contact.name if booking.contact else None)) | person_name %}

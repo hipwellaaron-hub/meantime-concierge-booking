@@ -317,6 +317,32 @@ def test_beo_view_does_not_mark_document_viewed(client, db, loft, contact, floor
     assert document.status == DocumentStatus.sent
 
 
+def test_the_floor_screen_names_what_nobody_filled_in(client, db, loft, contact, floor_user):
+    """The other thing read on a phone in the venue. The gaps block went to
+    the admin PDF, but this is the screen a bartender actually has open at
+    7pm -- and an unfilled Room layout or Onsite contact is exactly what
+    costs somebody something on the night.
+
+    Not by making this a `staff` render: is_floor_app deliberately keeps
+    the client's wording for [REVIEW] prompts, and widening that is a
+    different decision. Only the block is added.
+    """
+    headers = _login(client)
+    booking = _confirmed_booking(db, loft, contact)
+    document = documents_service.create_new_version(db, booking, DocumentType.beo, _beo_content(booking), actor="test")
+    documents_service.mark_sent(db, document, actor="test")
+
+    resp = client.get(f"/api/staff/bookings/{booking.id}/beo", headers=headers)
+
+    assert resp.status_code == 200
+    assert "Not filled in" in resp.text
+    assert "Room layout notes" in resp.text
+    assert "Onsite contact" in resp.text
+    # Unchanged: the floor screen still speaks to whoever is holding it in
+    # the client's words, not in the generator's.
+    assert "[REVIEW]" not in resp.text
+
+
 def test_beo_pdf_is_clean_client_render(client, db, loft, contact, floor_user):
     headers = _login(client)
     booking = _confirmed_booking(db, loft, contact)
