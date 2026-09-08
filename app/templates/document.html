@@ -510,14 +510,25 @@
   {% endfor %}
   {% else %}
   {% set staff = is_staff_preview %}
-  {# `staff or is_floor_app`, not `staff` alone. The floor app's own screen
-     is the other thing read on a phone in the venue, and it is where an
-     unfilled Room layout or Onsite contact costs somebody something on the
-     night. It is not `staff`: is_floor_app deliberately keeps the client's
-     wording for [REVIEW] prompts, and widening that is a separate decision
-     from naming the gaps. (The floor app's shareable PDF renders with
-     neither flag and stays clean.) #}
-  {% set gaps = document.content | unfilled_fields if (staff or is_floor_app) else [] %}
+  {#
+    `internal` is every surface read by somebody working the event: the
+    staff preview AND the floor app's own screen, which is the other thing
+    read on a phone in the venue. It is deliberately NOT `staff`, because
+    is_floor_app keeps the client's wording for [REVIEW] prompts and
+    widening that is a separate decision.
+
+    ONE name for the two things it decides -- whether the gaps are named,
+    and whether an empty Onsite Contact borrows the client's name. Written
+    as two separate conditions, they immediately disagreed: the floor
+    screen said "Not filled in: Onsite contact" directly above a line
+    printing the client's own name as the onsite contact. Proved by
+    rendering it. A page contradicting itself is worse than either half.
+
+    (The floor app's shareable PDF renders with neither flag and stays
+    clean -- it is the copy that can leave the team.)
+  #}
+  {% set internal = staff or is_floor_app %}
+  {% set gaps = document.content | unfilled_fields if internal else [] %}
   {% set content = document.content %}
   {% set ref = content._reference %}
   {% set client_name = (ref.get("client_name") or (booking.contact.name if booking.contact else None)) | person_name %}
@@ -543,7 +554,7 @@
     <div>
       <span class="k">Event Coordinator:</span> {{ venue_contact_name }}<br>
       <span class="k">Client:</span> {{ client_name or "—" }}{% if ref.get("client_phone") and not is_floor_app %} ({{ ref.client_phone }}){% endif %}<br>
-      <span class="k">Onsite Contact:</span> {# Never the client's name on the staff copy: an unfilled onsite contact that prints a name reads as a decision, and on the night that is the number somebody calls. #}{{ (content.get("onsite_contact") | person_name) or (none if staff else client_name) or "—" }}
+      <span class="k">Onsite Contact:</span> {# Never the client's name on an internal copy: an unfilled onsite contact that prints a name reads as a decision, and on the night that is the number somebody calls -- which is exactly why the floor screen is included here and not just the staff preview. #}{{ (content.get("onsite_contact") | person_name) or (none if internal else client_name) or "—" }}
     </div>
     <div class="right">
       <span class="k">Event Order:</span> EO-{{ booking.reference_code }}-v{{ document.version }}<br>

@@ -338,6 +338,13 @@ def test_the_floor_screen_names_what_nobody_filled_in(client, db, loft, contact,
     assert "Not filled in" in resp.text
     assert "Room layout notes" in resp.text
     assert "Onsite contact" in resp.text
+    # And the page must not contradict itself. Naming Onsite contact as a
+    # gap while the line above it printed the CLIENT'S name as the onsite
+    # contact is worse than either half alone -- and that is exactly what
+    # the first version of this did, because the gaps block and the onsite
+    # fallback were written as two separate conditions.
+    onsite = resp.text[resp.text.index("Onsite Contact:"):][:200]
+    assert booking.contact.name not in onsite, "the client's name is standing in as the onsite contact"
     # Unchanged: the floor screen still speaks to whoever is holding it in
     # the client's words, not in the generator's.
     assert "[REVIEW]" not in resp.text
