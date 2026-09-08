@@ -125,9 +125,20 @@
       <td>
         <div class="box">
           <div class="box-title">Payment Terms</div>
-          {% for inv in booking.invoices | rejectattr("status.value", "equalto", "draft") | rejectattr("status.value", "equalto", "cancelled") | sort(attribute="type.value") %}
-          <div>{{ "Deposit" if inv.type.value == "deposit" else "Balance" }} Due on {{ inv.due_date | aus_date }}</div>
-          {% endfor %}
+          {#
+            THIS invoice's term, not the booking's. This box used to loop
+            over every invoice on the booking, so a final invoice replayed
+            the deposit's term beside its own -- HAM-20260912-2R11Q printed
+            "Deposit Due on 21-03-2026" on an invoice issued in September,
+            months after that deposit was paid. Worse on a DRAFT final: the
+            loop's own draft filter dropped the invoice being previewed, so
+            staff saw the stale deposit line and no balance line at all.
+
+            Nothing is lost by narrowing it. The deposit is still on the
+            page -- in Related Invoices, in the Received total, and as the
+            "less deposit credited" line item.
+          #}
+          <div>{{ "Deposit" if invoice.type.value == "deposit" else "Balance" }} Due on {{ invoice.due_date | aus_date }}</div>
         </div>
       </td>
     </tr>
