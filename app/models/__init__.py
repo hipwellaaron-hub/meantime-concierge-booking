@@ -1,6 +1,7 @@
 from app.models.ai_access import AI_ACTOR, AiRequestKind, AiRequestLog, AiSettings, AiTrigger  # noqa: F401
 from app.models.booking import Booking, BookingStatus, MinReductionReasonCode  # noqa: F401
 from app.models.booking_event import BookingEvent, BookingEventType  # noqa: F401
+from app.models.beo_proposal import BeoProposal, BeoProposalField  # noqa: F401
 from app.models.booking_vendor import BookingVendor, VendorType  # noqa: F401
 from app.models.conversion_dispatch import ConversionDispatch  # noqa: F401
 from app.models.contact import Contact  # noqa: F401
@@ -29,6 +30,8 @@ __all__ = [
     "BookingEvent",
     "BookingEventType",
     "BookingVendor",
+    "BeoProposal",
+    "BeoProposalField",
     "ConversionDispatch",
     "VendorType",
     "Contact",

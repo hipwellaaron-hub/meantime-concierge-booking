@@ -660,11 +660,15 @@ def test_editing_a_beo_line_item_recomputes_the_total(admin_client, db, booking)
     form = admin_client.get(f"/admin/bookings/{booking.id}/documents/{document.id}/edit")
     assert form.status_code == 200
     csrf_token = re.search(r'name="csrf_token" value="([^"]+)"', form.text).group(1)
+    # The edit form's compare-and-set, carried back exactly as a browser
+    # would: the save refuses if the values it was rendered from have moved.
+    content_expect = re.search(r'name="content_expect" value="([^"]*)"', form.text).group(1)
 
     response = admin_client.post(
         f"/admin/bookings/{booking.id}/documents/{document.id}/edit",
         data={
             "csrf_token": csrf_token,
+            "content_expect": content_expect,
             "item_descriptions": ["Grazing Platter"],
             "item_quantities": ["4"],
             "item_unit_prices": ["250.00"],
@@ -697,10 +701,14 @@ def test_editing_a_beo_food_order_clears_the_no_food_order_note(admin_client, db
 
     form = admin_client.get(f"/admin/bookings/{booking.id}/documents/{document.id}/edit")
     csrf_token = re.search(r'name="csrf_token" value="([^"]+)"', form.text).group(1)
+    # The edit form's compare-and-set, carried back exactly as a browser
+    # would: the save refuses if the values it was rendered from have moved.
+    content_expect = re.search(r'name="content_expect" value="([^"]*)"', form.text).group(1)
     admin_client.post(
         f"/admin/bookings/{booking.id}/documents/{document.id}/edit",
         data={
             "csrf_token": csrf_token,
+            "content_expect": content_expect,
             "item_descriptions": ["Grazing Platter"],
             "item_quantities": ["3"],
             "item_unit_prices": ["250.00"],

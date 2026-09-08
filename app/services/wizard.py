@@ -10,6 +10,7 @@ the single, explicitly marked hook where that attaches in a later phase.
 
 import datetime as dt
 import enum
+import logging
 import uuid
 from decimal import Decimal
 
@@ -32,7 +33,9 @@ from app.services.validation import (
     validate_setup_access_time,
     validate_trading_hours,
 )
-from app.utils import is_valid_email
+from app.utils import is_valid_email, truncate
+
+logger = logging.getLogger(__name__)
 
 BOOKING_EVENT_ACTOR_MAX_LENGTH = 255
 
@@ -236,6 +239,25 @@ def _advance_step(session: WizardSession, completed_step: WizardStep) -> None:
 
 
 ALREADY_SUBMITTED_MESSAGE = "this wizard has already been submitted and can no longer be edited"
+
+# What a client is told when their answers were saved but the documents
+# could not be built. It must not claim an email was sent: the submission
+# notification is the last thing generate_beo_and_invoice does, so a
+# failure above it means nobody was mailed.
+GENERATION_FAILED_MESSAGE = (
+    "Your answers are saved. Something went wrong finishing your Event Order -- "
+    "it has been recorded and the team will follow up. You do not need to submit again."
+)
+
+
+class GenerationFailed(Exception):
+    """The wizard was submitted but its documents could not be built.
+
+    Its own type, because the route cannot otherwise tell this from the
+    double-submit guard's ValueError -- which is a legitimate 409, means
+    the client already succeeded, and must never be recorded as a failure
+    or answered with "something went wrong".
+    """
 
 
 def _lock_and_guard_editable(db: Session, session: WizardSession) -> None:
@@ -630,6 +652,39 @@ def flag_accessibility_escalation(db: Session, session: WizardSession, *, actor:
     return True
 
 
+def _record_generation_failure(db: Session, session: WizardSession, exc: Exception, *, actor: str) -> None:
+    """Write the failure down. The submission above it is already
+    committed, so without this nothing anywhere records that a client
+    finished their wizard and got no Event Order -- the audit trail simply
+    shows wizard_submitted and stops.
+
+    Its own transaction, like _notify_wizard_submission's failure path,
+    and a rollback first because whatever raised may have left this
+    session's transaction unusable. The rollback cannot cost the client
+    their submission: that was committed before generation started. It can
+    discard a half-finished generation, which is the right answer --
+    though not a complete one, because invoicing.create_invoice commits
+    part-way through and anything it wrote has already landed.
+
+    Never raises. A failure to record a failure must not replace the error
+    the caller is about to report.
+    """
+    logger.exception("Wizard generation failed for session %s", session.id)
+    try:
+        db.rollback()
+        db.add(
+            BookingEvent(
+                booking_id=session.booking_id,
+                event_type="wizard_generation_failed",
+                new_value=truncate(f"{type(exc).__name__}: {exc}", 500),
+                actor=actor,
+            )
+        )
+        db.commit()
+    except Exception:  # noqa: BLE001
+        logger.exception("Could not record the wizard generation failure for session %s", session.id)
+
+
 def submit_review(db: Session, session: WizardSession, *, actor: str, final_notes: str | None = None):
     """Returns (session, WizardGenerationResult) -- the generation result
     carries is_clean/outstanding_items/document/invoice for the caller
@@ -652,7 +707,11 @@ def submit_review(db: Session, session: WizardSession, *, actor: str, final_note
     db.commit()
     db.refresh(session)
 
-    generation_result = wizard_generation.generate_beo_and_invoice(db, session, actor=actor)
+    try:
+        generation_result = wizard_generation.generate_beo_and_invoice(db, session, actor=actor)
+    except Exception as exc:  # noqa: BLE001 -- see _record_generation_failure
+        _record_generation_failure(db, session, exc, actor=actor)
+        raise GenerationFailed(GENERATION_FAILED_MESSAGE) from exc
 
     db.refresh(session)
     return session, generation_result

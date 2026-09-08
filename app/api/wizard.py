@@ -403,6 +403,16 @@ def submit_review_step(
         session, generation = wizard_service.submit_review(
             db, session, actor=_actor(request), final_notes=payload.final_notes if payload else None
         )
+    except wizard_service.GenerationFailed as exc:
+        # Their answers ARE saved -- the submission commits before the
+        # documents are built -- so this is not a failed submission and
+        # must not read like one. Before this it reached the client as an
+        # unhandled 500, whose text/plain body made the wizard's own fetch
+        # helper throw a JSON parse error, so the alert() said nothing at
+        # all. 503 with a JSON detail is what that helper can actually
+        # show. Caught above ValueError because the double-submit guard
+        # raises one of those and it means the opposite: already done.
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except ValueError as exc:
         raise _handle_value_error(exc) from exc
 

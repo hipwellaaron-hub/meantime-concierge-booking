@@ -1,5 +1,7 @@
 import re
 
+import pytest
+
 from fastapi.testclient import TestClient
 
 from app.database import get_db
@@ -99,3 +101,51 @@ def test_logout_clears_session(admin_client):
     after_logout = admin_client.get("/admin/", follow_redirects=False)
     assert after_logout.status_code == 303
     assert after_logout.headers["location"].startswith("/admin/login")
+
+
+# --- the login redirect target is never a URL from a link --------------------
+
+
+@pytest.mark.parametrize("hostile", [
+    "https://evil.example/",
+    "//evil.example/",
+    "https://book.meantime.com.au.evil.example/admin/",
+    "javascript:alert(1)",
+    "/enquiries/1",
+])
+def test_an_already_signed_in_staff_member_is_never_bounced_off_site(db, staff_user, hamilton, hostile):
+    """The GET took `next` straight from the query string with no check, so a
+    link to our own domain sent a signed-in staff member wherever it said --
+    the credible half of a phishing page, hosted by us (2026-09-07 review).
+    The POST already guarded this; the GET did not."""
+    app.dependency_overrides[get_db] = lambda: db
+    try:
+        client = TestClient(app, follow_redirects=False)
+        csrf_token = _login_page_csrf(client)
+        client.post(
+            "/admin/login",
+            data={"csrf_token": csrf_token, "email": staff_user.email, "password": STAFF_TEST_PASSWORD},
+        )
+        resp = client.get(f"/admin/login?next={hostile}")
+        assert resp.status_code == 303
+        assert resp.headers["location"] == "/admin/", hostile
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_a_real_admin_destination_still_survives_the_login_round_trip(db, staff_user, hamilton):
+    app.dependency_overrides[get_db] = lambda: db
+    try:
+        client = TestClient(app, follow_redirects=False)
+        csrf_token = _login_page_csrf(client)
+        resp = client.post(
+            "/admin/login",
+            data={
+                "csrf_token": csrf_token, "email": staff_user.email,
+                "password": STAFF_TEST_PASSWORD, "next": "/admin/bookings",
+            },
+        )
+        assert resp.headers["location"] == "/admin/bookings"
+        assert client.get("/admin/login?next=/admin/bookings").headers["location"] == "/admin/bookings"
+    finally:
+        app.dependency_overrides.clear()

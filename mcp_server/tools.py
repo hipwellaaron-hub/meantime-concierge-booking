@@ -8,11 +8,14 @@ slot with nothing confirmed is not necessarily a free slot, because
 "available" and "nobody else is asking" are different facts and confusing
 them is how a date gets offered to two parties.
 
-All tools are read-only. Writes land here when the Tier 1 endpoints land
-in Concierge, each with its own tool and its own description.
+Every tool but one is read-only. The exception is
+propose_event_order_values, which writes a PROPOSAL and applies nothing:
+each field waits for a staff approval on the Event Order form. It goes
+through post_ai, which has its own allowlist, so a read tool cannot be
+talked into a write.
 """
 
-from mcp_server.concierge import call_ai
+from mcp_server.concierge import call_ai, path_segment, post_ai
 
 _DATE = {"type": "string", "description": "Date as YYYY-MM-DD."}
 
@@ -182,7 +185,7 @@ TOOLS: list[dict] = [
             },
             "required": ["booking_id"],
         },
-        "_call": lambda args: call_ai(f"/api/ai/bookings/{args['booking_id']}/documents"),
+        "_call": lambda args: call_ai(f"/api/ai/bookings/{path_segment(args['booking_id'], name='booking_id')}/documents"),
     },
     {
         "name": "booking_invoices",
@@ -199,7 +202,7 @@ TOOLS: list[dict] = [
             },
             "required": ["booking_id"],
         },
-        "_call": lambda args: call_ai(f"/api/ai/bookings/{args['booking_id']}/invoices"),
+        "_call": lambda args: call_ai(f"/api/ai/bookings/{path_segment(args['booking_id'], name='booking_id')}/invoices"),
     },
     {
         "name": "booking_events",
@@ -221,7 +224,121 @@ TOOLS: list[dict] = [
             "required": ["booking_id"],
         },
         "_call": lambda args: call_ai(
-            f"/api/ai/bookings/{args['booking_id']}/events", {"limit": args.get("limit")}
+            f"/api/ai/bookings/{path_segment(args['booking_id'], name='booking_id')}/events",
+            {"limit": args.get("limit")},
+        ),
+    },
+    {
+        "name": "event_order_proposal",
+        "description": (
+            "What is awaiting approval on a booking's Event Order, and what happened to the "
+            "last thing proposed. Read this BEFORE proposing: it shows whether an earlier "
+            "proposal is still pending (propose again and the pending fields are superseded), "
+            "and for anything already decided it shows `applied_value` next to "
+            "`proposed_value`, so you can see where a human rewrote a transcription before "
+            "approving it. That difference is the calibration signal -- read it and write "
+            "closer to what they actually wanted.\n\n"
+            "Field states: pending (awaiting a human), approved (written to the Event Order), "
+            "rejected, superseded (a newer proposal replaced it before anyone looked), "
+            "blocked (the house rules refused the proposal it belonged to).\n\n"
+            "This is the MOST RECENT proposal, decided or not -- so a resolved one still "
+            "shows what a human did with it. Read `status` to tell them apart: pending "
+            "means somebody still has to look, resolved/superseded/rules_blocked mean the "
+            "ask is over. `proposal: null` means nothing has ever been proposed on this "
+            "booking. Only the latest is returned, so a newer ask hides an older decided "
+            "one -- read this before proposing, not as a history of every correction."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "reference": {
+                    "type": "string",
+                    "description": "The booking reference, e.g. HAM-20271114-AB12C (from `bookings`).",
+                },
+            },
+            "required": ["reference"],
+        },
+        "_call": lambda args: call_ai(
+            f"/api/ai/bookings/{path_segment(args['reference'], name='reference')}/event-order-proposal"
+        ),
+    },
+    {
+        "name": "propose_event_order_values",
+        "description": (
+            "Propose values for the free-text Event Order fields on one booking. This is the "
+            "ONLY write available, and it writes a proposal: nothing reaches the Event Order "
+            "until a staff member approves it field by field on the Event Order form, where "
+            "your text is shown against the value it would replace. There is no tool that "
+            "approves, and asking for one is not a gap to work around.\n\n"
+            "Transcribe, do not compose. Take the client's own final details and put each "
+            "fact in the right field, in run-sheet voice -- 'Cake: client supplying', not "
+            "'We have organised a cake'. Never move a fact between fields to make one read "
+            "better: a decoration note in Dietaries is the exact error this exists to stop, "
+            "and it once took a declared nut allergy down with it.\n\n"
+            "Never drop a dietary or allergy detail that is already on the Event Order. If "
+            "you are rewriting Dietaries, carry every existing declaration through -- read "
+            "`event_order_proposal` and the Event Order first so you know what is there.\n\n"
+            "House rules run on what you send and refuse the proposal outright (HTTP 422 with "
+            "`rule_codes`) if it puts decoration or supplier language in Dietaries, writes in "
+            "the client's first-person voice, empties a field that had a value, or drops a "
+            "declared dietary. A refused proposal is recorded but never shown to staff, so it "
+            "helps nobody: read the codes and fix it rather than re-sending.\n\n"
+            "You cannot touch status, the food order, or any figure -- those are computed "
+            "from the catalogue, the wizard and the booking, and a proposed line item with a "
+            "wrong price is precisely the class of error this boundary exists to prevent."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "reference": {
+                    "type": "string",
+                    "description": "The booking reference, e.g. HAM-20271114-AB12C (from `bookings`).",
+                },
+                "source": {
+                    "type": "string",
+                    "description": (
+                        "Where these values came from, specifically enough that a human can go "
+                        "and read it -- 'client email 6 Sep, final details'. Required: an "
+                        "untraceable proposal is not reviewable, and this is shown to the "
+                        "person approving it."
+                    ),
+                },
+                "fields": {
+                    "type": "object",
+                    "description": (
+                        "The fields to propose, as name -> value. Send only the fields you are "
+                        "actually changing; an omitted field is left exactly as it is."
+                    ),
+                    "properties": {
+                        "catering_order_and_service_style": {"type": "string"},
+                        "bar_structure": {"type": "string"},
+                        "room_layout_notes": {"type": "string"},
+                        "music": {"type": "string"},
+                        "entertainment": {"type": "string"},
+                        "dietaries": {"type": "string"},
+                        "accessibility": {"type": "string"},
+                        "decorations": {"type": "string"},
+                        "special_notes": {"type": "string"},
+                        "onsite_contact": {"type": "string"},
+                    },
+                    "additionalProperties": False,
+                    "minProperties": 1,
+                },
+                "trigger": {
+                    "type": "string",
+                    "description": "Short reason you acted now, e.g. 'client final details'.",
+                },
+            },
+            "required": ["reference", "source", "fields"],
+        },
+        "_call": lambda args: post_ai(
+            f"/api/ai/bookings/{path_segment(args['reference'], name='reference')}/event-order-proposal",
+            {
+                "source": args["source"],
+                "fields": args["fields"],
+                "trigger": args.get("trigger"),
+                "model": args.get("model"),
+            },
         ),
     },
 ]

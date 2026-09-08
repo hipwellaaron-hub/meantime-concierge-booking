@@ -6,8 +6,11 @@ change should require re-reading an email chain to explain.
 """
 
 import datetime as dt
+import hashlib
+import json
 import logging
 import uuid
+from collections.abc import Iterable
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -15,6 +18,7 @@ from sqlalchemy.orm import Session
 from app.models import Booking, BookingEvent, Document
 from app.models.document import DocumentStatus, DocumentType
 from app.services import booking as booking_service
+from app.services import content_authorship
 from app.utils import is_valid_email, truncate
 
 logger = logging.getLogger(__name__)
@@ -32,11 +36,173 @@ def get_current(db: Session, booking_id: uuid.UUID, doc_type: DocumentType) -> D
     ).scalar_one_or_none()
 
 
+# How many times the locked read may come back empty while an unlocked
+# read still finds a current document. See lock_current_for_update.
+_LOCK_ATTEMPTS = 5
+
+
+def lock_current_for_update(db: Session, booking_id: uuid.UUID, doc_type: DocumentType) -> Document | None:
+    """The current document, locked FOR UPDATE.
+
+    For a caller that reads the content, decides something from it, and
+    then writes -- regenerating with a human's keep/replace choices is the
+    one that exists. Without the lock, an approval committing between the
+    read and the write is silently reverted and the audit line still says
+    the value was kept (proved live with two sessions, 2026-09-06). The
+    same shape update_content_fields already uses for the same reason.
+
+    populate_existing is what makes the lock mean anything. Without it the
+    ORM hands back whatever is already in this Session's identity map --
+    the attributes as they were BEFORE the lock was granted -- so the row
+    is locked and the caller reads pre-lock content anyway. Both callers
+    prime the map first: the wizard through get_prior_beo_internal_notes,
+    which reads this very row unlocked, and the staff regenerate through
+    the page it renders from. The approval this was written to protect was
+    therefore invisible, and the regenerate ran straight through.
+
+    RETRIED, because a lock that waits its turn can be handed nothing at
+    all. The statement takes its snapshot before the other transaction
+    commits, so it sees only the row that transaction holds and blocks on
+    it; when that commit lands, Postgres re-evaluates the row it was
+    waiting on (EvalPlanQual), finds is_current now false, and skips it --
+    and the replacement row is not in this statement's snapshot. The query
+    returns NOTHING while a current document plainly exists.
+
+    That empty answer is the dangerous one, because every caller reads it
+    as "this booking has no document yet": losses() has nothing to compare
+    against and returns [], no confirmation screen is shown, and the new
+    version replaces a declared allergy with the generator's placeholder
+    while the audit trail records a plain document_created and no
+    regenerate note (proved through the real route with two threads on
+    real Postgres -- 303 where the same race with this loop in place gives
+    409 and keeps the allergy).
+
+    A new statement gets a new snapshot at READ COMMITTED, so looking
+    again is the whole repair -- WITHOUT committing or rolling back
+    between attempts, which would end the caller's transaction and release
+    every lock this request holds, including the one just taken. None is
+    returned only once an unlocked read agrees there is no current row,
+    which is the genuine first-generate case; exhausting the attempts
+    means a current row exists and could not be locked, and saying
+    "nothing here" to that is the silent overwrite this exists to stop.
+    """
+    for _ in range(_LOCK_ATTEMPTS):
+        locked = db.execute(
+            select(Document)
+            .where(
+                Document.booking_id == booking_id,
+                Document.type == doc_type,
+                Document.is_current.is_(True),
+            )
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        ).scalar_one_or_none()
+        if locked is not None:
+            return locked
+        if get_current(db, booking_id, doc_type) is None:
+            return None
+    raise RuntimeError(
+        f"could not lock the current {doc_type.value} for booking {booking_id}: "
+        f"a newer version was committed during each of {_LOCK_ATTEMPTS} attempts. "
+        "Answering None would read as 'no document exists' and overwrite it."
+    )
+
+
+def content_fingerprint(content: object, fields: Iterable[str]) -> str:
+    """Identifies the values an edit form was rendered from.
+
+    The form carries this back and the save refuses if it no longer
+    matches -- a compare-and-set, the same shape as the regenerate screen's
+    `expect` and every other toggle in this codebase.
+
+    The row lock alone cannot do this job. The staleness does not come from
+    a race inside the save; it comes from the GET that rendered the form,
+    which may be minutes old. A lock taken during the POST closes the
+    window between this request's read and its write, and nothing about the
+    window between the page load and the save -- so without this a value
+    somebody else committed in between is silently reverted, and now also
+    recorded as the reverting staff member's own words.
+
+    WHAT IS COVERED, precisely: whatever `fields` names, and nothing else.
+    Both callers pass the protected free-text fields, so this protects the
+    prose and NOT the rest of the form.
+
+    That is narrower than the form, and the difference is a real hole. The
+    edit form also writes the food order line items, the vendor rows, the
+    key moments, the guest arrival time and the AV block. A colleague's
+    change to any of those moves nothing this looks at, so the save is
+    accepted and reverts them without a word -- proved by putting four
+    platters on a document through one form and one platter through
+    another: the second save returned 303 and the quantity went back to
+    one, with the food total recomputed from the stale line (review of
+    85e326f). Money, on a client-facing document.
+
+    Widening it is deliberate follow-up work rather than a line change,
+    because it starts refusing saves that today succeed, and the vendor
+    snapshot is rewritten by a different staff action entirely (the
+    bump-in confirmation) -- fingerprinting it naively would collide with
+    every open edit form and reject saves that conflict with nothing. Until
+    then those fields remain last-write-wins, exactly as they were before
+    this commit, and the conflict banner says so.
+    """
+    values = content if isinstance(content, dict) else {}
+    # Canonical JSON over the whole field list at once. sort_keys settles
+    # dict key order, which repr() leaves to insertion order and which would
+    # otherwise let the same content fingerprint two ways and reject a save
+    # that conflicts with nothing. One JSON document rather than a value at a
+    # time, so no separator byte is needed to stop a value running into the
+    # next name -- the brackets already do that. default=str keeps a stray
+    # non-JSON value from raising here, since this is a comparison and never
+    # a stored artefact.
+    payload = json.dumps(
+        [[name, values.get(name)] for name in sorted(fields)], sort_keys=True, default=str
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:32]
+
+
+def lock_draft_for_update(db: Session, document: Document) -> Document:
+    """Take the row lock BEFORE the caller reads the content it is about to
+    edit, and re-check that it is still a draft.
+
+    update_content takes this lock itself, but by then a caller that built
+    its new content from an earlier read has already lost: the value it is
+    about to write was decided against a version that may have moved. That
+    was survivable while the write was only last-write-wins -- one staff
+    member silently reverting another, which the edit screen has always
+    done. It stopped being survivable when the writer began RECORDING
+    authorship, because the reverted value is then marked as the reverting
+    staff member's own words and a later regenerate preserves it. A lost
+    update became a protected lost update.
+
+    So callers that read, decide, and then write take the lock here first,
+    making the read and the write one critical section -- the same shape
+    update_content_fields already has for the same reason.
+    """
+    db.refresh(document, with_for_update=True)
+    if document.status != DocumentStatus.draft:
+        raise ValueError(f"cannot edit a document that is already {document.status.value} -- only a draft can be edited")
+    return document
+
+
 def get_by_token(db: Session, token: str) -> Document | None:
     return db.execute(select(Document).where(Document.access_token == token)).scalar_one_or_none()
 
 
-def create_new_version(db: Session, booking: Booking, doc_type: DocumentType, content: dict, *, actor: str) -> Document:
+def create_new_version(
+    db: Session,
+    booking: Booking,
+    doc_type: DocumentType,
+    content: dict,
+    *,
+    actor: str,
+    regenerated_note: str | None = None,
+) -> Document:
+    """`regenerated_note` records what a human chose to keep and what they
+    let go when this version replaced one carrying their own words. It is
+    written in the SAME transaction as the version: committing the version
+    first and the note afterwards would let a crash in between leave the
+    values discarded with no record of the decision -- and that record is
+    Aaron's stated measure of whether the feature is working."""
     if booking.parent_booking_id is not None:
         # A linked child (see app.services.booking.add_linked_space) is
         # just a second room for the parent's event -- its own documents
@@ -79,6 +245,17 @@ def create_new_version(db: Session, booking: Booking, doc_type: DocumentType, co
             actor=actor,
         )
     )
+    if regenerated_note is not None:
+        db.add(
+            BookingEvent(
+                booking_id=booking.id,
+                event_type="document_regenerated",
+                field_name=f"{doc_type.value}_version",
+                old_value=str(previous.version) if previous else None,
+                new_value=truncate(f"v{next_version}: {regenerated_note}", 500),
+                actor=actor,
+            )
+        )
     db.commit()
     db.refresh(document)
 
@@ -90,7 +267,15 @@ def create_new_version(db: Session, booking: Booking, doc_type: DocumentType, co
     return document
 
 
-def update_content(db: Session, document: Document, content: dict, *, actor: str) -> Document:
+def update_content(
+    db: Session,
+    document: Document,
+    content: dict,
+    *,
+    actor: str,
+    authored_fields: Iterable[str] = (),
+    placeholders: Iterable[str] = (),
+) -> Document:
     """Hand-edit a draft's content in place. Draft-only, for the same
     reason delete_draft is: a draft was never shown to a client, so
     there's nothing for a client to have seen change under them. Anything
@@ -102,16 +287,94 @@ def update_content(db: Session, document: Document, content: dict, *, actor: str
     enough to know it was hand-edited, by whom and when, without spawning
     a version per keystroke. Regenerating afterward still discards the
     edit and re-derives from the booking, exactly as before.
+
+    `authored_fields` names the keys that hold a person's prose. Whichever
+    of them this save actually CHANGES is recorded as human-written, so a
+    later regenerate can tell the two apart instead of guessing. Callers
+    that are refreshing machine-derived values -- a vendor snapshot, a
+    rebuilt timeline -- pass nothing, which is the default: recording
+    those as somebody's words would freeze exactly the content a
+    regenerate exists to rebuild.
+
+    `placeholders` are the values the generator writes when nothing was
+    captured; a field set to one of them is never recorded as anyone's.
+
+    A caller that built `content` from an earlier read should take
+    lock_draft_for_update first, or the authorship it records may describe
+    a value it is unknowingly reverting.
     """
     db.refresh(document, with_for_update=True)
     if document.status != DocumentStatus.draft:
         raise ValueError(f"cannot edit a document that is already {document.status.value} -- only a draft can be edited")
 
-    document.content = content
+    written = content_authorship.changed_fields(
+        document.content, content, candidates=authored_fields, placeholders=placeholders
+    )
+    # Recorded LAST and assigned, per the module's caller rules: `record`
+    # deep-copies, so what it returns is a value SQLAlchemy compares
+    # unequal to the one it loaded, and the UPDATE is actually emitted.
+    document.content = content_authorship.record(content, written)
     db.add(
         BookingEvent(
             booking_id=document.booking_id,
             event_type="document_edited",
+            field_name=f"{document.type.value}_version",
+            new_value=str(document.version),
+            actor=actor,
+        )
+    )
+    db.commit()
+    db.refresh(document)
+    return document
+
+
+def update_content_fields(
+    db: Session,
+    document: Document,
+    changes: dict,
+    *,
+    actor: str,
+    event_type: str = "document_edited",
+    authored_fields: Iterable[str] = (),
+    placeholders: Iterable[str] = (),
+) -> Document:
+    """Merge specific keys into a draft's content, reading it AFTER the row
+    lock is taken.
+
+    `event_type` names what kind of change this was. The default is a
+    hand-edit; an approval applying an AI proposal passes its own, because
+    "document_edited" is what the regenerate screen reads as "a person
+    typed into this version" -- and an approval is not that (ultrareview,
+    2026-09-06: every approval was making the screen claim a hand-edit).
+
+    update_content above takes a whole content dict the caller built from
+    an earlier read, so two callers editing different keys last-write-wins
+    -- one silently reverts the other while both believe they succeeded
+    (2026-09-06 review). This exists for callers that know exactly which
+    keys they are changing: the lock, the read and the write are one
+    critical section, so a concurrent change to a different key survives.
+
+    `authored_fields` names the keys that hold a person's prose; see
+    update_content above.
+    """
+    db.refresh(document, with_for_update=True)
+    if document.status != DocumentStatus.draft:
+        raise ValueError(f"cannot edit a document that is already {document.status.value} -- only a draft can be edited")
+
+    # Diff BEFORE merging -- it needs the values being replaced -- but
+    # record AFTER, against the merged content. Recording against `changes`
+    # would produce a record naming only those keys, and merging that over
+    # the stored content erases every other name (caller rule 1).
+    content = dict(document.content)
+    written = content_authorship.changed_fields(
+        content, changes, candidates=authored_fields, placeholders=placeholders
+    )
+    content.update(changes)
+    document.content = content_authorship.record(content, written)
+    db.add(
+        BookingEvent(
+            booking_id=document.booking_id,
+            event_type=event_type,
             field_name=f"{document.type.value}_version",
             new_value=str(document.version),
             actor=actor,

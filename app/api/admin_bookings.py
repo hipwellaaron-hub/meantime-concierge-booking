@@ -11,7 +11,17 @@ from sqlalchemy.orm import Session
 
 from app.admin_auth import admin_ctx, require_csrf, require_staff
 from app.database import get_db
-from app.models import Booking, BookingEvent, BookingVendor, Document, Invoice, Space, Venue
+from app.models import (
+    BeoProposal,
+    BeoProposalField,
+    Booking,
+    BookingEvent,
+    BookingVendor,
+    Document,
+    Invoice,
+    Space,
+    Venue,
+)
 from app.models.booking_vendor import VendorType
 from app.models.booking import BookingStatus, MinReductionReasonCode
 from app.models.document import DocumentStatus, DocumentType
@@ -21,11 +31,15 @@ from app.models.staff_user import StaffUser
 from app.models.wizard_session import WizardSessionStatus
 from app.schemas.enquiry import EVENT_TYPES, EnquiryCreate
 from app.services import booking as booking_service
+from app.services import policy
 from app.services.contact_matching import (
     find_contact_by_email,
     find_or_create_contact,
     update_contact_details,
 )
+from app.services import beo_proposals as beo_proposals_service
+from app.services import content_authorship
+from app.services import document_regeneration
 from app.services import documents as documents_service
 from app.services import enquiry_classification
 from app.services import invoicing
@@ -34,6 +48,7 @@ from app.services import wizard as wizard_service
 from app.services import wizard_generation
 from app.services.attribution import summarize_channel
 from app.services.document_generation import (
+    NO_DIETARIES,
     REVIEW,
     build_event_timeline,
     build_total_food_spend,
@@ -331,6 +346,8 @@ def booking_detail(
     bookable_spaces = db.scalars(
         select(Space).where(Space.venue_id == booking.space.venue_id, Space.is_bookable.is_(True)).order_by(Space.name)
     ).all()
+    beo_draft = beo_proposals_service.current_draft_beo(db, booking_id)
+    beo_review_rows = beo_proposals_service.review_rows(db, booking_id, document=beo_draft)
     return templates.TemplateResponse(
         request,
         "admin/booking_detail.html",
@@ -346,11 +363,19 @@ def booking_detail(
             enquiry_notification_failed=any(
                 e.event_type == "enquiry_notification_failed" for e in booking.events
             ) and booking.enquiry_notification_sent_at is None,
+            beo_proposal_waiting=len(beo_review_rows),
+            beo_proposal_document_id=beo_draft.id if beo_draft is not None else None,
             first_touch_channel=summarize_channel(booking.first_touch_attribution),
             last_touch_channel=summarize_channel(booking.last_touch_attribution),
             touches_differ=booking.first_touch_attribution != booking.last_touch_attribution,
             conversion_dispatches=list(booking.conversion_dispatches),
             legacy_mismatches=legacy_documents.legacy_mismatches(booking),
+            # Prefilled into the "create final invoice" form so the hand
+            # path and the wizard path date an invoice the same way. Staff
+            # can still type over it -- the route takes whatever is posted.
+            suggested_final_due_date=policy.final_balance_due_date(
+                booking.event_date, issued_on=dt.date.today()
+            ),
         ),
     )
 
@@ -513,6 +538,20 @@ def add_linked_space(
     return _redirect_to_detail(booking_id)
 
 
+def _fresh_document_content(db: Session, booking: Booking, doc_type: DocumentType) -> dict:
+    if doc_type == DocumentType.agreement:
+        return generate_agreement_content(booking)
+    session = booking.wizard_session
+    if session is not None and session.status == WizardSessionStatus.submitted:
+        # A completed wizard already has the client's real food/
+        # beverage/music/extras answers -- generating blind [REVIEW]
+        # placeholders instead would silently throw that away just
+        # because staff triggered this by hand rather than the client
+        # submitting (see app.services.wizard_generation).
+        return wizard_generation.build_beo_content_for_session(db, session)
+    return generate_beo_content(booking)
+
+
 @router.post("/{booking_id}/documents/{doc_type}/generate", dependencies=[Depends(require_csrf)])
 def generate_document(
     booking_id: uuid.UUID,
@@ -521,21 +560,126 @@ def generate_document(
     db: Session = Depends(get_db),
     staff: StaffUser = Depends(require_staff),
 ):
+    """Regenerating rebuilds the document from the booking. Where that
+    would destroy something a person wrote -- an approved allergy note, a
+    hand-edited instruction -- it stops and asks, naming every field.
+    Silent loss of a declared allergy is the thing this whole feature
+    exists to prevent (Aaron, 2026-09-06), and a regenerate was doing it.
+    Nothing else changes: with nothing to lose, this is the same one click
+    it has always been."""
     booking = _get_booking_or_404(db, booking_id)
-    if doc_type == DocumentType.agreement:
-        content = generate_agreement_content(booking)
-    else:
-        session = booking.wizard_session
-        if session is not None and session.status == WizardSessionStatus.submitted:
-            # A completed wizard already has the client's real food/
-            # beverage/music/extras answers -- generating blind [REVIEW]
-            # placeholders instead would silently throw that away just
-            # because staff triggered this by hand rather than the client
-            # submitting (see app.services.wizard_generation).
-            content = wizard_generation.build_beo_content_for_session(db, session)
-        else:
-            content = generate_beo_content(booking)
+    content = _fresh_document_content(db, booking, doc_type)
+    # Locked, not merely read: this path decides "nothing is at risk" and
+    # then WRITES on that decision, so it needs the same window closed as
+    # the confirm path below. An approval landing between the two used to
+    # be destroyed with no confirmation shown and the approver told it had
+    # succeeded (proved live, 2026-09-06 re-review).
+    current = documents_service.lock_current_for_update(db, booking.id, doc_type)
+    losses = document_regeneration.losses(db, current, content)
+    pending = _pending_proposal_rows(db, booking, doc_type, current)
+    # Pending work counts even with nothing to lose: otherwise the one case
+    # that shows no screen at all is the one that silently invalidates it.
+    if losses or pending:
+        return _render_regenerate_confirmation(request, db, booking, doc_type, current, losses, staff, pending)
     documents_service.create_new_version(db, booking, doc_type, content, actor=_actor(staff))
+    return _redirect_to_detail(booking_id)
+
+
+def _pending_proposal_rows(db, booking, doc_type, current) -> list[dict]:
+    """A pending proposal is reviewed against a specific version. Creating a
+    new one leaves it needing re-approval, and approving it afterwards now
+    fails with "replaced by a newer version" (beo_proposals._locked_draft).
+    Aaron: "If a regenerate silently invalidates pending work, I will hit
+    exactly that error without knowing why. Tell me before, not after."
+    """
+    if doc_type != DocumentType.beo or current is None:
+        return []
+    return beo_proposals_service.review_rows(db, booking.id, document=current)
+
+
+def _render_regenerate_confirmation(request, db, booking, doc_type, current, losses, staff, pending):
+    return templates.TemplateResponse(
+        request,
+        "admin/regenerate_confirm.html",
+        {
+            **admin_ctx(request, staff),
+            "booking": booking,
+            "doc_type": doc_type,
+            "document": current,
+            "losses": losses,
+            "pending_proposal_rows": pending,
+            "expect": document_regeneration.fingerprint(losses, pending),
+            "hand_edit": document_regeneration.was_hand_edited(db, current),
+        },
+        status_code=409,
+    )
+
+
+@router.post("/{booking_id}/documents/{doc_type}/generate/confirm", dependencies=[Depends(require_csrf)])
+def generate_document_confirmed(
+    booking_id: uuid.UUID,
+    doc_type: DocumentType,
+    request: Request,
+    expect: str = Form(...),
+    keep: list[str] = Form(default=[]),
+    db: Session = Depends(get_db),
+    staff: StaffUser = Depends(require_staff),
+):
+    """The decision, applied. Values for the kept fields are read from the
+    document at write time, never from the form -- a value that travelled
+    through a browser and back is not the one that was approved.
+
+    `expect` is a compare-and-set on the exact set of losses that was
+    shown. If another approval landed, or the booking changed, in the
+    seconds in between, the human was answering a question about different
+    values: re-ask rather than write."""
+    booking = _get_booking_or_404(db, booking_id)
+    content = _fresh_document_content(db, booking, doc_type)
+    # Locked before the losses are read and held until the version is
+    # written: an approval landing in that window used to be silently
+    # reverted, with the audit line still claiming the value was kept
+    # (proved live with two sessions, 2026-09-06 review).
+    current = documents_service.lock_current_for_update(db, booking.id, doc_type)
+    losses = document_regeneration.losses(db, current, content)
+    # Read here, above the straight-through write, and not only inside the
+    # refusal below. A screen shown because of pending work alone reached
+    # a confirm with no losses -- which returned before the compare-and-set
+    # ran at all, so the one screen whose entire purpose is "tell me
+    # before, not after" was the one screen whose answer was never checked.
+    pending = _pending_proposal_rows(db, booking, doc_type, current)
+    if not losses and not pending:
+        # Nothing at risk and nothing outstanding: the ordinary one click,
+        # with no question asked and none to check.
+        documents_service.create_new_version(db, booking, doc_type, content, actor=_actor(staff))
+        return _redirect_to_detail(booking_id)
+    if document_regeneration.fingerprint(losses, pending) != expect:
+        # Nothing is written; the lock is released when the request ends
+        # and get_db closes the session.
+        return _render_regenerate_confirmation(request, db, booking, doc_type, current, losses, staff, pending)
+
+    # Only the fields this person was actually ASKED about. Being a
+    # protected name is not the same question: the form offers a checkbox
+    # per loss, so any other name arriving here was never on the screen --
+    # and `regenerated_note` is built from the losses, so a keep outside
+    # that set is written with nothing in the audit trail able to mention
+    # it. Proved: a POST keeping `terms_sections` on a BEO wrote
+    # terms_sections and terms_text into it, and froze an unoffered field
+    # over the [REVIEW] prompt that would have asked someone to fill it
+    # in, under the note "kept Room layout notes".
+    #
+    # `losses` is the local the fingerprint was just checked against, not
+    # a fresh losses() call -- recomputing would reopen the check-to-write
+    # window the row lock exists to close.
+    offered = {loss.field for loss in losses}
+    keep_fields = {name for name in keep if name in offered}
+    merged = document_regeneration.apply_choices(content, current, keep_fields)
+    documents_service.create_new_version(
+        db, booking, doc_type, merged, actor=_actor(staff),
+        # With no losses there was no keep decision, so there is none to
+        # record -- the screen was shown for the pending work alone, and
+        # summarise() would only say "no human values affected".
+        regenerated_note=document_regeneration.summarise(losses, keep_fields) if losses else None,
+    )
     return _redirect_to_detail(booking_id)
 
 
@@ -596,6 +740,63 @@ def _get_draft_document_or_404(db: Session, booking_id: uuid.UUID, document_id: 
     return document
 
 
+def _edit_form_response(
+    request, staff, db, booking_id, document, *, form_content, conflicts=(), conflict=False, status_code=200
+):
+    """The edit screen. Shared by the GET and by the conflict response, so a
+    refused save comes back as the same form carrying the staff member's own
+    words -- not a JSON error that throws their typing away."""
+    template = (
+        "admin/document_edit_agreement.html"
+        if document.type == DocumentType.agreement
+        else "admin/document_edit_beo.html"
+    )
+    # Only on the document approval would actually write to. A superseded
+    # (but still draft) version renders no panel, so the page cannot show
+    # one document's values above a form that edits another.
+    current_draft = (
+        beo_proposals_service.current_draft_beo(db, booking_id) if document.type == DocumentType.beo else None
+    )
+    on_current = current_draft is not None and current_draft.id == document.id
+    proposal = beo_proposals_service.pending_proposal(db, booking_id) if on_current else None
+    return templates.TemplateResponse(
+        request,
+        template,
+        admin_ctx(
+            request,
+            staff,
+            document=document,
+            booking=document.booking,
+            # What the form renders from: the stored content on a GET, and on
+            # a refused save the staff member's own submission.
+            form_content=form_content,
+            conflicts=list(conflicts),
+            conflict=conflict,
+            vendor_types=[vt.value for vt in VendorType],
+            # Carried back on save and compared: the form is rendered from
+            # values that may be minutes old, and without this a change
+            # somebody else committed in between is silently reverted -- and
+            # now also recorded as the reverting staff member's own words.
+            content_expect=documents_service.content_fingerprint(
+                document.content, document_regeneration.PROTECTED_FIELD_NAMES
+            ),
+            # What the AI has proposed for this Event Order and has not yet
+            # had approved -- shown against the value each would replace.
+            beo_proposal=proposal if proposal is not None and proposal.is_reviewable else None,
+            beo_review_rows=beo_proposals_service.review_rows(db, booking_id, document=current_draft)
+            if on_current
+            else [],
+            beo_proposal_stale=(
+                proposal is not None
+                and proposal.document_id is not None
+                and current_draft is not None
+                and proposal.document_id != current_draft.id
+            ),
+        ),
+        status_code=status_code,
+    )
+
+
 @router.get("/{booking_id}/documents/{document_id}/edit", response_class=HTMLResponse)
 def edit_document_form(
     booking_id: uuid.UUID,
@@ -606,22 +807,7 @@ def edit_document_form(
 ):
     _get_booking_or_404(db, booking_id)
     document = _get_draft_document_or_404(db, booking_id, document_id)
-    template = (
-        "admin/document_edit_agreement.html"
-        if document.type == DocumentType.agreement
-        else "admin/document_edit_beo.html"
-    )
-    return templates.TemplateResponse(
-        request,
-        template,
-        admin_ctx(
-            request,
-            staff,
-            document=document,
-            booking=document.booking,
-            vendor_types=[vt.value for vt in VendorType],
-        ),
-    )
+    return _edit_form_response(request, staff, db, booking_id, document, form_content=document.content)
 
 
 @router.post("/{booking_id}/documents/{document_id}/edit", dependencies=[Depends(require_csrf)])
@@ -659,6 +845,7 @@ def save_document_edit(
     item_quantities: list[str] = Form(default=[]),
     item_unit_prices: list[str] = Form(default=[]),
     item_categories: list[str] = Form(default=[]),
+    content_expect: str = Form(default=""),
     db: Session = Depends(get_db),
     staff: StaffUser = Depends(require_staff),
 ):
@@ -669,6 +856,105 @@ def save_document_edit(
     one that can't be hand-tweaked at all."""
     _get_booking_or_404(db, booking_id)
     document = _get_draft_document_or_404(db, booking_id, document_id)
+    # Locked BEFORE the content is read, so the values this form's save is
+    # compared against are the ones it is actually replacing. Without it a
+    # change committed between the page load and the save is reverted AND
+    # recorded as this staff member's own words (see lock_draft_for_update).
+    try:
+        documents_service.lock_draft_for_update(db, document)
+    except ValueError as exc:
+        # Sent or signed between the check above and the locked re-read.
+        # The same condition a moment earlier is a 409 from
+        # _get_draft_document_or_404, so it is a 409 here too rather than
+        # an unhandled ValueError and a 500.
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    if content_expect != documents_service.content_fingerprint(
+        document.content, document_regeneration.PROTECTED_FIELD_NAMES
+    ):
+        # Refuse, but hand their own words back. Throwing a JSON error at a
+        # staff member who has just typed a long note would protect one
+        # person's writing by destroying another's, in a feature whose whole
+        # purpose is that neither happens. The form comes back with what
+        # they wrote, a fresh fingerprint, and a table naming exactly what
+        # saving again would replace -- tell me before, not after. An empty
+        # value (a tab opened before this shipped) lands here too.
+        submitted = {
+            "catering_order_and_service_style": catering_order_and_service_style.strip(),
+            "bar_structure": bar_structure.strip(),
+            "room_layout_notes": room_layout_notes.strip(),
+            "music": music.strip(),
+            "entertainment": entertainment.strip(),
+            "music_entertainment": music_entertainment.strip(),
+            "special_notes": special_notes.strip(),
+            "dietaries": dietaries.strip(),
+            "accessibility": accessibility.strip(),
+            "decorations": decorations.strip(),
+            "status_text": status_text.strip(),
+            "onsite_contact": onsite_contact.strip(),
+            "internal_notes": internal_notes.strip(),
+        }
+        if document.type == DocumentType.agreement:
+            submitted = {
+                "terms_sections": [
+                    {"heading": heading.strip(), "body": body.strip()}
+                    for heading, body in zip(headings, bodies)
+                    if heading.strip() or body.strip()
+                ]
+            }
+        stored = document.content if isinstance(document.content, dict) else {}
+        # The labels the regenerate screen already shows for these fields,
+        # so one document's field is called the same thing on both screens.
+        labels = {spec.name: spec.label for spec in document_regeneration.PROTECTED_FIELDS}
+        # What this save would REPLACE -- not what it would record as
+        # authored. Asking changed_fields, which is the authorship question,
+        # meant a submission that writes the generator's placeholder over
+        # somebody's real text counted as nothing, so the table came back
+        # empty and the page said nothing at all (review of 84916a7).
+        # differing_fields is the same normalisation without that skip.
+        moved = content_authorship.differing_fields(
+            stored,
+            submitted,
+            candidates=document_regeneration.PROTECTED_FIELD_NAMES,
+            placeholders=document_regeneration.GENERATED_PLACEHOLDERS,
+        )
+        # Rendered through each field's own renderer, so an agreement's
+        # terms_sections reads as its clauses rather than as a repr of a
+        # list of dicts -- this is the screen somebody decides the fate of
+        # a hand-negotiated contract on.
+        specs = {spec.name: spec for spec in document_regeneration.PROTECTED_FIELDS}
+        conflicts = []
+        for name in sorted(moved):
+            spec = specs.get(name)
+            render = spec.render if spec is not None else str
+            conflicts.append(
+                {
+                    "label": labels.get(name, name.replace("_", " ").capitalize()),
+                    "stored": render(stored.get(name)),
+                    "yours": render(submitted[name]),
+                }
+            )
+        return _edit_form_response(
+            request,
+            staff,
+            db,
+            booking_id,
+            document,
+            # Every submitted value, including the empty ones. Overlaying only
+            # the truthy ones put back the text of a field the staff member had
+            # just cleared, so the form came back holding words they had
+            # deleted and saving again restored them -- the exact silent
+            # reversion this whole change exists to stop.
+            form_content={**stored, **submitted},
+            conflicts=conflicts,
+            # Separate from the row list: a refusal must never be silent, and
+            # the rows can legitimately come back empty (a formatting-only
+            # change moves the fingerprint without changing any value this
+            # comparison considers different).
+            conflict=True,
+            status_code=409,
+        )
+
     content = dict(document.content)
 
     if document.type == DocumentType.agreement:
@@ -796,7 +1082,7 @@ def save_document_edit(
         content["entertainment"] = entertainment.strip() or None
         content["music_entertainment"] = music_entertainment.strip() or None
         content["special_notes"] = special_notes.strip()
-        content["dietaries"] = dietaries.strip() or "No dietary requirements declared"
+        content["dietaries"] = dietaries.strip() or NO_DIETARIES
         content["accessibility"] = accessibility.strip() or None
         content["decorations"] = decorations.strip() or None
         content["status_text"] = status_text.strip() or None
@@ -822,8 +1108,157 @@ def save_document_edit(
             Decimal(existing_deposit) if existing_deposit is not None else None,
         )
 
-    documents_service.update_content(db, document, content, actor=_actor(staff))
+    # The staff edit form re-posts every field it renders, prefilled, so the
+    # fields that are a person's words are named here and the writer records
+    # only the ones this save actually changes. PROTECTED_FIELD_NAMES is the
+    # same set the regenerate guard asks about, which is the point: the guard
+    # stops guessing which of them a human wrote.
+    documents_service.update_content(
+        db,
+        document,
+        content,
+        actor=_actor(staff),
+        authored_fields=document_regeneration.PROTECTED_FIELD_NAMES,
+        placeholders=document_regeneration.GENERATED_PLACEHOLDERS,
+    )
     return _redirect_to_detail(booking_id)
+
+
+# --- Event Order proposals: propose-and-approve --------------------------------
+#
+# The AI proposes values (app.api.ai_write); nothing reaches the document
+# until a staff member approves it here, field by field or all at once. The
+# textarea carries whatever Aaron actually wants written, so approving an
+# edited value is one action rather than approve-then-fix -- and the edit
+# is recorded, because it is the measure of whether the proposals are any
+# good.
+
+
+@router.post("/{booking_id}/beo-proposals/{proposal_id}/review", dependencies=[Depends(require_csrf)])
+def review_beo_proposal(
+    booking_id: uuid.UUID,
+    proposal_id: uuid.UUID,
+    request: Request,
+    action: str = Form(...),
+    # None, not "": a field whose box was not submitted keeps what was
+    # proposed, while a box someone actually emptied is a real change the
+    # house rules then refuse (2026-09-06 review -- defaulting these to ""
+    # let a request with no textarea blank a declared allergy).
+    value_catering_order_and_service_style: str | None = Form(default=None),
+    value_bar_structure: str | None = Form(default=None),
+    value_room_layout_notes: str | None = Form(default=None),
+    value_music: str | None = Form(default=None),
+    value_entertainment: str | None = Form(default=None),
+    value_dietaries: str | None = Form(default=None),
+    value_accessibility: str | None = Form(default=None),
+    value_decorations: str | None = Form(default=None),
+    value_special_notes: str | None = Form(default=None),
+    value_onsite_contact: str | None = Form(default=None),
+    db: Session = Depends(get_db),
+    staff: StaffUser = Depends(require_staff),
+):
+    _get_booking_or_404(db, booking_id)
+    proposal = db.get(BeoProposal, proposal_id)
+    if proposal is None or proposal.booking_id != booking_id:
+        raise HTTPException(status_code=404, detail="Proposal not found on this booking")
+
+    submitted = {
+        k: v for k, v in {
+        "catering_order_and_service_style": value_catering_order_and_service_style,
+        "bar_structure": value_bar_structure,
+        "room_layout_notes": value_room_layout_notes,
+        "music": value_music,
+        "entertainment": value_entertainment,
+        "dietaries": value_dietaries,
+        "accessibility": value_accessibility,
+        "decorations": value_decorations,
+        "special_notes": value_special_notes,
+        "onsite_contact": value_onsite_contact,
+        }.items() if v is not None
+    }
+
+    verb, _, target = action.partition(":")
+    try:
+        if verb == "approve_all":
+            beo_proposals_service.approve_all(db, proposal, actor=_actor(staff), values=submitted)
+        elif verb in ("approve", "reject"):
+            try:
+                field_id = uuid.UUID(target)
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail="Unknown proposal field") from exc
+            field_row = db.get(BeoProposalField, field_id)
+            if field_row is None or field_row.proposal_id != proposal.id:
+                raise HTTPException(status_code=404, detail="Proposal field not found on this proposal")
+            if verb == "approve":
+                beo_proposals_service.approve_field(
+                    db, field_row, actor=_actor(staff), value=submitted.get(field_row.field)
+                )
+            else:
+                beo_proposals_service.reject_field(db, field_row, actor=_actor(staff))
+        else:
+            raise HTTPException(status_code=422, detail="Unknown action")
+    except beo_proposals_service.ProposalError as exc:
+        # Nothing is half-applied: the field rows and audit rows this
+        # attempt added are discarded before the response is built.
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        # documents.update_content_fields refuses anything not a draft.
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    document = beo_proposals_service.current_draft_beo(db, booking_id)
+    if document is not None:
+        return RedirectResponse(
+            url=f"/admin/bookings/{booking_id}/documents/{document.id}/edit", status_code=303
+        )
+    return _redirect_to_detail(booking_id)
+
+
+# Sentinel for _refresh_draft_beo_timeline: rebuild the vendor snapshot from
+# the booking rather than keeping the one already stored.
+_REBUILD_VENDORS = object()
+
+
+def _refresh_draft_beo_timeline(db: Session, booking, *, actor: str, vendors=None) -> None:
+    """Re-say the run sheet after confirming something it reports.
+
+    Setup access and a vendor's bump-in both print as "requested, pending
+    confirmation" until staff confirm them, and both are composed into the
+    stored Event Order at generation. Confirming the fact without
+    re-composing the document leaves the document saying pending forever --
+    which is why HAM-20260911-AKPSO and HAM-20260912-2R11Q still read
+    "requested, pending confirmation" after Aaron had confirmed the times to
+    both clients in writing. The bump-in handler always did this refresh;
+    the setup-access handler never did, and nothing made that asymmetry
+    visible. One function now, so the next confirm-style action cannot
+    quietly skip it.
+
+    A sent or signed document is NEVER mutated -- staff regenerate, per the
+    existing document rules -- so this is a no-op on anything but a draft.
+    An already-sent Event Order goes on saying "requested" until it is
+    regenerated. That is the correct answer for a document a client already
+    holds, not a gap in this function.
+
+    `vendors` defaults to keeping whatever snapshot is stored: confirming
+    setup access should change the setup access line and nothing else. Pass
+    _REBUILD_VENDORS to rebuild it from the booking, which is what
+    confirming a bump-in needs.
+
+    No authored_fields on the write: both keys are machine-derived, and
+    recording them as a person's words would stop the next regenerate
+    rebuilding the very values this refresh exists to keep current.
+    """
+    if booking is None:
+        return
+    current_beo = documents_service.get_current(db, booking.id, DocumentType.beo)
+    if current_beo is None or current_beo.status != DocumentStatus.draft:
+        return
+    content = dict(current_beo.content)
+    if vendors is _REBUILD_VENDORS:
+        content["vendors"] = build_vendor_snapshot(booking.vendors)
+    content["event_timeline"] = build_event_timeline(booking, content.get("vendors"))
+    documents_service.update_content(db, current_beo, content, actor=actor)
 
 
 @router.post("/{booking_id}/vendors/{vendor_id}/confirm-bump-in", dependencies=[Depends(require_csrf)])
@@ -855,17 +1290,9 @@ def confirm_vendor_bump_in(
     )
     db.commit()
 
-    # A current DRAFT BEO gets its stored vendor snapshot refreshed so the
-    # document stops saying "requested". A sent/signed document is never
-    # mutated -- staff regenerate, per the existing document rules.
-    current_beo = documents_service.get_current(db, booking_id, DocumentType.beo)
-    if current_beo is not None and current_beo.status == DocumentStatus.draft:
-        booking = db.get(Booking, booking_id)
-        content = dict(current_beo.content)
-        snapshot = build_vendor_snapshot(booking.vendors)
-        content["vendors"] = snapshot
-        content["event_timeline"] = build_event_timeline(booking, snapshot)
-        documents_service.update_content(db, current_beo, content, actor=_actor(staff))
+    _refresh_draft_beo_timeline(
+        db, db.get(Booking, booking_id), actor=_actor(staff), vendors=_REBUILD_VENDORS
+    )
     return _redirect_to_detail(booking_id)
 
 
@@ -1194,6 +1621,10 @@ def confirm_setup_access(
         booking_service.confirm_setup_access(db, booking, actor=_actor(staff))
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    # Confirming the booking fact is only half the job: the Event Order
+    # composed "requested, pending confirmation" into its run sheet at
+    # generation, and without this it goes on saying so.
+    _refresh_draft_beo_timeline(db, booking, actor=_actor(staff))
     return _redirect_to_detail(booking_id)
 
 

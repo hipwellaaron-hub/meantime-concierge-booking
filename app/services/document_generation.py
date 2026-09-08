@@ -6,6 +6,7 @@ hard blocking are wrong; this is the middle path.
 """
 
 import datetime as dt
+import re
 from decimal import Decimal, InvalidOperation
 
 from app.models import Booking
@@ -13,6 +14,11 @@ from app.services import policy
 from app.services.enquiry_classification import looks_like_18th
 from app.utils import format_person_name
 from app.services.policy import STANDARD_DEPOSIT
+
+# The document never prints a blank Dietaries section: an empty value
+# reads as this sentence. The one definition -- the hand-edit form, the
+# regeneration placeholder check and an approved proposal all import it.
+NO_DIETARIES = "No dietary requirements declared"
 
 REVIEW = "[REVIEW]"
 
@@ -415,20 +421,56 @@ def build_total_food_spend(food_total: Decimal | None, deposit_paid: Decimal | N
     }
 
 
-def _bar_structure_with_credit(bar_structure, bar_credit) -> str:
-    """A bar credit is a promise the FLOOR has to honour, so it belongs in
-    the bar structure the team actually reads on the night -- not only in
-    the agreement the client signed. It used to be typed as free text into
-    the Minimum Spend clause, which meant the one group of people who
-    needed it never saw it.
+# A credit line an OLDER version of this module composed INTO the field.
+# Nothing writes one any more (see bar_structure_shown below); this exists
+# only so a document stored before that change does not print the figure
+# twice. MULTILINE because a person may have typed above it.
+_CREDIT_LINE_RE = re.compile(
+    r"^[ \t]*\$[\d,]+(?:\.\d{2})? bar credit included, applied on the night\.[ \t]*\n?",
+    re.IGNORECASE | re.MULTILINE,
+)
 
-    Stated first, before the structure itself, because it changes how the
-    tab is run from the opening drink."""
-    base = bar_structure or f"{REVIEW} add bar structure"
-    if bar_credit is not None and bar_credit > 0:
-        credit = f"${bar_credit:,.0f} bar credit included, applied on the night."
-        return credit + "\n\n" + base
-    return base
+
+def strip_bar_credit_line(bar_structure: object) -> str:
+    """The bar structure without any credit line a previous version composed
+    into it. Legacy only -- new content never contains one."""
+    if not isinstance(bar_structure, str):
+        return ""
+    return _CREDIT_LINE_RE.sub("", bar_structure).strip()
+
+
+def bar_structure_shown(content: object) -> str:
+    """What the Bar Structure section PRINTS: the credit, then the words.
+
+    A bar credit is a promise the FLOOR has to honour, so it belongs where
+    the team reads on the night and not only in the agreement the client
+    signed. It used to get there by being composed INTO content
+    ["bar_structure"], which put a generated fragment inside a
+    human-editable field and made every consumer responsible for peeling it
+    off again. Four of them did not, and each was its own defect: an
+    approval replaced the field and deleted the promise; a repeat of the
+    line doubled it; the regenerate screen reported the generator's own
+    placeholder as a human value at risk and suppressed its "would be
+    emptied" badge; the approval badge stopped matching; the review panel
+    claimed generated text was somebody's words; and a kept field froze a
+    stale figure beside a bar_credit that said otherwise (reviews of
+    43dc67a).
+
+    So the field holds only what a person or the generator wrote about the
+    bar, the figure stays in content["bar_credit"] where it already lived,
+    and the two are joined HERE, at the one point that renders them. There
+    is nothing to strip, nothing to keep idempotent, and nothing for a
+    future writer to remember.
+    """
+    values = content if isinstance(content, dict) else {}
+    structure = strip_bar_credit_line(values.get("bar_structure")) or f"{REVIEW} add bar structure"
+    try:
+        credit = Decimal(str(values.get("bar_credit") or "0"))
+    except InvalidOperation:
+        return structure
+    if credit <= 0:
+        return structure
+    return f"${credit:,.0f} bar credit included, applied on the night.\n\n{structure}"
 
 
 def generate_beo_content(
@@ -481,7 +523,9 @@ def generate_beo_content(
             "note": None if food_order_line_items else f"{REVIEW} no food order captured yet",
         },
         "total_food_spend": build_total_food_spend(food_total, deposit_paid),
-        "bar_structure": _bar_structure_with_credit(bar_structure, booking.bar_credit),
+        # The credit is NOT composed in here -- see bar_structure_shown.
+        # This field holds only the words about the bar.
+        "bar_structure": bar_structure or f"{REVIEW} add bar structure",
         # Also carried as its own field so the Event Order can show the
         # figure without anyone having to read it out of the prose.
         "bar_credit": str(booking.bar_credit),
@@ -494,7 +538,7 @@ def generate_beo_content(
         "music_entertainment": (
             (music_entertainment or f"{REVIEW} add music/entertainment detail") if music is None else None
         ),
-        "dietaries": dietaries or "No dietary requirements declared",
+        "dietaries": dietaries or NO_DIETARIES,
         "accessibility": accessibility,
         "decorations": decorations,
         "status_text": status_text,
@@ -518,7 +562,10 @@ def generate_beo_content(
         "_reference": {
             "reference_code": booking.reference_code,
             "event_name": booking.event_name,
-            "space_name": booking.space.name,
+            # Both rooms -- see Booking.all_space_names. Frozen here for
+            # the record; the band renders it live so an already-sent
+            # document is not stuck naming one room.
+            "space_name": booking.all_space_names,
             "adult_count": booking.adult_count,
             "child_count": booking.child_count,
             # Display-cased: a client who typed "ruby hipwell" into the
@@ -542,7 +589,10 @@ def generate_agreement_content(booking: Booking) -> dict:
     terms_sections = _terms_sections(booking)
     return {
         "venue": policy.VENUE_TRADING_NAME,
-        "space_name": space.name,
+        # Both rooms. The agreement header is frozen at generation on
+        # purpose (a signed contract reflects what was agreed), so
+        # unlike the Event Order band this has to be right HERE.
+        "space_name": booking.all_space_names,
         "event_name": booking.event_name,
         "event_date": _format_date(booking.event_date),
         "start_time": _format_time(booking.start_time),

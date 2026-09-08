@@ -1,3 +1,5 @@
+from urllib.parse import quote
+
 from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
@@ -5,6 +7,7 @@ from starlette.responses import FileResponse, PlainTextResponse, RedirectRespons
 
 from app.admin_auth import NotAuthenticated
 from app.api.ai_read import router as ai_read_router
+from app.api.ai_write import router as ai_write_router
 from app.api.admin_auth import router as admin_auth_router
 from app.api.admin_bookings import router as admin_bookings_router
 from app.api.admin_calendar import router as admin_calendar_router
@@ -115,7 +118,9 @@ app.add_middleware(SessionMiddleware, secret_key=settings.secret_key, https_only
 def _redirect_to_login(request: Request, exc: NotAuthenticated) -> RedirectResponse:
     # A browser-driven dashboard, not an API client -- an unauthenticated
     # staff route should land back on the login form, not a bare 401.
-    return RedirectResponse(url=f"/admin/login?next={request.url.path}", status_code=303)
+    # quote(): the path is attacker-chosen, and an unencoded "&" or "#" in it
+    # would inject further parameters into the login URL (2026-09-07 review).
+    return RedirectResponse(url=f"/admin/login?next={quote(request.url.path, safe='/')}", status_code=303)
 
 
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
@@ -150,6 +155,7 @@ def browserconfig():
     return FileResponse("app/static/icons/browserconfig.xml", media_type="application/xml", headers=_ICON_CACHE)
 
 app.include_router(ai_read_router)
+app.include_router(ai_write_router)
 app.include_router(availability_router)
 app.include_router(health_router)
 app.include_router(documents_router)

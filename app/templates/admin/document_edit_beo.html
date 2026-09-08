@@ -10,8 +10,117 @@
   phone corrections never require sending them back through the wizard.
 </p>
 
-<form method="post" action="/admin/bookings/{{ booking.id }}/documents/{{ document.id }}/edit">
+{% if beo_proposal and beo_review_rows %}
+{# Proposed values from the AI transcription layer. This form is separate
+   from the edit form below and posts to its own route: approving a field
+   writes only that field, and nothing here is applied until you press a
+   button. The textarea is the value that will be written -- edit it first
+   and the edit is recorded against the proposal, which is how we measure
+   whether the transcription is worth keeping. #}
+<div class="card" style="border-color: var(--gold);">
+  <h2>Proposed by Claude &mdash; {{ beo_review_rows | length }} field{{ "" if beo_review_rows | length == 1 else "s" }} awaiting approval</h2>
+  <p class="muted" style="margin:0 0 4px;">
+    From: {{ beo_proposal.source }}
+    &middot; {{ beo_proposal.created_at | sydney_time("%d %b %H:%M") }}
+    {% if beo_proposal.model %}&middot; {{ beo_proposal.model }}{% endif %}
+  </p>
+  <p class="muted" style="margin:0 0 14px; font-size:0.85rem;">
+    Nothing below has been applied. Approving writes that field to this draft Event Order; the food order,
+    the totals and the status are never proposable. The house rules run again on whatever the box says when
+    you approve, so editing here is checked too.
+  </p>
+  {% if beo_proposal_stale %}
+  <p style="margin:0 0 14px; padding:8px 10px; border:1px solid var(--ember); border-radius:6px; font-size:0.85rem;">
+    <b>Proposed against an earlier version of this Event Order.</b> It has been regenerated since, so read each
+    value against what the document says now.
+  </p>
+  {% endif %}
+  {% if beo_proposal.warning_note %}
+  <p style="margin:0 0 14px; padding:8px 10px; border:1px solid var(--ember); border-radius:6px; font-size:0.85rem;">
+    <b>Worth knowing:</b> {{ beo_proposal.warning_note }}
+  </p>
+  {% endif %}
+
+  <form method="post" action="/admin/bookings/{{ booking.id }}/beo-proposals/{{ beo_proposal.id }}/review">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+    {% for row in beo_review_rows %}
+    <div style="border-top:1px solid var(--border); padding:14px 0;">
+      <label style="margin:0 0 6px;"><b>{{ row.label }}</b></label>
+
+      <p class="muted" style="margin:0 0 4px; font-size:0.8rem;">
+        {% if row.replaces_text %}<b style="color:var(--ember);">Replaces text already on the Event Order:</b>
+        {% elif row.current %}Replaces a generation placeholder:
+        {% else %}This field is currently empty.{% endif %}
+      </p>
+      {% if row.current %}
+      <pre style="margin:0 0 10px; padding:8px 10px; background:var(--bg); border:1px solid var(--border); border-radius:6px; white-space:pre-wrap; font-size:0.85rem; color:var(--muted);">{{ row.current }}</pre>
+      {% endif %}
+
+      <label style="margin:0 0 4px; font-size:0.85rem;">Proposed <span class="muted">(edit before approving if it is not quite right)</span></label>
+      <textarea name="value_{{ row.field }}" rows="3">{{ row.proposed }}</textarea>
+
+      <div style="margin-top:6px;">
+        <button class="btn" type="submit" name="action" value="approve:{{ row.id }}">Approve {{ row.label }}</button>
+        <button class="btn danger" type="submit" name="action" value="reject:{{ row.id }}">Reject</button>
+      </div>
+    </div>
+    {% endfor %}
+
+    <div style="border-top:1px solid var(--border); padding-top:14px;">
+      <button type="submit" name="action" value="approve_all">Approve all {{ beo_review_rows | length }}</button>
+      <span class="muted" style="font-size:0.85rem;">Writes every field above, using whatever the boxes say now.</span>
+    </div>
+  </form>
+</div>
+{% endif %}
+
+{% if conflict %}
+<div class="card" style="border-left:4px solid #b00020;">
+  <h2 style="margin-top:0;">This document changed while you had it open</h2>
+  <p>
+    Somebody else saved this document after your page was loaded. Your own text is
+    still in the form below, exactly as you typed it. Saving again will replace
+    what is on the document now with your version.
+  </p>
+  {% if conflicts %}
+  <table>
+    <thead><tr><th>Field</th><th>On the document now</th><th>Saving would put</th></tr></thead>
+    <tbody>
+      {% for row in conflicts %}
+      <tr>
+        <td><strong>{{ row.label }}</strong></td>
+        <td style="white-space:pre-wrap;">{{ row.stored or "(empty)" }}</td>
+        <td style="white-space:pre-wrap;">{{ row.yours or "(empty)" }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p>
+    None of the fields on this form would read differently afterwards, so the
+    change was to something this comparison does not treat as a difference --
+    formatting, most likely. Reload if you want to be certain before saving.
+  </p>
+  {% endif %}
+  <p>
+    Nothing has been written yet. Changes you made to the timeline, vendors or
+    food order were <strong>not</strong> carried over -- re-enter those before saving.
+  </p>
+  <p>
+    This check covers the written fields above only. The food order, vendors and
+    timeline are <strong>not</strong> compared, so a change somebody else made to
+    those will be replaced by whatever this form now holds, without a warning.
+  </p>
+</div>
+{% endif %}
+<form id="beo-edit-form" method="post" action="/admin/bookings/{{ booking.id }}/documents/{{ document.id }}/edit">
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  {# Compare-and-set: the values this form was rendered from. The save
+     refuses if they have moved, rather than reverting somebody else's
+     edit and recording the revert as yours. #}
+  <input type="hidden" name="content_expect" value="{{ content_expect }}">
+
 
   <div class="card">
     <h2>Timeline</h2>
@@ -71,7 +180,7 @@
     <h2>Food order</h2>
     <p class="muted">Clear an item's description to remove that line.</p>
     <div id="line-items">
-      {% for item in document.content.food_order.line_items %}
+      {% for item in form_content.food_order.line_items %}
       <div class="field-row line-item">
         <div style="flex:2;"><label>Item</label><input type="text" name="item_descriptions" value="{{ item.description or item.item }}" maxlength="255"></div>
         <div>
@@ -95,62 +204,76 @@
   <div class="card">
     <h2>Details</h2>
     <label>Catering order &amp; service style</label>
-    <textarea name="catering_order_and_service_style" rows="3">{{ document.content.catering_order_and_service_style }}</textarea>
+    <textarea name="catering_order_and_service_style" rows="3">{{ form_content.catering_order_and_service_style }}</textarea>
 
     <label>Bar structure</label>
-    <textarea name="bar_structure" rows="3">{{ document.content.bar_structure }}</textarea>
+    <textarea name="bar_structure" rows="3">{{ form_content.bar_structure }}</textarea>
 
     <label>Room layout notes</label>
-    <textarea name="room_layout_notes" rows="2">{{ document.content.room_layout_notes }}</textarea>
+    <textarea name="room_layout_notes" rows="2">{{ form_content.room_layout_notes }}</textarea>
 
     <label>Music</label>
-    <textarea name="music" rows="2">{{ document.content.music or document.content.music_entertainment or "" }}</textarea>
+    <textarea name="music" rows="2">{{ form_content.music or form_content.music_entertainment or "" }}</textarea>
 
     <label>Entertainment</label>
-    <textarea name="entertainment" rows="2">{{ document.content.entertainment or "" }}</textarea>
+    <textarea name="entertainment" rows="2">{{ form_content.entertainment or "" }}</textarea>
 
     <label>Dietaries <span class="muted">(never blank on the document &mdash; empty here prints "No dietary requirements declared")</span></label>
-    <textarea name="dietaries" rows="2">{{ document.content.get("dietaries") if document.content.get("dietaries") != "No dietary requirements declared" else "" }}</textarea>
+    <textarea name="dietaries" rows="2">{{ form_content.get("dietaries") if form_content.get("dietaries") != "No dietary requirements declared" else "" }}</textarea>
 
     <label>Accessibility</label>
-    <textarea name="accessibility" rows="2">{{ document.content.accessibility or "" }}</textarea>
+    <textarea name="accessibility" rows="2">{{ form_content.accessibility or "" }}</textarea>
 
     <label>Decorations</label>
-    <textarea name="decorations" rows="2">{{ document.content.decorations or "" }}</textarea>
+    <textarea name="decorations" rows="2">{{ form_content.decorations or "" }}</textarea>
 
     <label>Special notes</label>
-    <textarea name="special_notes" rows="3">{{ document.content.special_notes }}</textarea>
+    <textarea name="special_notes" rows="3">{{ form_content.special_notes }}</textarea>
 
     <label>Status</label>
-    <input type="text" name="status_text" value="{{ document.content.status_text or '' }}" maxlength="500">
+    <input type="text" name="status_text" value="{{ form_content.status_text or '' }}" maxlength="500">
 
     <label>Onsite contact</label>
-    <input type="text" name="onsite_contact" value="{{ document.content.get('onsite_contact') or '' }}" maxlength="255">
+    <input type="text" name="onsite_contact" value="{{ form_content.get('onsite_contact') or '' }}" maxlength="255">
   </div>
 
-  {% if document.content.av %}
+  {% if form_content.av %}
   <div class="card">
     <h2>AV / Screen <span class="muted">(The Loft)</span></h2>
-    <label><input type="checkbox" name="av_video_slideshow" value="1" {% if document.content.av.video_slideshow %}checked{% endif %}> Video / slideshow supplied</label>
-    <label><input type="checkbox" name="av_microphones" value="1" {% if document.content.av.microphones_for_speeches %}checked{% endif %}> Microphones for speeches</label>
+    <label><input type="checkbox" name="av_video_slideshow" value="1" {% if form_content.av.video_slideshow %}checked{% endif %}> Video / slideshow supplied</label>
+    <label><input type="checkbox" name="av_microphones" value="1" {% if form_content.av.microphones_for_speeches %}checked{% endif %}> Microphones for speeches</label>
     <label>AV notes</label>
-    <textarea name="av_notes" rows="2">{{ document.content.av.notes or "" }}</textarea>
-    <p class="muted">USB deadline recomputes from the event date: {{ document.content.av.usb_deadline_display or "—" }}</p>
+    <textarea name="av_notes" rows="2">{{ form_content.av.notes or "" }}</textarea>
+    <p class="muted">USB deadline recomputes from the event date: {{ form_content.av.usb_deadline_display or "—" }}</p>
   </div>
   {% endif %}
 
   <div class="card" style="border-color: var(--ember);">
     <h2>Internal notes <span class="muted">(kitchen / bar / staffing &mdash; never shown to the client, never in the PDF)</span></h2>
-    <textarea name="internal_notes" rows="3">{{ document.content.get("internal_notes") or "" }}</textarea>
+    <textarea name="internal_notes" rows="3">{{ form_content.get("internal_notes") or "" }}</textarea>
   </div>
 
   <button type="submit">Save changes</button>
   <a class="secondary-link" href="/admin/bookings/{{ booking.id }}">Cancel</a>
 </form>
 
+{% if booking.vendors | selectattr("bump_in_time") | rejectattr("bump_in_confirmed") | list %}
+{#
+  These are their OWN forms, not part of the edit above -- a button here
+  submits the bump-in confirmation and navigates away, which discards
+  anything typed into the edit form and not yet saved. That is how a full
+  page of hand-entered content was lost on HAM-20260911-AKPSO on
+  2026-09-08: the audit trail shows the bump-in confirm at 00:14:00 and no
+  document_edited from a save at all. The guard at the bottom of this page
+  now asks before leaving; this note is here so the next person to move
+  this block knows why it is separated and labelled.
+#}
+<p class="muted" style="margin-top:16px;">Separate actions &mdash; these save on their own, and
+  leaving this page will prompt you first if you have unsaved edits above.</p>
+{% endif %}
 {% for vendor in booking.vendors %}
 {% if vendor.bump_in_time is not none and not vendor.bump_in_confirmed %}
-<form class="inline" method="post" action="/admin/bookings/{{ booking.id }}/vendors/{{ vendor.id }}/confirm-bump-in" style="margin-top:8px;">
+<form class="inline bump-in-confirm" method="post" action="/admin/bookings/{{ booking.id }}/vendors/{{ vendor.id }}/confirm-bump-in" style="margin-top:8px;">
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
   <button class="btn" type="submit">Confirm {{ vendor.vendor_type }} bump-in {{ vendor.bump_in_time.strftime('%H:%M') }} ({{ vendor.name }})</button>
 </form>
@@ -230,5 +353,31 @@
   }
   document.getElementById("line-items").addEventListener("input", recalc);
   recalc();
+
+  // UNSAVED CHANGES. Everything on this page is typed into one form, and
+  // every other control on it -- Cancel, the bump-in confirm buttons, any
+  // link in the nav -- navigates away and silently discards the lot. That
+  // is not hypothetical: a full page of hand-entered Event Order content
+  // was lost that way on 2026-09-08, and because several fields print a
+  // generated placeholder when empty, the result looked exactly like
+  // content that had never been entered.
+  //
+  // Marked dirty on the first real edit, cleared when this form is
+  // actually submitted, so saving never prompts.
+  (function () {
+    var form = document.getElementById("beo-edit-form");
+    if (!form) return;
+    var dirty = false;
+    form.addEventListener("input", function () { dirty = true; });
+    form.addEventListener("change", function () { dirty = true; });
+    form.addEventListener("submit", function () { dirty = false; });
+    window.addEventListener("beforeunload", function (event) {
+      if (!dirty) return;
+      // The text is the browser's own; assigning is what arms the prompt.
+      event.preventDefault();
+      event.returnValue = "";
+      return "";
+    });
+  })();
 </script>
 {% endblock %}

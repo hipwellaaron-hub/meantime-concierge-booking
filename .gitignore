@@ -8,6 +8,8 @@ htmlcov/
 *.egg-info/
 .claude/
 
-# Marketing-site build (separate repo + its build archives), not the Concierge app
+# Marketing-site build: its own git repo beside this one, plus the ~34MB
+# build archives whose names carry a build hash. Neither is part of the app,
+# and without this a git add -A commits both.
 website/
 meantime-website-*.zip

@@ -13,6 +13,7 @@ import markupsafe
 from fastapi.templating import Jinja2Templates
 
 from app.services import policy
+from app.services.document_generation import bar_structure_shown
 from app.utils import format_date_dmy as _format_date_dmy
 from app.utils import format_person_name as _format_person_name
 
@@ -204,6 +205,10 @@ templates.env.filters["person_name"] = _format_person_name
 templates.env.filters["aus_date"] = _format_date_dmy
 templates.env.filters["bullets"] = bullets
 templates.env.filters["line_total"] = line_total
+# The Bar Structure section prints the credit above the words. Joined at
+# render time so the stored field stays free of generated text -- see
+# document_generation.bar_structure_shown.
+templates.env.filters["bar_structure_shown"] = bar_structure_shown
 from app.config import settings as _settings  # noqa: E402
 
 # Browser tags render only in production (or locally, where the ids are

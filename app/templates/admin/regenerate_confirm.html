@@ -1,0 +1,96 @@
+{% extends "admin/_base.html" %}
+{% block title %}Regenerate {{ "Event Order" if doc_type.value == "beo" else "Agreement" }}{% endblock %}
+{% block content %}
+{#
+  Regenerating would destroy values a person wrote. This screen names every
+  one of them and makes the human choose. Deliberately NOT a modal, NOT a
+  collapsed section, and NOT a single "are you sure": the whole failure this
+  replaces was a silent one, and a confirmation nobody can read is silence
+  with extra clicks (2026-09-06).
+
+  Everything is pre-ticked to KEEP. The safe answer requires no action; the
+  destructive one requires a deliberate untick.
+#}
+<p><a href="/admin/bookings/{{ booking.id }}">&larr; {{ booking.event_name }}</a></p>
+
+{% if losses %}
+<h1>Regenerating would overwrite {{ losses | length }} field{{ "" if losses | length == 1 else "s" }}</h1>
+{% else %}
+<h1>Regenerating would invalidate work you have not reviewed yet</h1>
+{% endif %}
+<p class="muted">{{ booking.reference_code }} &middot;
+  {{ "Event Order" if doc_type.value == "beo" else "Agreement" }} v{{ document.version }}
+  &middot; {{ booking.event_date | aus_date if booking.event_date else "Date TBD" }}</p>
+
+{% if pending_proposal_rows %}
+{#
+  Told BEFORE, not after. Regenerating makes a new version, and a proposal
+  reviewed against this one then has to be approved again -- approving it
+  afterwards fails with "replaced by a newer version". Hitting that error
+  without knowing why is the thing this block prevents.
+#}
+<div class="card" style="border-color: var(--ember);">
+  <p style="margin:0 0 0.5rem;"><strong>{{ pending_proposal_rows | length }} proposed
+    field{{ "" if pending_proposal_rows | length == 1 else "s" }} on this Event Order
+    {{ "has" if pending_proposal_rows | length == 1 else "have" }} not been reviewed yet.</strong></p>
+  <p style="margin:0 0 0.5rem; font-size:0.9rem;">Regenerating replaces the Event Order they were
+    proposed against. They are not lost, but they will need approving again on the new version, and
+    approving one now would fail. Review them first if you want them on this version.</p>
+  <ul style="margin:0 0 0.5rem; font-size:0.9rem;">
+    {% for row in pending_proposal_rows %}
+    <li><strong>{{ row.label }}</strong>{% if row.replaces_text %} &mdash; would replace text already there{% endif %}</li>
+    {% endfor %}
+  </ul>
+  <p style="margin:0;"><a href="/admin/bookings/{{ booking.id }}/documents/{{ document.id }}/edit">Review the proposal first &rarr;</a></p>
+</div>
+{% endif %}
+
+{% if losses %}
+<div class="card" style="border-color: var(--gold);">
+  <p style="margin:0 0 0.5rem;"><strong>These values were written by a person. Rebuilding from the
+    booking cannot produce them again.</strong></p>
+  <p style="margin:0; font-size:0.9rem;">Everything below is set to keep what is there now.
+    Untick a field only where the regenerated value is the one you want.
+    {% if hand_edit %}
+    This draft was hand-edited by {{ hand_edit.actor }} on {{ hand_edit.created_at | aus_date }}.
+    Hand-edits are recorded per version, not per field, so any of the values below may be that edit.
+    {% endif %}
+  </p>
+</div>
+{% else %}
+<div class="card">
+  <p style="margin:0; font-size:0.9rem;">Nothing else on this
+    {{ "Event Order" if doc_type.value == "beo" else "Agreement" }} would be lost &mdash; every other
+    field is unchanged, holds only a generated placeholder, or is empty &mdash; either with
+    nobody recorded as having written it, or with nothing but a placeholder to replace it.</p>
+</div>
+{% endif %}
+
+<form method="post" action="/admin/bookings/{{ booking.id }}/documents/{{ doc_type.value }}/generate/confirm">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <input type="hidden" name="expect" value="{{ expect }}">
+
+  {% for loss in losses %}
+  <div class="card">
+    <h2 style="margin-top:0;">{{ loss.label }}
+      {% if loss.approved_note %}<span class="badge gold">{{ loss.approved_note }}</span>{% endif %}
+      {% if loss.empties_the_field %}<span class="badge ember">would be emptied</span>{% endif %}
+    </h2>
+
+    <label style="display:block; margin-bottom:0.75rem;">
+      <input type="checkbox" name="keep" value="{{ loss.field }}" checked>
+      <strong>Keep this</strong> &mdash; what the {{ "Event Order" if doc_type.value == "beo" else "Agreement" }} says now
+    </label>
+    <pre style="white-space:pre-wrap; margin:0 0 1rem; padding:0.75rem; background:var(--surface-hi); border-radius:4px;">{% if loss.cleared_by_a_person %}(nothing &mdash; somebody cleared this field on purpose){% elif not loss.current %}(nothing readable in this field){% else %}{{ loss.current }}{% endif %}</pre>
+
+    <p style="margin:0 0 0.35rem; font-size:0.9rem;" class="muted">Unticked, it is replaced by:</p>
+    <pre style="white-space:pre-wrap; margin:0; padding:0.75rem; background:var(--surface-hi); border-radius:4px;">{% if loss.incoming %}{{ loss.incoming }}{% else %}(nothing &mdash; the field would be left empty){% endif %}</pre>
+  </div>
+  {% endfor %}
+
+  <div class="card">
+    <button class="btn" type="submit">{{ "Regenerate with these choices" if losses else "Regenerate anyway" }}</button>
+    <a class="btn secondary" href="/admin/bookings/{{ booking.id }}">Cancel</a>
+  </div>
+</form>
+{% endblock %}

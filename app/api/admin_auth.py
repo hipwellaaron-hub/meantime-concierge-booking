@@ -16,8 +16,27 @@ router = APIRouter(prefix="/admin", tags=["admin-auth"])
 login_rate_limiter = InMemoryRateLimiter(max_requests=10, window_seconds=300)
 
 
+def safe_next(next: str) -> str:
+    """Where a login may send the browser: a path inside the admin, never a
+    URL someone put in a link.
+
+    Both login routes take `next` straight from the query string or the
+    form, so without this an authenticated staff member who clicks
+    book.meantime.com.au/admin/login?next=https://evil.example/ is bounced
+    off the venue's own domain to whatever the link says -- the credible
+    half of a phishing page, hosted by us. The POST already guarded this;
+    the GET did not (2026-09-07 review).
+
+    A scheme-relative "//evil.example" fails the prefix test, and a
+    same-origin path like "/admin.evil.example" passes it while still being
+    a path on this site, which is the point.
+    """
+    return next if next.startswith("/admin") else "/admin/"
+
+
 @router.get("/login", response_class=HTMLResponse)
 def login_form(request: Request, next: str = "/admin/"):
+    next = safe_next(next)
     if request.session.get("staff_id"):
         return RedirectResponse(url=next, status_code=303)
     return templates.TemplateResponse(request, "admin/login.html", admin_ctx(request, next=next, error=None))
@@ -45,8 +64,7 @@ def login_submit(
     start_session(request, staff)
     # Never redirect off /admin -- closes the obvious open-redirect hole
     # a crafted `next` value could otherwise exploit.
-    safe_next = next if next.startswith("/admin") else "/admin/"
-    return RedirectResponse(url=safe_next, status_code=303)
+    return RedirectResponse(url=safe_next(next), status_code=303)
 
 
 @router.post("/logout", dependencies=[Depends(require_csrf)])

@@ -1,6 +1,20 @@
 {% extends "admin/_base.html" %}
 {% block title %}{{ booking.event_name }}{% endblock %}
 {% block content %}
+{% if beo_proposal_waiting %}
+{# Deliberately at the top of the page and outside every <details>: this is
+   the only place staff learn a proposal exists, and it was previously
+   rendered inside the collapsed "Traffic source" section where nobody
+   would ever have seen it (2026-09-06 review). #}
+<div class="card" style="border-color: var(--gold);">
+  <p style="margin:0;"><span class="badge gold">Event Order proposal waiting</span>
+    <span style="font-size:0.9rem;">
+      {{ beo_proposal_waiting }} field{{ "" if beo_proposal_waiting == 1 else "s" }} proposed by Claude, not applied.
+      {% if beo_proposal_document_id %}<a href="/admin/bookings/{{ booking.id }}/documents/{{ beo_proposal_document_id }}/edit">Review on the Event Order &rarr;</a>
+      {% else %}Generate the Event Order to review them.{% endif %}
+    </span></p>
+</div>
+{% endif %}
 {% set current_agreement = (booking.documents | selectattr('type.value', 'equalto', 'agreement') | selectattr('is_current') | list | first) %}
 {% set current_beo = (booking.documents | selectattr('type.value', 'equalto', 'beo') | selectattr('is_current') | list | first) %}
 {% set deposit_invoices = booking.invoices | selectattr('type.value', 'equalto', 'deposit') | list %}
@@ -425,7 +439,11 @@
     <form method="post" action="/admin/bookings/{{ booking.id }}/invoices/final" style="margin-top:10px;">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <div class="field-row">
-        <div><label>Due date</label><input type="date" name="due_date" required></div>
+        <div>
+          <label>Due date</label>
+          <input type="date" name="due_date" value="{{ suggested_final_due_date or '' }}" required>
+          <div class="muted" style="font-size:0.8rem;">Seven days before the event, or today if that has passed.</div>
+        </div>
       </div>
       <p class="muted" style="font-size:0.8rem;">Line items (a deposit already paid is credited automatically). Leave a row's description blank to skip it.</p>
       {% for i in range(6) %}

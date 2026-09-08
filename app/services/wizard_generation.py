@@ -14,6 +14,7 @@ fields. Anything outstanding is collected into a separate list instead.
 """
 
 import dataclasses
+import datetime as dt
 import logging
 import uuid
 from decimal import Decimal
@@ -27,9 +28,12 @@ from app.models.document import DocumentType
 from app.models.invoice import InvoiceStatus, InvoiceType
 from app.models.wizard_session import WizardSession
 from app.services import catalogue
+from app.services import content_authorship
+from app.services import document_regeneration
 from app.services import documents as documents_service
 from app.services import invoicing
 from app.services import notifications
+from app.services import policy
 from app.services.document_generation import build_av_block, build_vendor_snapshot, generate_beo_content
 from app.utils import truncate
 
@@ -389,6 +393,70 @@ def generate_beo_and_invoice(db: Session, session: WizardSession, *, actor: str)
 
     beo_content = generate_beo_content(booking, food_line_items, **_session_content_kwargs(db, session, deposit_paid))
 
+    # THE WIZARD BYPASS. Staff who regenerate are shown what a rebuild would
+    # destroy and decide field by field. A client submitting the wizard
+    # reaches the same create_new_version with nobody to ask, so until now
+    # it took the whole document -- an approved allergy note included --
+    # without a word. Same incident, through the one door that had no guard
+    # on it.
+    #
+    # There is no human in this request, so the safe answer is to KEEP what
+    # a person wrote and tell staff, rather than to decide for them. Locked
+    # for the same reason the staff path is: this reads the current
+    # document, decides from it, and then writes.
+    current = documents_service.lock_current_for_update(db, booking.id, DocumentType.beo)
+    at_risk = document_regeneration.losses(db, current, beo_content)
+    if at_risk:
+        beo_content = document_regeneration.apply_choices(
+            beo_content, current, {loss.field for loss in at_risk}
+        )
+        outstanding_items += [
+            f"{loss.label} kept from the previous Event Order rather than rebuilt from the wizard"
+            f"{' -- ' + loss.approved_note if loss.approved_note else ''}"
+            " -- confirm it still applies"
+            for loss in at_risk
+        ]
+
+    if current is not None:
+        # The record travels across EVERY rebuild, not only the ones that
+        # kept something. Doing this inside the `at_risk` branch meant a
+        # document whose recorded fields were all unchanged lost its record
+        # entirely, and the next regenerate treated those values as the
+        # generator's -- the guard holding for exactly one round.
+        #
+        # A name is forgotten when the wizard's value REPLACED the person's:
+        # leaving it recorded would claim they wrote what the wizard just
+        # produced. Compared value by value rather than as "authored minus
+        # kept", because a field the wizard rebuilds identically still holds
+        # their words.
+        #
+        # Read the SAME way losses() and apply_choices() just read it. A
+        # legacy Event Order's merged music value has been promoted into
+        # `music` above, and the record renamed with it; carrying from the
+        # RAW content would bring the old name forward instead, and the
+        # forget below would then drop it for a key that is now None --
+        # leaving the person's words sitting in `music` under an empty
+        # record, which says nobody wrote anything here.
+        #
+        # One reading, used for all three, so the question, the answer and
+        # the record agree. Only the carry is observable: once the record
+        # names `music`, forgetting `music_entertainment` is a no-op, so
+        # the basis the forget compares against cannot be caught by a test
+        # (mutation-checked -- reverting those two survives). They stay on
+        # the same reading because two bases for one comparison is how the
+        # original defect got in, not because a test would notice.
+        previous_content = document_regeneration.read_music_as_split(current.content or {})
+        beo_content = content_authorship.carry(beo_content, previous=previous_content)
+        beo_content = content_authorship.forget(
+            beo_content,
+            content_authorship.differing_fields(
+                previous_content,
+                beo_content,
+                candidates=content_authorship.authored(previous_content),
+                placeholders=document_regeneration.GENERATED_PLACEHOLDERS,
+            ),
+        )
+
     document = documents_service.create_new_version(db, booking, DocumentType.beo, beo_content, actor=actor)
 
     # A staff-created manual final invoice (app.services.invoicing.
@@ -418,7 +486,11 @@ def generate_beo_and_invoice(db: Session, session: WizardSession, *, actor: str)
             booking,
             InvoiceType.final,
             food_line_items,
-            due_date=booking.event_date,
+            # Seven days before the event, floored at today -- see
+            # policy.final_balance_due_date. This used to be the event date
+            # itself, which gave a client nothing to pay against until the
+            # day they arrived.
+            due_date=policy.final_balance_due_date(booking.event_date, issued_on=dt.date.today()),
             actor=actor,
             credit_line_items=credit_line_items,
         )
