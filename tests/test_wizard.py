@@ -477,17 +477,40 @@ def test_expired_unsubmitted_session_404s(db, loft):
         app.dependency_overrides.clear()
 
 
-def test_wizard_bootstrap_includes_the_cake_catalogue(db, loft, menu_items):
+def test_wizard_bootstrap_offers_exactly_the_three_live_cakes(db, loft, menu_items):
+    """Read from the bootstrap JSON, not from the page text.
+
+    This test used to assert `"Vanilla Cake (2 Layer)" in resp.text` and it
+    passed -- not because the wizard offered that cake, which it has not
+    since 27 Aug 2026, but because the template's photo map still held the
+    name as a dead key. A substring of a whole HTML page is evidence of
+    almost nothing; the catalogue the client actually picks from is the
+    `bootstrap-data` payload.
+    """
+    import json
+    import re
+
     booking = _make_booking(db, loft)
     session = wizard_service.get_or_create_session(db, booking, actor="test")
     client = _client(db)
     try:
         resp = client.get(f"/w/{session.access_token}")
         assert resp.status_code == 200
-        assert "Chocolate Mud Cake" in resp.text
-        assert "Vanilla Cake (2 Layer)" in resp.text
+        raw = re.search(
+            r'<script type="application/json" id="bootstrap-data">(.*?)</script>', resp.text, re.S
+        ).group(1)
+        cakes = json.loads(raw)["catalogue"]["cakes"]
     finally:
         app.dependency_overrides.clear()
+
+    assert {c["name"] for c in cakes} == {
+        "Chocolate Mud Cake",
+        "White Chocolate, Vanilla & Raspberry Cake",
+        "Tiramisu Cake",
+    }
+    # All flat $80, and no size variant to choose between.
+    assert {c["price"] for c in cakes} == {"80.00"}
+    assert not any("Layer" in c["name"] for c in cakes)
 
 
 def test_first_open_records_opened_at(db, loft):

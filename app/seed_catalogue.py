@@ -11,10 +11,17 @@ Legacy prices are the pre-May-2026 figures the doc gives for pizzas only
 Vegetarian Pizza has no legacy price: it's a new item introduced in v1.3,
 so it never had a pre-cutover price to honour.
 
-Vanilla Cake and Chocolate Cake are each offered at three sizes with
-different prices (2/3/4 layer) -- modelled as three separate rows per
-flavour rather than adding a tiering concept to MenuItem, since every
-other price on this table is already a flat per-item figure.
+Every cake is a flat per-item price. Vanilla Cake and Chocolate Cake were
+once offered at three sizes each (2/3/4 layer, $80/$95/$115), modelled as
+three separate rows per flavour rather than a tiering concept on MenuItem;
+Aaron retired both cakes and that pricing on 27 Aug 2026, so those six rows
+are inactive and no size picker exists anywhere any more.
+
+NOTE ON THIS FILE'S AUTHORITY: seed() only ever INSERTS. A row already in
+the database is skipped entirely, so editing is_active or a price here does
+NOT change an existing deployment -- it only affects a fresh database. The
+figures below record what was seeded; the live catalogue is the database,
+readable through /api/ai/catalogue.
 
 Run with: python -m app.seed_catalogue
 """
