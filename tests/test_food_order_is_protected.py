@@ -337,3 +337,111 @@ def test_a_refused_save_names_the_food_order_and_hands_back_your_own_lines(db, l
     assert "7 x MY OWN oyster station @ 180" in table, "their own lines were not offered back"
     # And the form below it still holds what they typed, not the colleague's.
     assert "MY OWN oyster station" in response.text
+
+
+# --- one parser, two strictnesses ---------------------------------------------
+
+
+def _draft_with_a_platter(db, loft, name="Food Parse"):
+    contact = Contact(name=name, email=f"{name.replace(' ', '.').lower()}@example.com")
+    db.add(contact)
+    db.flush()
+    booking = create_booking(
+        db, space_id=loft.id, contact_id=contact.id, event_date=dt.date(2027, 5, 17),
+        start_time=dt.time(18, 0), end_time=dt.time(23, 0), event_name=name,
+        event_type="birthday", adult_count=40, child_count=0, notes=None, actor="test",
+    )
+    content = generate_beo_content(booking, [GRAZING], deposit_paid=Decimal("0.00"))
+    document = documents_service.create_new_version(
+        db, booking, DocumentType.beo, content, actor="staff:test"
+    )
+    return booking, document
+
+
+def _form_fields(admin_client, booking, document):
+    import re
+
+    page = admin_client.get(f"/admin/bookings/{booking.id}/documents/{document.id}/edit")
+    assert page.status_code == 200
+    return {
+        "csrf_token": re.search(r'name="csrf_token" value="([^"]+)"', page.text).group(1),
+        "content_expect": re.search(r'name="content_expect" value="([^"]*)"', page.text).group(1),
+    }
+
+
+def test_a_half_typed_price_is_refused_and_changes_nothing(db, loft, admin_client):
+    """The strict half of the shared parser, which had no test of its own.
+
+    The 422 has to land BEFORE anything is written: the guest arrival time
+    on the same form writes through to the Booking itself, so a parse that
+    ran after it would leave the booking changed by a save that was
+    refused.
+    """
+    booking, document = _draft_with_a_platter(db, loft, "Food Parse Bad Price")
+    before_arrival = booking.guest_arrival_time
+    before_food = dict(document.content["food_order"])
+
+    response = admin_client.post(
+        f"/admin/bookings/{booking.id}/documents/{document.id}/edit",
+        data={
+            **_form_fields(admin_client, booking, document),
+            "item_descriptions": ["Oyster station"],
+            "item_quantities": ["7"],
+            "item_unit_prices": ["180.0.0"],
+            "guest_arrival_time": "17:30",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 422
+    assert "Oyster station" in response.json()["detail"]
+    db.refresh(booking)
+    db.refresh(document)
+    assert booking.guest_arrival_time == before_arrival, "a refused save moved the booking"
+    assert document.content["food_order"] == before_food
+
+
+def test_a_fractional_quantity_is_refused_too(db, loft, admin_client):
+    """int(), not Decimal(): half a platter is not a thing to put on a run
+    sheet, and it would total wrongly against a per-item price."""
+    booking, document = _draft_with_a_platter(db, loft, "Food Parse Half")
+
+    response = admin_client.post(
+        f"/admin/bookings/{booking.id}/documents/{document.id}/edit",
+        data={
+            **_form_fields(admin_client, booking, document),
+            "item_descriptions": ["Oyster station"],
+            "item_quantities": ["1.5"],
+            "item_unit_prices": ["180.00"],
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 422
+
+
+def test_a_category_the_document_cannot_print_is_dropped(db, loft, admin_client):
+    """The whitelist is what the Event Order has a heading for. Storing
+    anything else would take the line off the page without a word."""
+    booking, document = _draft_with_a_platter(db, loft, "Food Parse Category")
+
+    response = admin_client.post(
+        f"/admin/bookings/{booking.id}/documents/{document.id}/edit",
+        data={
+            **_form_fields(admin_client, booking, document),
+            "item_descriptions": ["Oyster station", "Sourdough"],
+            "item_quantities": ["7", "2"],
+            "item_unit_prices": ["180.00", "12.00"],
+            "item_categories": ["banquet", "side"],
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303, response.text
+    db.refresh(document)
+    stored = {line["description"]: line for line in document.content["food_order"]["line_items"]}
+    assert "category" not in stored["Oyster station"], "an unprintable category was stored"
+    assert stored["Sourdough"]["category"] == "side"
+    # And the strict parse stored money, not the strings the browser sent.
+    assert stored["Oyster station"]["quantity"] == 7
+    assert stored["Sourdough"]["unit_price"] == "12.00"

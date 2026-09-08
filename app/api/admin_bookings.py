@@ -898,34 +898,55 @@ def edit_document_form(
     return _edit_form_response(request, staff, db, booking_id, document, form_content=document.content)
 
 
-def _submitted_food_order(descriptions, quantities, unit_prices, categories) -> dict:
-    """The food order THIS form just submitted, in the shape it was typed.
+# The categories the Event Order prints a heading for. Anything else on the
+# wire is dropped rather than stored, because a category the template does
+# not know about would silently take its line off the page.
+_FOOD_CATEGORIES = ("platter", "pizza", "side", "dessert")
 
-    NOT the stored shape, which an earlier version of this line claimed: a
-    quantity stays the string the browser sent rather than becoming an int,
-    because the refused form is re-rendered from this and a half-typed "4x"
-    has to come back as "4x". The comparison is what adapts --
-    document_regeneration.differing_protected_fields asks the food order's
-    own renderer, so the two shapes are one value.
 
-    Only for the conflict screen: it is what that comparison reads and
-    what the refused form is re-rendered from. Without it, a refusal caused
-    by the food order names nothing in its table and hands the staff member
-    back the STORED lines instead of the ones they just typed -- proved live
-    before this existed.
+def _food_order_from_form(descriptions, quantities, unit_prices, categories, *, strict: bool) -> dict:
+    """The food order this form posted, in the stored shape.
 
-    Lenient on purpose, and deliberately NOT the strict parse below that
-    writes the document. That one raises 422 on a half-typed price, and a
-    409 page whose entire job is handing somebody's typing back must not be
-    the thing that throws it away.
+    ONE walk for both readers of the form. `strict` is the whole difference:
+
+      - strict=True is the parse that WRITES the document. A quantity
+        becomes an int and a price a canonical Decimal string, and a save
+        that cannot be read that way is refused with a 422 rather than
+        stored as something nobody can total.
+      - strict=False is the parse behind the conflict screen. It keeps what
+        was typed, because a 409 page whose entire job is handing somebody
+        their own words back must not be the thing that throws them away --
+        a half-typed "4x" has to come back as "4x". Nothing compares these
+        raw: document_regeneration.differing_protected_fields asks the food
+        order's own renderer, so the two shapes are one value.
+
+    Both walks existed separately, and the category whitelist, the padding
+    of a short categories list and the blank-row rule were written out
+    twice. The copy likeliest to be forgotten was the conflict screen's --
+    the one that has to be accurate about what somebody just typed.
     """
-    categories = list(categories) + [""] * (len(descriptions) - len(categories))
+    padded = list(categories) + [""] * (len(descriptions) - len(categories))
     line_items = []
-    for description, quantity, unit_price, category in zip(descriptions, quantities, unit_prices, categories):
+    for description, quantity, unit_price, category in zip(descriptions, quantities, unit_prices, padded):
         if not description.strip():
-            continue
-        entry = {"description": description.strip(), "quantity": quantity, "unit_price": unit_price}
-        if category in ("platter", "pizza", "side", "dessert"):
+            continue  # a blanked-out row is how the form deletes a line item
+        entry = {
+            # "description", matching what the wizard and invoicing both
+            # write -- see the note in document.html.
+            "description": description.strip(),
+            "quantity": quantity,
+            "unit_price": unit_price,
+        }
+        if strict:
+            try:
+                entry["quantity"] = int(quantity)
+                entry["unit_price"] = str(Decimal(unit_price))
+            except (ValueError, InvalidOperation) as exc:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"'{description.strip()}' needs a whole-number quantity and a valid price",
+                ) from exc
+        if category in _FOOD_CATEGORIES:
             entry["category"] = category
         line_items.append(entry)
     return {"line_items": line_items, "note": None if line_items else f"{REVIEW} no food order captured yet"}
@@ -1018,8 +1039,8 @@ def save_document_edit(
             # this the refusal names nothing when the food order is what
             # moved, and hands back the stored lines over the ones this staff
             # member just typed.
-            "food_order": _submitted_food_order(
-                item_descriptions, item_quantities, item_unit_prices, item_categories
+            "food_order": _food_order_from_form(
+                item_descriptions, item_quantities, item_unit_prices, item_categories, strict=False
             ),
         }
         if document.type == DocumentType.agreement:
@@ -1099,28 +1120,12 @@ def save_document_edit(
         content["terms_text"] = rebuild_terms_text(sections)
     else:
         booking = document.booking
-        line_items = []
-        categories = list(item_categories) + [""] * (len(item_descriptions) - len(item_categories))
-        for description, quantity, unit_price, category in zip(
-            item_descriptions, item_quantities, item_unit_prices, categories
-        ):
-            if not description.strip():
-                continue  # a blanked-out row is how the form deletes a line item
-            try:
-                entry = {
-                    # "description", matching what the wizard and invoicing
-                    # both write -- see the note in document.html.
-                    "description": description.strip(),
-                    "quantity": int(quantity),
-                    "unit_price": str(Decimal(unit_price)),
-                }
-            except (ValueError, InvalidOperation) as exc:
-                raise HTTPException(
-                    status_code=422, detail=f"'{description.strip()}' needs a whole-number quantity and a valid price"
-                ) from exc
-            if category in ("platter", "pizza", "side", "dessert"):
-                entry["category"] = category
-            line_items.append(entry)
+        # Parsed HERE, before any booking field is written, so a half-typed
+        # price is a 422 that changes nothing rather than a 422 with the
+        # timeline already updated.
+        food_order = _food_order_from_form(
+            item_descriptions, item_quantities, item_unit_prices, item_categories, strict=True
+        )
 
         # Timeline facts write through to the Booking itself (per-field
         # audit events), then the document's timeline is rebuilt from the
@@ -1223,17 +1228,14 @@ def save_document_edit(
             av["microphones_for_speeches"] = av_microphones is not None
             av["notes"] = av_notes.strip() or None
             content["av"] = av
-        content["food_order"] = {
-            "line_items": line_items,
-            "note": None if line_items else f"{REVIEW} no food order captured yet",
-        }
+        content["food_order"] = food_order
 
         # Recomputed from the edited lines, never carried over stale. The
         # deposit already recorded stays as-is (an edit to the food order
         # says nothing about what's been paid).
         existing_deposit = (content.get("total_food_spend") or {}).get("deposit_paid")
         content["total_food_spend"] = build_total_food_spend(
-            compute_food_order_total(line_items),
+            compute_food_order_total(food_order["line_items"]),
             Decimal(existing_deposit) if existing_deposit is not None else None,
         )
 
