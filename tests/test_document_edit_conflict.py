@@ -565,6 +565,47 @@ def test_a_food_order_that_really_moved_is_still_named(db, booking, admin_client
     assert "4 x Antipasto Platter" in response.text, "the four this form typed are not on the screen"
 
 
+def test_the_conflict_card_does_not_still_say_the_food_order_is_ignored(db, booking, admin_client):
+    """It told staff their food order was neither carried over nor compared.
+    Both stopped being true the day food_order became a protected field, and
+    the screen was still saying it a week later -- on the page somebody
+    decides from, which is worse than a stale code comment.
+
+    Pinned by asserting the false sentences are gone AND that the true ones
+    are there, so a revert of either half fails."""
+    document = _beo_with_a_platter(db, booking)
+    form = _edit_form(admin_client, booking, document)
+    form.update({
+        "item_descriptions": ["Antipasto Platter"],
+        "item_quantities": ["4"],
+        "item_unit_prices": ["85.00"],
+    })
+    documents_service.update_content_fields(
+        db, document, {"dietaries": "1x severe nut allergy (table 4)."},
+        actor="staff:other", authored_fields=PROTECTED,
+    )
+
+    response = admin_client.post(
+        f"/admin/bookings/{booking.id}/documents/{document.id}/edit",
+        data=form,
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 409
+    # Tag-stripped and whitespace-collapsed. A `not in` against raw HTML is
+    # satisfied by any line break the template happens to have, so it would
+    # pass whether or not the sentence were there.
+    card = response.text[:response.text.index("beo-edit-form")]
+    card = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", card))
+    assert "food order, vendors and timeline are not compared" not in card, "the stale sentence is back"
+    assert "food order were not carried over" not in card, "the other stale sentence is back"
+    assert "written fields above and the food order" in card, "it should say what IS compared"
+    assert "Your written fields and your food order are" in card, "and what IS carried back"
+    # And the fields genuinely outside the check are still named, because
+    # that half was true and stays true.
+    assert "vendor rows" in card and "AV block" in card
+
+
 def test_a_category_only_change_is_refused_AND_explained(db, booking, admin_client):
     """The fingerprint compares the stored dict, so a colleague changing
     only a line's category refused the save -- and the renderer ignored

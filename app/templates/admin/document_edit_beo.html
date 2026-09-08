@@ -120,19 +120,31 @@
   </table>
   {% else %}
   <p>
-    None of the fields on this form would read differently afterwards, so the
-    change was to something this comparison does not treat as a difference --
-    formatting, most likely. Reload if you want to be certain before saving.
+    None of the compared fields would read differently afterwards, so the change
+    was to something this comparison does not treat as a difference -- the
+    vendor rows, the timeline or the AV block, or else formatting. Reload if you
+    want to be certain before saving.
   </p>
   {% endif %}
+  {#
+    These two paragraphs are the ones that go stale. They said the food
+    order was neither carried over nor compared, which stopped being true
+    the day it became a protected field, and they were still saying it on
+    the screen a week later. If you widen the fingerprint again, this text
+    is part of the change.
+  #}
   <p>
-    Nothing has been written yet. Changes you made to the timeline, vendors or
-    food order were <strong>not</strong> carried over -- re-enter those before saving.
+    Nothing has been written yet. Your written fields and your food order are
+    both still in the form below, as you typed them. Changes you made to the
+    timeline, vendors, key moments, arrival time or AV block were
+    <strong>not</strong> carried over -- those show what is on the document now,
+    so re-enter them before saving.
   </p>
   <p>
-    This check covers the written fields above only. The food order, vendors and
-    timeline are <strong>not</strong> compared, so a change somebody else made to
-    those will be replaced by whatever this form now holds, without a warning.
+    This check covers the written fields above and the food order. The vendor
+    rows, key moments, arrival time and AV block are <strong>not</strong>
+    compared, so a change somebody else made to those will be replaced by
+    whatever this form now holds, without a warning.
   </p>
 </div>
 {% endif %}
