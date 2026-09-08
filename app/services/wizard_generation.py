@@ -359,6 +359,26 @@ def _build_status_text(db: Session, booking: Booking) -> str:
     return f"{prefix}Awaiting Event Order approval and final invoice payment."
 
 
+# Protected fields the wizard must NOT keep, and what staff are told instead.
+#
+# Keeping a value is the right answer for words: there is nobody in the
+# request to ask, so the person's words stand and staff are told. It is the
+# WRONG answer for the food order, because this same submission also cuts the
+# final invoice, and it cuts it from the CLIENT'S new selections. Keeping the
+# old lines leaves the Event Order and the invoice naming different food at
+# different money -- proved: a kept $1,220 of food on the document against a
+# $1,250 invoice written in the same request. That is worse than the
+# information loss the keep exists to prevent, and it lands on the client.
+WIZARD_NEVER_KEEPS = {
+    "food_order": (
+        "The food order on the previous Event Order was hand-edited and the client has since "
+        "changed their selections. The Event Order and the final invoice have both been rebuilt "
+        "from the client's new choices, so the hand-edited lines are NOT on either -- "
+        "re-add them to both if they still apply."
+    ),
+}
+
+
 def generate_beo_and_invoice(db: Session, session: WizardSession, *, actor: str) -> WizardGenerationResult:
     booking = session.booking
     outstanding_items: list[str] = []
@@ -407,13 +427,20 @@ def generate_beo_and_invoice(db: Session, session: WizardSession, *, actor: str)
     current = documents_service.lock_current_for_update(db, booking.id, DocumentType.beo)
     at_risk = document_regeneration.losses(db, current, beo_content)
     if at_risk:
+        # The keep set, minus anything this path must not keep. losses() is
+        # NOT filtered -- staff still get told about every one of them, which
+        # is the whole point.
         beo_content = document_regeneration.apply_choices(
-            beo_content, current, {loss.field for loss in at_risk}
+            beo_content, current, {loss.field for loss in at_risk if loss.field not in WIZARD_NEVER_KEEPS}
         )
         outstanding_items += [
-            f"{loss.label} kept from the previous Event Order rather than rebuilt from the wizard"
-            f"{' -- ' + loss.approved_note if loss.approved_note else ''}"
-            " -- confirm it still applies"
+            (
+                WIZARD_NEVER_KEEPS[loss.field]
+                if loss.field in WIZARD_NEVER_KEEPS
+                else f"{loss.label} kept from the previous Event Order rather than rebuilt from the wizard"
+                f"{' -- ' + loss.approved_note if loss.approved_note else ''}"
+                " -- confirm it still applies"
+            )
             for loss in at_risk
         ]
 

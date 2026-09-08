@@ -30,6 +30,7 @@ reads is the silence this module exists to end.
 import datetime as dt
 import hashlib
 import logging
+from decimal import Decimal
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -50,6 +51,53 @@ def _render_text(value: object) -> str:
     if not isinstance(value, str):
         return ""
     return value.replace("\r\n", "\n").replace("\r", "\n").strip()
+
+
+def _render_amount(value: object) -> str:
+    """A quantity or a price as one comparable figure.
+
+    The edit form writes str(Decimal(...)) and the wizard writes str(price),
+    so "250" and "250.00" are the same money and a formatting difference is
+    not a loss. f"{d:f}" rather than str(d): str(Decimal("250.00").normalize())
+    is "2.5E+2", which is not a thing to put on a confirmation screen.
+    """
+    try:
+        return f"{Decimal(str(value)).normalize():f}"
+    except (ArithmeticError, TypeError, ValueError):
+        return _render_text(value)
+
+
+def _render_food_order(value: object) -> str:
+    """The food order as the money it commits to, one line per item.
+
+    A food order is a dict, and _render_text answers "" for anything that is
+    not a str -- so food_order in the table WITHOUT this compares "" against
+    "" for ever, skips every time, and reads as protection on every screen
+    while protecting nothing. Proved by running it before this existed.
+
+    Not the stored dict either. `note` holds the generator's own "[REVIEW] no
+    food order captured yet" and `category` only picks which heading a line
+    prints under, so neither is a value anybody would miss. Sorted, because a
+    reorder costs nobody anything and a warning about one is a warning staff
+    learn to click through -- and this screen only works while it is worth
+    reading.
+    """
+    if not isinstance(value, dict):
+        return ""
+    items = value.get("line_items")
+    if not isinstance(items, list):
+        return ""
+    lines = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        # "item" is the pre-rename key document.html still reads.
+        description = _render_text(item.get("description") or item.get("item"))
+        lines.append(
+            f"{_render_amount(item.get('quantity'))} x {description}"
+            f" @ {_render_amount(item.get('unit_price'))}"
+        )
+    return "\n".join(sorted(lines))
 
 
 def _render_sections(value: object) -> str:
@@ -97,6 +145,13 @@ PROTECTED_FIELDS: tuple[ProtectedField, ...] = tuple(
     for name in beo_rules.PROPOSABLE_FIELDS + ("music_entertainment", "internal_notes", "status_text")
 ) + (
     ProtectedField("terms_sections", "Agreement terms", render=_render_sections, companions=("terms_text",)),
+    # The one protected field that is money rather than words. total_food_spend
+    # is DERIVED from these lines (document_generation.build_total_food_spend),
+    # so it travels with them: keeping the lines alone produced a live document
+    # whose own items summed to $1,220 under a heading reading $1,250.
+    ProtectedField(
+        "food_order", "Food order", render=_render_food_order, companions=("total_food_spend",)
+    ),
 )
 
 PROTECTED_FIELD_NAMES: tuple[str, ...] = tuple(f.name for f in PROTECTED_FIELDS)

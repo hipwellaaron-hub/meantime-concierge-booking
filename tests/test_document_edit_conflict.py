@@ -489,22 +489,24 @@ def test_an_agreement_conflict_shows_clauses_not_a_python_repr(db, booking, admi
 # --- what this check does NOT cover ------------------------------------------
 
 
-def test_the_fingerprint_does_not_yet_cover_the_food_order(db, booking, admin_client):
-    """CHARACTERISATION, not an endorsement. The fingerprint covers the
-    protected free-text fields; the form writes more than that -- the food
-    order line items, the vendor rows, the key moments, the arrival time and
-    the AV block. A colleague's change to any of those moves nothing this
-    check looks at, so the save is accepted and reverts them silently.
+def test_the_fingerprint_covers_the_food_order(db, booking, admin_client):
+    """CLOSED, deliberately, by the commit that protected the food order.
 
-    That is old last-write-wins behaviour, not a regression, and widening
-    the fingerprint is deliberate follow-up work because it starts refusing
-    saves that today succeed. This test exists so the hole is visible in the
-    suite rather than only in a docstring, and so the commit that closes it
-    has to come here and change this assertion on purpose.
+    This was a characterisation test recording a known hole: the fingerprint
+    covered the protected free-text fields only, so a colleague's change to
+    the food order moved nothing the check looked at, the save was accepted,
+    and their four platters were silently reverted with the total recomputed
+    from the stale line.
 
-    Line items are money on a client-facing document, so it is worth being
-    exact about the loss: four platters become one, and the total is
-    recomputed from the stale line."""
+    food_order is now a protected field, so the fingerprint covers it and
+    this save refuses instead. Its own message asked whoever closed it to
+    change the assertion on purpose rather than delete the test -- so the
+    reversion check below is now the opposite claim: their four platters
+    SURVIVE, and the refusal names Food order rather than refusing mutely.
+
+    The rest of that old docstring still stands for the vendor rows, the key
+    moments, the arrival time and the AV block. Those are still outside the
+    fingerprint, and that is still last-write-wins."""
     from decimal import Decimal
 
     content = generate_beo_content(
@@ -535,12 +537,14 @@ def test_the_fingerprint_does_not_yet_cover_the_food_order(db, booking, admin_cl
         follow_redirects=False,
     )
 
-    assert response.status_code == 303, (
-        "TODAY this save is accepted. When the fingerprint is widened to cover the "
-        "food order this becomes 409 -- change the assertion deliberately, and delete "
-        "the reversion check below."
-    )
+    assert response.status_code == 409, "the food order moved and the save went through anyway"
     db.refresh(document)
-    assert document.content["food_order"]["line_items"][0]["quantity"] == 1, (
-        "their four platters are silently reverted -- the known gap this test records"
+    assert document.content["food_order"]["line_items"][0]["quantity"] == 4, (
+        "their four platters survived -- the save was refused, not applied"
     )
+    # The refusal has to SAY what moved, or it is a 409 that teaches nobody.
+    # Checked inside the conflict TABLE, not anywhere on the page: "Food
+    # order" is also a heading on the edit form below it, so a bare
+    # substring check passes whether or not the table names anything.
+    table = response.text[response.text.index("Saving would put"):]
+    assert "<strong>Food order</strong>" in table, table[:400]

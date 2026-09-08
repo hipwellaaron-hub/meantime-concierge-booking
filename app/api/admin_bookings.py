@@ -810,6 +810,32 @@ def edit_document_form(
     return _edit_form_response(request, staff, db, booking_id, document, form_content=document.content)
 
 
+def _submitted_food_order(descriptions, quantities, unit_prices, categories) -> dict:
+    """The food order THIS form just submitted, in the stored shape.
+
+    Only for the conflict screen: it is what differing_fields compares and
+    what the refused form is re-rendered from. Without it, a refusal caused
+    by the food order names nothing in its table and hands the staff member
+    back the STORED lines instead of the ones they just typed -- proved live
+    before this existed.
+
+    Lenient on purpose, and deliberately NOT the strict parse below that
+    writes the document. That one raises 422 on a half-typed price, and a
+    409 page whose entire job is handing somebody's typing back must not be
+    the thing that throws it away.
+    """
+    categories = list(categories) + [""] * (len(descriptions) - len(categories))
+    line_items = []
+    for description, quantity, unit_price, category in zip(descriptions, quantities, unit_prices, categories):
+        if not description.strip():
+            continue
+        entry = {"description": description.strip(), "quantity": quantity, "unit_price": unit_price}
+        if category in ("platter", "pizza", "side", "dessert"):
+            entry["category"] = category
+        line_items.append(entry)
+    return {"line_items": line_items, "note": None if line_items else f"{REVIEW} no food order captured yet"}
+
+
 @router.post("/{booking_id}/documents/{document_id}/edit", dependencies=[Depends(require_csrf)])
 def save_document_edit(
     booking_id: uuid.UUID,
@@ -893,6 +919,13 @@ def save_document_edit(
             "status_text": status_text.strip(),
             "onsite_contact": onsite_contact.strip(),
             "internal_notes": internal_notes.strip(),
+            # The food order too, now that the fingerprint covers it. Without
+            # this the refusal names nothing when the food order is what
+            # moved, and hands back the stored lines over the ones this staff
+            # member just typed.
+            "food_order": _submitted_food_order(
+                item_descriptions, item_quantities, item_unit_prices, item_categories
+            ),
         }
         if document.type == DocumentType.agreement:
             submitted = {
