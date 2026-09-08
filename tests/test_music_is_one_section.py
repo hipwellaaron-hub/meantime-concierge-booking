@@ -277,3 +277,31 @@ def test_the_reading_does_not_mutate_the_document_content():
     document_regeneration.read_music_as_split(content)
 
     assert content == {"music": None, "music_entertainment": LEGACY}
+
+
+# --- the conflict screen reads it the same way --------------------------------
+
+
+def test_a_legacy_music_value_is_not_two_rows_on_the_conflict_screen():
+    """losses() has always read the pair the way it prints. The conflict
+    screen's comparison did not, so a legacy Event Order listed BOTH Music
+    and Music & entertainment -- the second one claiming the save would
+    empty "Live band 8pm-11pm, then DJ." Proved by running it.
+
+    It is not being emptied. The form posts that value into `music`, which
+    is where the template looks. A false alarm about destroying a value
+    being preserved is worse than no screen at all: it is the one that
+    teaches staff to click through."""
+    stored = {"music": None, "music_entertainment": LEGACY}
+    submitted = {"music": LEGACY, "music_entertainment": ""}
+
+    assert document_regeneration.differing_protected_fields(stored, submitted) == set()
+
+
+def test_a_legacy_music_value_that_really_changed_is_still_one_row():
+    stored = {"music": None, "music_entertainment": LEGACY}
+    submitted = {"music": "DJ only, the band cancelled.", "music_entertainment": ""}
+
+    moved = document_regeneration.differing_protected_fields(stored, submitted)
+
+    assert moved == {"music"}, "one section, named once"

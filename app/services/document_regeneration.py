@@ -622,7 +622,16 @@ def differing_protected_fields(stored: object, submitted: dict) -> set[str]:
     asking the field's own renderer rather than special-casing this one.
     """
     specs = {spec.name: spec for spec in PROTECTED_FIELDS}
-    before = stored if isinstance(stored, dict) else {}
+    # The music pair read the way it PRINTS, exactly as losses() reads it.
+    # Without this a legacy Event Order -- detail in the merged field --
+    # listed BOTH Music and Music & entertainment on every conflict, the
+    # second one claiming the save would empty "Live band 8pm-11pm, then
+    # DJ." Proved by running it. It is not being emptied: the form posts it
+    # into `music`, which is where the template looks. Two rows, one of
+    # them a false alarm about destroying a value being preserved, on the
+    # screen that only works while it is worth reading.
+    before = read_music_as_split(stored if isinstance(stored, dict) else {})
+    submitted = read_music_as_split(submitted)
     return content_authorship.differing_fields(
         {name: spec.render(before.get(name)) for name, spec in specs.items() if name in before},
         {name: spec.render(submitted.get(name)) for name, spec in specs.items() if name in submitted},
