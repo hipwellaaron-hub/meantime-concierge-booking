@@ -342,9 +342,14 @@ def _approval_note(
 
 
 def was_hand_edited(db: Session, document: Document) -> BookingEvent | None:
-    """Whether THIS version carries a hand-edit. Hand-edits are recorded per
-    document version, not per field, so this can say the draft was edited
-    but never which field -- the screen says so rather than guessing."""
+    """Whether THIS version carries a hand-edit.
+
+    The event is recorded per document version, so this answers "was this
+    draft hand-edited" and the screen says exactly that rather than
+    guessing. Since 2026-09-08 the event also carries the names of the
+    fields the save changed, in old_value -- this function does not read
+    them, but a screen that wanted to be more specific now could.
+    """
     return db.scalars(
         select(BookingEvent)
         .where(
