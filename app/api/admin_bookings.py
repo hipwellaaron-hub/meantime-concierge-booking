@@ -971,7 +971,14 @@ def _food_order_from_form(descriptions, quantities, unit_prices, categories, *, 
         if strict:
             try:
                 entry["quantity"] = int(quantity)
-                entry["unit_price"] = str(Decimal(unit_price))
+                price = Decimal(unit_price)
+                # Decimal("nan") and Decimal("Infinity") both parse. Stored,
+                # they make compute_food_order_total answer NaN and put it on
+                # a client's Event Order and its invoice -- the one field here
+                # that is money. is_finite() is the whole check.
+                if not price.is_finite():
+                    raise InvalidOperation(f"{unit_price!r} is not a number")
+                entry["unit_price"] = str(price)
             except (ValueError, InvalidOperation) as exc:
                 raise HTTPException(
                     status_code=422,

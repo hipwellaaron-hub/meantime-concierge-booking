@@ -443,8 +443,8 @@ def test_a_category_the_document_cannot_print_is_dropped(db, loft, admin_client)
         data={
             **_form_fields(admin_client, booking, document),
             "item_descriptions": ["Oyster station", "Sourdough"],
-            "item_quantities": ["7", "2"],
-            "item_unit_prices": ["180.00", "12.00"],
+            "item_quantities": ["007", "2"],
+            "item_unit_prices": ["180.00", "012.50"],
             "item_categories": ["banquet", "side"],
         },
         follow_redirects=False,
@@ -456,5 +456,65 @@ def test_a_category_the_document_cannot_print_is_dropped(db, loft, admin_client)
     assert "category" not in stored["Oyster station"], "an unprintable category was stored"
     assert stored["Sourdough"]["category"] == "side"
     # And the strict parse stored money, not the strings the browser sent.
+    # The values posted are deliberately shaped so that echoing the string
+    # back would FAIL: "007" -> the int 7, "012.50" -> "12.50". The first
+    # version of this assertion posted "12.00" and asserted "12.00", which
+    # str(Decimal(...)) satisfies without parsing anything at all.
     assert stored["Oyster station"]["quantity"] == 7
-    assert stored["Sourdough"]["unit_price"] == "12.00"
+    assert stored["Oyster station"]["quantity"] != "007"
+    assert stored["Sourdough"]["unit_price"] == "12.50"
+
+
+def test_a_price_that_is_not_a_number_never_reaches_a_total(db, loft, admin_client):
+    """Decimal("nan") and Decimal("Infinity") both parse. Stored, they make
+    compute_food_order_total answer NaN and put it on a client's Event Order
+    and the invoice cut from it. This is the one protected field that is
+    money, so the parse has to mean it."""
+    booking, document = _draft_with_a_platter(db, loft, "Food Parse NaN")
+
+    for bad in ("nan", "Infinity", "-Infinity"):
+        response = admin_client.post(
+            f"/admin/bookings/{booking.id}/documents/{document.id}/edit",
+            data={
+                **_form_fields(admin_client, booking, document),
+                "item_descriptions": ["Oyster station"],
+                "item_quantities": ["7"],
+                "item_unit_prices": [bad],
+            },
+            follow_redirects=False,
+        )
+        assert response.status_code == 422, f"{bad!r} was accepted as a price"
+
+
+def test_a_refused_save_does_not_throw_the_typing_away_over_a_bad_price(db, loft, admin_client):
+    """THE difference between strict=False and strict=True, which nothing in
+    the suite distinguished: flipping the conflict path to strict=True left
+    all 87 conflict and food tests green.
+
+    A staff member whose save is refused because a colleague moved something
+    must get their own words back -- including a half-typed price. Parsing
+    strictly here would answer 422 and discard the lot, which is the failure
+    the conflict screen exists to prevent, arriving by a different door."""
+    booking, document = _draft_with_a_platter(db, loft, "Food Parse Lenient")
+    form = _form_fields(admin_client, booking, document)
+
+    # A colleague moves a written field, so the save will be refused.
+    documents_service.update_content_fields(
+        db, document, {"dietaries": "1x severe nut allergy (table 4)."},
+        actor="staff:other", authored_fields=dr.PROTECTED_FIELD_NAMES,
+    )
+
+    response = admin_client.post(
+        f"/admin/bookings/{booking.id}/documents/{document.id}/edit",
+        data={
+            **form,
+            "item_descriptions": ["Oyster station"],
+            "item_quantities": ["7"],
+            "item_unit_prices": ["180.0.0"],   # half-typed, mid-sentence
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 409, "a refusal turned into a 422 and threw their typing away"
+    assert "Oyster station" in response.text, "their line did not come back"
+    assert "180.0.0" in response.text, "their half-typed price did not come back"
