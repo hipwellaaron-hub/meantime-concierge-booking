@@ -31,6 +31,7 @@ from app.models.staff_user import StaffUser
 from app.models.wizard_session import WizardSessionStatus
 from app.schemas.enquiry import EVENT_TYPES, EnquiryCreate
 from app.services import booking as booking_service
+from app.services import policy
 from app.services.contact_matching import (
     find_contact_by_email,
     find_or_create_contact,
@@ -369,6 +370,12 @@ def booking_detail(
             touches_differ=booking.first_touch_attribution != booking.last_touch_attribution,
             conversion_dispatches=list(booking.conversion_dispatches),
             legacy_mismatches=legacy_documents.legacy_mismatches(booking),
+            # Prefilled into the "create final invoice" form so the hand
+            # path and the wizard path date an invoice the same way. Staff
+            # can still type over it -- the route takes whatever is posted.
+            suggested_final_due_date=policy.final_balance_due_date(
+                booking.event_date, issued_on=dt.date.today()
+            ),
         ),
     )
 

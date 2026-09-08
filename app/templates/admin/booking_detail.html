@@ -439,7 +439,11 @@
     <form method="post" action="/admin/bookings/{{ booking.id }}/invoices/final" style="margin-top:10px;">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <div class="field-row">
-        <div><label>Due date</label><input type="date" name="due_date" required></div>
+        <div>
+          <label>Due date</label>
+          <input type="date" name="due_date" value="{{ suggested_final_due_date or '' }}" required>
+          <div class="muted" style="font-size:0.8rem;">Seven days before the event, or today if that has passed.</div>
+        </div>
       </div>
       <p class="muted" style="font-size:0.8rem;">Line items (a deposit already paid is credited automatically). Leave a row's description blank to skip it.</p>
       {% for i in range(6) %}

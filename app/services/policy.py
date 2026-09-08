@@ -102,6 +102,44 @@ CANCELLATION_SHORT_NOTICE_FEE_PER_HEAD = Decimal("20.00")  # in addition to the 
 EVENT_ORDER_LEAD_DAYS = 14
 WIZARD_TRIGGER_DAYS_BEFORE_EVENT = EVENT_ORDER_LEAD_DAYS
 
+# When the balance falls due on a final invoice. Confirmed by Aaron
+# 2026-09-08 as THE figure, in answer to a direct question: before this the
+# final invoice was due ON the event date and nothing anywhere -- not this
+# file, not the agreement's terms -- said what it should be.
+#
+# Deliberately NOT reusing HOLD_EXPIRY_DAYS, which is also 7 and also about
+# payment: that one is how long a tentative hold runs before the DEPOSIT is
+# chased or released, and is a different rule that happens to share a
+# number. Two rules on one constant is how the Event Order lead time ended
+# up with three different figures in four places.
+FINAL_BALANCE_DUE_DAYS_BEFORE_EVENT = 7
+
+
+def final_balance_due_date(event_date: dt.date | None, *, issued_on: dt.date) -> dt.date | None:
+    """When a final invoice's balance falls due.
+
+    Seven days before the event -- floored at the issue date, because the
+    wizard routinely comes back later than that. Both bookings live when
+    this was written had their wizard submitted 3 and 5 days out
+    (HAM-20260911-AKPSO, HAM-20260912-2R11Q), so a bare event_date - 7
+    would have issued an invoice that was already overdue on the day it was
+    created, and gone straight into arrears chasing for a client who had
+    done nothing wrong.
+
+    Aaron's ruling, 2026-09-08: seven days before, due on issue if that has
+    already passed.
+
+    An undated booking has no answer: an enquiry can reach the booking page
+    before anybody has agreed a date, and inventing one would date an
+    invoice from nothing. None means "no suggestion", and the form that
+    reads it simply has no prefill -- which is what it had before this
+    existed.
+    """
+    if event_date is None:
+        return None
+    return max(event_date - dt.timedelta(days=FINAL_BALANCE_DUE_DAYS_BEFORE_EVENT), issued_on)
+
+
 # Master Policy doc says wizard links must "expire after the event" but
 # gives no exact duration -- 21 days confirmed by Aaron.
 WIZARD_TOKEN_TTL_DAYS = 21

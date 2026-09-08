@@ -14,6 +14,7 @@ fields. Anything outstanding is collected into a separate list instead.
 """
 
 import dataclasses
+import datetime as dt
 import logging
 import uuid
 from decimal import Decimal
@@ -32,6 +33,7 @@ from app.services import document_regeneration
 from app.services import documents as documents_service
 from app.services import invoicing
 from app.services import notifications
+from app.services import policy
 from app.services.document_generation import build_av_block, build_vendor_snapshot, generate_beo_content
 from app.utils import truncate
 
@@ -484,7 +486,11 @@ def generate_beo_and_invoice(db: Session, session: WizardSession, *, actor: str)
             booking,
             InvoiceType.final,
             food_line_items,
-            due_date=booking.event_date,
+            # Seven days before the event, floored at today -- see
+            # policy.final_balance_due_date. This used to be the event date
+            # itself, which gave a client nothing to pay against until the
+            # day they arrived.
+            due_date=policy.final_balance_due_date(booking.event_date, issued_on=dt.date.today()),
             actor=actor,
             credit_line_items=credit_line_items,
         )
