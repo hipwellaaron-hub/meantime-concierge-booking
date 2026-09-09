@@ -200,13 +200,53 @@ def test_an_unrelated_proposal_on_an_18th_warns_rather_than_withholding_it():
     assert not already_there.blocked and already_there.warning_codes == []
 
 
-def test_the_rsa_floor_does_not_fire_without_children_or_without_an_18th():
-    assert not beo_rules.validate(
+def test_the_rsa_floor_fires_on_either_trigger_alone():
+    """REVERSED on 2026-09-09, and it was a licence matter, not a test tidy.
+
+    This asserted the floor needed an 18th AND children, and that AND is
+    what let a guest count remove a compliance line: child_count is 0 both
+    when there are no minors and when nobody was asked for the split, so an
+    18th booked without that split never required the RSA line at all.
+
+    Aaron: "A client who under-reports or leaves it blank shouldn't be able
+    to remove a compliance line from a document. The count should widen
+    when the RSA line is needed, never narrow it."
+
+    So each trigger now stands alone.
+    """
+    # An 18th with NO children recorded -- the case that was silently exempt.
+    assert beo_rules.validate(
         {"special_notes": "Rounds of 8."}, event_type="18th Birthday", event_name="Milly's 18th", child_count=0
     ).blocked
-    assert not beo_rules.validate(
+    # Under-18s on a booking nobody would call an 18th. RSA applies to them
+    # whatever the event is called.
+    assert beo_rules.validate(
         {"special_notes": "Rounds of 8."}, event_type="birthday", event_name="Kim's 40th", child_count=12
     ).blocked
+
+
+def test_the_rsa_floor_still_does_not_fire_when_neither_trigger_is_present():
+    """The widening is two reasons, not "always". An adults-only event that
+    is not an 18th still has no RSA floor -- otherwise the rule becomes
+    furniture on every document."""
+    assert not beo_rules.validate(
+        {"special_notes": "Rounds of 8."}, event_type="birthday", event_name="Kim's 40th", child_count=0
+    ).blocked
+
+
+def test_the_rsa_message_names_the_reason_it_actually_fired():
+    """Two triggers, so "an 18th with children on the booking" is no longer
+    true of either. A staff member reading a block has to know which fact
+    to check."""
+    eighteenth = beo_rules.validate(
+        {"special_notes": "Rounds of 8."}, event_type="18th Birthday", event_name="Milly's 18th", child_count=0
+    )
+    minors = beo_rules.validate(
+        {"special_notes": "Rounds of 8."}, event_type="birthday", event_name="Kim's 40th", child_count=12
+    )
+
+    assert "This is an 18th" in eighteenth.violations[0].message
+    assert "under-18s on this booking" in minors.violations[0].message
 
 
 def test_an_unknown_field_an_empty_proposal_and_an_essay_are_all_refused():
@@ -1050,9 +1090,13 @@ def test_no_music_combination_is_blocked(music, entertainment):
 
 def test_a_date_in_the_event_name_is_not_an_18th():
     """The rule delegates to the one definition the rest of the system
-    uses, which requires birthday context rather than the digits alone."""
+    uses, which requires birthday context rather than the digits alone.
+
+    child_count is deliberately 0: since the RSA floor fires on under-18s
+    alone as well, any non-zero count here would block for a reason that
+    has nothing to do with what this test is about."""
     assert not beo_rules.validate(
-        {"special_notes": "Rounds of 8."}, event_type="corporate", event_name="Team lunch 18 Nov", child_count=4
+        {"special_notes": "Rounds of 8."}, event_type="corporate", event_name="Team lunch 18 Nov", child_count=0
     ).blocked
     assert beo_rules.RSA_MISSING in beo_rules.validate(
         {"special_notes": "Rounds of 8."}, event_type="birthday", event_name="Milly's 18th birthday", child_count=4

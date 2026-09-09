@@ -27,7 +27,9 @@ Every rule comes from a real failure or a real house rule:
 - CLIENT_PROSE keeps the document a run sheet. "We have organised a
   cake" is the client's voice pasted through; the floor team needs
   "Cake: client supplying".
-- RSA_MISSING is a policy floor for an 18th with children on the booking.
+- RSA_MISSING is a policy floor for an 18th, OR for any booking with
+  under-18s on it. Either alone is enough; a guest count must never be
+  able to remove a compliance line (Aaron, 2026-09-09).
 - LEGACY_MUSIC_SPLIT: older Event Orders carry ONE merged
   music_entertainment value, and the template prints it under Music until
   a split `music` exists. Approving Music alone clears the merged field,
@@ -465,7 +467,25 @@ def _validate(
                 )
             )
 
-    if child_count > 0 and looks_like_eighteenth(event_type=event_type, event_name=event_name, notes=notes):
+    # OR, not AND. This read `child_count > 0 and looks_like_eighteenth(...)`,
+    # which let a guest count remove a compliance line from a document:
+    # child_count is 0 both when there are no minors AND when nobody was
+    # asked for the split (enquiry_classification treats every attendee as
+    # an adult when only a total is given), so an 18th booked without that
+    # split never required the RSA line at all. Aaron, 2026-09-09: "That's
+    # the licence, not a data quality issue... A client who under-reports or
+    # leaves it blank shouldn't be able to remove a compliance line from a
+    # document. The count should widen when the RSA line is needed, never
+    # narrow it."
+    #
+    # So each trigger stands alone: an 18th needs the line whatever the
+    # count says, and under-18s on any booking need it whatever the event
+    # is called. The agreement's own 18th appendix has always fired on the
+    # signal alone (document_generation.build_agreement_content) -- this
+    # brings the Event Order's floor into line with it.
+    is_eighteenth = looks_like_eighteenth(event_type=event_type, event_name=event_name, notes=notes)
+    if is_eighteenth or child_count > 0:
+        because = "This is an 18th" if is_eighteenth else "There are under-18s on this booking"
         effective_notes = normalise(proposed.get("special_notes", current.get("special_notes")))
         if not _RSA_LINE.search(effective_notes):
             if "special_notes" in proposed:
@@ -474,8 +494,8 @@ def _validate(
                 result.violations.append(
                     RuleViolation(
                         RSA_MISSING, "special_notes",
-                        "This is an 18th with children on the booking, so Special notes has to carry the RSA "
-                        "line. Say it in the value you are proposing.",
+                        f"{because}, so Special notes has to carry the RSA line. Say it in the value you "
+                        "are proposing.",
                     )
                 )
             else:
@@ -486,8 +506,8 @@ def _validate(
                 result.warnings.append(
                     RuleViolation(
                         RSA_ABSENT_ON_DOCUMENT, "special_notes",
-                        "This is an 18th with children on the booking and the Event Order's Special notes do "
-                        "not mention RSA. Worth adding before it goes out.",
+                        f"{because} and the Event Order's Special notes do not mention RSA. Worth adding "
+                        "before it goes out.",
                     )
                 )
 
