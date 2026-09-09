@@ -84,6 +84,7 @@ def classify_and_flag(
     event_type: str,
     adult_count: int | None,
     attendee_count: int | None,
+    child_count: int | None = None,
     actor: str,
     possible_duplicate_contact: bool = False,
 ) -> list[str]:
@@ -119,10 +120,11 @@ def classify_and_flag(
     if event_type_normalized in GENERIC_EVENT_TYPES:
         flags.append(f"Event type '{event_type}' is unclear -- confirm what kind of event this actually is.")
 
-    if attendee_count is not None and adult_count is None:
+    if attendee_count is not None and (adult_count is None or child_count is None):
         flags.append(
-            "Adult/minor guest split not provided -- confirm before finalizing minimum spend "
-            "(minimums count adults only)."
+            "Adult/under-18 guest split not provided -- confirm before finalizing minimum spend "
+            "(minimums count adults only) and before issuing the Event Order (RSA applies to "
+            "under-18s). Both forms ask for it, so a submission missing it came in another way."
         )
 
     if attendee_count is None:
@@ -227,6 +229,7 @@ def create_enquiry_booking(
     proposed_time_slot: str | None,
     attendee_count: int | None,
     adult_count: int | None,
+    child_count: int | None = None,
     company_name: str | None,
     dates_flexible: bool,
     comments: str | None,
@@ -283,6 +286,7 @@ def create_enquiry_booking(
             proposed_time_slot=proposed_time_slot,
             attendee_count=attendee_count,
             adult_count=adult_count,
+            child_count=child_count,
             company_name=company_name,
             dates_flexible=dates_flexible,
             comments=comments,
@@ -305,6 +309,7 @@ def create_enquiry_booking(
             event_type=event_type,
             adult_count=adult_count,
             attendee_count=attendee_count,
+            child_count=child_count,
             actor=actor,
             possible_duplicate_contact=len(duplicate_candidates) > 0,
         )
@@ -326,6 +331,7 @@ def _create_enquiry_booking_locked(
     proposed_time_slot: str | None,
     attendee_count: int | None,
     adult_count: int | None,
+    child_count: int | None = None,
     company_name: str | None,
     dates_flexible: bool,
     comments: str | None,
@@ -353,13 +359,22 @@ def _create_enquiry_booking_locked(
     notes = "\n".join(notes_parts) or None
     enquiry_text = (comments or "").strip() or None
 
-    # Adult/child split: only known if adult_count was volunteered. Left
-    # unknown, every attendee is conservatively treated as an adult for
-    # minimum-spend purposes. If even the total guest count is unknown,
-    # both are recorded as 0 (the model's own default) --
-    # classify_and_flag raises a missing-guest-count flag so this is
-    # never silent.
-    if attendee_count is None:
+    # Adult/under-18 split. Both forms now ask for it outright, so the
+    # first branch is the normal path and a zero there MEANS zero rather
+    # than "nobody asked" -- which is the whole point of asking. The older
+    # branches remain for a submission that arrives without it (an API
+    # caller, a browser that skipped validation); each is flagged by
+    # classify_and_flag, never silent.
+    #
+    # child_count stays a non-null column, so "unknown" is still not
+    # representable on the Booking itself. That is deliberate: the fix for
+    # the harm was to stop the count GATING anything -- beo_rules requires
+    # the RSA line on an 18th whatever the count says (Aaron, 2026-09-09:
+    # "the count should widen when the RSA line is needed, never narrow
+    # it") -- rather than a nullable migration through every reader.
+    if adult_count is not None and child_count is not None:
+        resolved_adult_count, resolved_child_count = adult_count, child_count
+    elif attendee_count is None:
         resolved_adult_count, resolved_child_count = 0, 0
     elif adult_count is not None:
         resolved_adult_count = adult_count

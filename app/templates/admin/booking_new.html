@@ -51,11 +51,22 @@
       <div><label>Proposed time</label><input type="text" name="proposed_time_slot" maxlength="100" placeholder="e.g. 6pm-11pm"></div>
     </div>
     <div class="field-row">
-      <div><label>Number of attendees</label><input type="number" name="attendee_count" min="1" max="5000"></div>
+      {#
+        The two halves, not a total plus an optional split -- same change as
+        the client form. A blank adults count used to resolve to "everyone
+        is an adult, zero under-18s", so zero read as "nobody asked" and an
+        18th booked that way never required the RSA line on its Event Order.
+        The total is derived from the pair (Aaron, 2026-09-09).
+      #}
       <div>
-        <label>Number of adults</label>
-        <input type="number" name="adult_count" min="0" max="5000">
-        <p class="muted" style="font-size:0.78rem;">Only if known -- minimum spend counts adults only.</p>
+        <label>Guests 18 and over *</label>
+        <input type="number" name="adult_count" min="0" max="5000" required>
+      </div>
+      <div>
+        <label>Guests under 18 *</label>
+        <input type="number" name="child_count" min="0" max="5000" required>
+        <p class="muted" style="font-size:0.78rem;">0 if none. Minimum spend counts adults only, and
+          RSA conditions follow the under-18s.</p>
       </div>
     </div>
     <div class="field-row">

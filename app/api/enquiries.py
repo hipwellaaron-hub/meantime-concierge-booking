@@ -53,6 +53,19 @@ def enquiry_form(request: Request):
     return templates.TemplateResponse(request, "enquiry.html", {"event_types": EVENT_TYPES})
 
 
+def _total_guests(payload) -> int | None:
+    """The headcount, from the adult/under-18 split when both were given.
+
+    Both forms ask for the split outright (2026-09-09), so this is the
+    normal path; attendee_count remains for a caller that only has a
+    total. Deriving rather than asking for all three means the total can
+    never contradict its own parts.
+    """
+    if payload.adult_count is not None and payload.child_count is not None:
+        return payload.adult_count + payload.child_count
+    return payload.attendee_count
+
+
 @router.post("/enquiries", dependencies=[Depends(rate_limit_dependency(_enquiry_rate_limiter))])
 def submit_enquiry(
     request: Request,
@@ -103,8 +116,13 @@ def submit_enquiry(
         event_type=payload.event_type,
         event_date=payload.event_date,
         proposed_time_slot=payload.proposed_time_slot,
-        attendee_count=payload.attendee_count,
+        # The total is DERIVED from the split when the pair is given, so
+        # a form can never post three numbers that disagree with each
+        # other. attendee_count is still accepted for an API caller that
+        # only knows a headcount.
+        attendee_count=_total_guests(payload),
         adult_count=payload.adult_count,
+        child_count=payload.child_count,
         company_name=payload.company_name,
         dates_flexible=payload.dates_flexible,
         comments=payload.comments,

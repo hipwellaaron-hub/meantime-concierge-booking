@@ -40,6 +40,11 @@ def test_full_journey_enquiry_to_paid_invoice_with_intact_audit_trail(db, loft):
                 "dates_flexible": "false",
                 "attendee_count": 60,
                 "adult_count": 60,
+                # Both forms require the split, so a faithful journey sends
+                # it. Without it the enquiry is flagged for follow-up, which
+                # is exactly what should happen -- and is what this test
+                # started asserting when the requirement landed.
+                "child_count": 0,
                 # Deliberately a clean, unambiguous enquiry (real date, real
                 # adult count, non-generic type, no accessibility mention) --
                 # this test exercises the whole document/payment pipeline end

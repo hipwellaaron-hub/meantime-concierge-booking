@@ -49,11 +49,19 @@ class EnquiryCreate(BaseModel):
     dates_flexible: bool
     event_type: str = Field(min_length=1, max_length=EVENT_TYPE_MAX_LENGTH)
     attendee_count: int | None = Field(default=None, ge=1, le=MAX_REASONABLE_ATTENDEE_COUNT)
-    # Not asked up front on the current form -- only relevant once staff
-    # need to confirm a shortfall/minimum-spend figure (which counts
-    # adults only). Left blank here, it gets flagged for follow-up on
-    # enquiries that do give a guest count -- see app.services.enquiry_classification.
+    # The adult/under-18 split. BOTH forms mark these required in the HTML
+    # (2026-09-09) so the answer is always given in practice -- but they
+    # stay optional HERE for the same reason event_date does: rejecting a
+    # submission outright loses the lead. Absent, they are flagged for
+    # follow-up, never silently read as zero.
+    #
+    # "Adult" means 18 or over, one age for both purposes it is used for --
+    # minimum spend counts adults only, and RSA applies to the under-18s
+    # (Aaron, 2026-09-09: "One age, both purposes... I don't want a second
+    # threshold invented"). attendee_count is DERIVED from the pair when it
+    # is not sent, so the total can never disagree with its own parts.
     adult_count: int | None = Field(default=None, ge=0, le=MAX_REASONABLE_ATTENDEE_COUNT)
+    child_count: int | None = Field(default=None, ge=0, le=MAX_REASONABLE_ATTENDEE_COUNT)
     proposed_time_slot: str | None = Field(default=None, max_length=100)
     comments: str | None = Field(default=None, max_length=5000)
 

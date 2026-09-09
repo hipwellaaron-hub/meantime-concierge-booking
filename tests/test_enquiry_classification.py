@@ -134,22 +134,39 @@ def test_21st_mentioning_18_year_old_guests_is_not_detected_as_18th(db, unassign
 # --- missing adult/minor split -----------------------------------------------
 
 
-def test_missing_adult_count_is_flagged_regardless_of_event_type(db, unassigned_space):
-    """Minimums count adults only, no matter what kind of event this is --
-    the split rule applies universally, not just to birthdays."""
+SPLIT_FLAG = "Adult/under-18 guest split not provided"
+
+
+def test_missing_split_is_flagged_regardless_of_event_type(db, unassigned_space):
+    """Minimums count adults only and RSA applies to the under-18s, so the
+    split rule applies universally, not just to birthdays."""
     booking = _make_booking(db, unassigned_space, event_date=_next_friday(dt.date(2027, 1, 1)))
     flags = classify_and_flag(
         db, booking, event_type="Baby Shower", adult_count=None, attendee_count=40, actor="test"
     )
-    assert any("Adult/minor guest split not provided" in f for f in flags)
+    assert any(SPLIT_FLAG in f for f in flags)
 
 
-def test_adult_count_given_is_not_flagged_for_split(db, unassigned_space):
+def test_adults_alone_is_not_the_split(db, unassigned_space):
+    """TIGHTENED 2026-09-09. Adults without under-18s used to count as
+    having answered, and the missing half was then inferred as zero -- the
+    exact "0 means nobody asked" fault. Half an answer is not an answer."""
     booking = _make_booking(db, unassigned_space, event_date=_next_friday(dt.date(2027, 1, 1)))
     flags = classify_and_flag(
         db, booking, event_type="21st Birthday", adult_count=45, attendee_count=45, actor="test"
     )
-    assert not any("Adult/minor guest split not provided" in f for f in flags)
+    assert any(SPLIT_FLAG in f for f in flags)
+
+
+def test_both_halves_given_is_not_flagged(db, unassigned_space):
+    """And a genuine zero is an answer: 45 adults, 0 under-18s, asked and
+    told. That is the whole point of asking."""
+    booking = _make_booking(db, unassigned_space, event_date=_next_friday(dt.date(2027, 1, 1)))
+    flags = classify_and_flag(
+        db, booking, event_type="21st Birthday", adult_count=45, child_count=0,
+        attendee_count=45, actor="test",
+    )
+    assert not any(SPLIT_FLAG in f for f in flags)
 
 
 def test_missing_adult_count_not_flagged_when_attendee_count_also_missing(db, unassigned_space):
@@ -159,7 +176,7 @@ def test_missing_adult_count_not_flagged_when_attendee_count_also_missing(db, un
     flags = classify_and_flag(
         db, booking, event_type="Wedding", adult_count=None, attendee_count=None, actor="test"
     )
-    assert not any("Adult/minor guest split not provided" in f for f in flags)
+    assert not any(SPLIT_FLAG in f for f in flags)
     assert any("Guest count not provided" in f for f in flags)
 
 
@@ -231,7 +248,7 @@ def test_missing_attendee_count_is_flagged(db, unassigned_space):
 
 def test_missing_event_date_is_flagged(db, unassigned_space):
     booking = _make_booking(db, unassigned_space, event_date=None)
-    flags = classify_and_flag(db, booking, event_type="Wedding", adult_count=80, attendee_count=80, actor="test")
+    flags = classify_and_flag(db, booking, event_type="Wedding", adult_count=80, child_count=0, attendee_count=80, actor="test")
     assert any("Event date not provided" in f for f in flags)
 
 
@@ -342,7 +359,7 @@ def test_flags_are_persisted_as_booking_events(db, unassigned_space):
 
 def test_clean_enquiry_raises_no_flags(db, unassigned_space):
     booking = _make_booking(db, unassigned_space, event_date=_next_friday(dt.date(2027, 1, 1)))
-    flags = classify_and_flag(db, booking, event_type="Wedding", adult_count=80, attendee_count=80, actor="test")
+    flags = classify_and_flag(db, booking, event_type="Wedding", adult_count=80, child_count=0, attendee_count=80, actor="test")
     assert flags == []
     events = db.query(BookingEvent).filter_by(booking_id=booking.id, event_type="enquiry_flagged").all()
     assert events == []
@@ -356,7 +373,7 @@ def test_get_enquiries_needing_clarification_lists_flagged_open_enquiries(db, ha
     classify_and_flag(db, flagged, event_type="Birthday", adult_count=None, attendee_count=40, actor="test")
 
     clean = _make_booking(db, unassigned_space, event_date=_next_friday(dt.date(2027, 1, 8)), event_name="Clean One")
-    classify_and_flag(db, clean, event_type="Wedding", adult_count=80, attendee_count=80, actor="test")
+    classify_and_flag(db, clean, event_type="Wedding", adult_count=80, child_count=0, attendee_count=80, actor="test")
 
     results = get_enquiries_needing_clarification(db, hamilton)
     result_ids = {b.id for b in results}
@@ -563,3 +580,75 @@ def test_resend_enquiry_notification_raises_and_records_failure(db, unassigned_s
     events = db.query(BookingEvent).filter_by(booking_id=booking.id, event_type="enquiry_notification_failed").all()
     assert len(events) == 1
     assert "still down" in events[0].new_value
+
+
+# --- the split is asked for, so zero means zero (2026-09-09) ------------------
+
+
+def test_a_declared_zero_is_believed_and_not_re_derived(db, unassigned_space):
+    """The heart of the change. 40 adults and 0 under-18s, both stated, is
+    recorded as stated -- the old code reached the same numbers by treating
+    every attendee as an adult, which is why a zero could not be trusted."""
+    from app.services.enquiry_classification import create_enquiry_booking
+
+    booking, _candidates, _is_new = create_enquiry_booking(
+        db, venue=unassigned_space.venue, full_name="Zero Means Zero",
+        email="zero.means.zero@example.com", phone=None,
+        event_name="Kim's 40th", event_type="Birthday",
+        event_date=_next_friday(dt.date(2027, 3, 5)), proposed_time_slot=None,
+        attendee_count=40, adult_count=40, child_count=0,
+        company_name=None, dates_flexible=False, comments=None,
+        lead_source="website", lead_referrer=None, actor="test",
+    )
+
+    assert booking.adult_count == 40
+    assert booking.child_count == 0
+    flags = [e.new_value or "" for e in db.query(BookingEvent).filter_by(
+        booking_id=booking.id, event_type="enquiry_flagged").all()]
+    assert not any("split not provided" in f for f in flags), flags
+
+
+def test_a_stated_under_18_count_is_carried_not_inferred(db, unassigned_space):
+    """And a stated non-zero is used as given rather than derived from the
+    total, which is what makes the RSA and minimum-spend reads honest."""
+    from app.services.enquiry_classification import create_enquiry_booking
+
+    booking, _candidates, _is_new = create_enquiry_booking(
+        db, venue=unassigned_space.venue, full_name="Milly Eighteen",
+        email="milly.eighteen@example.com", phone=None,
+        event_name="Milly's 18th", event_type="18th Birthday",
+        event_date=_next_friday(dt.date(2027, 3, 12)), proposed_time_slot=None,
+        attendee_count=None, adult_count=12, child_count=48,
+        company_name=None, dates_flexible=False, comments=None,
+        lead_source="website", lead_referrer=None, actor="test",
+    )
+
+    assert booking.adult_count == 12
+    assert booking.child_count == 48
+
+
+def test_the_public_form_asks_for_both_halves(db, unassigned_space):
+    """Required in the HTML, so every real submission carries it -- while
+    the schema stays tolerant, because rejecting a submission outright
+    loses the lead (the rule the rest of this form follows)."""
+    from fastapi.testclient import TestClient
+
+    from app.database import get_db
+    from app.main import app
+    from app.schemas.enquiry import EnquiryCreate
+
+    app.dependency_overrides[get_db] = lambda: db
+    try:
+        page = TestClient(app).get("/enquire").text
+    finally:
+        app.dependency_overrides.clear()
+
+    assert 'name="adult_count" min="0" max="5000" required' in page
+    assert 'name="child_count" min="0" max="5000" required' in page
+    assert "Number Of Guests Under 18 *" in page
+    assert 'name="attendee_count"' not in page, "the total is derived, not asked a third time"
+    # ...and tolerant on the wire: a submission missing them is captured.
+    assert EnquiryCreate(
+        first_name="A", last_name="B", email="a@b.com", event_name="X",
+        dates_flexible=False, event_type="Birthday",
+    ).child_count is None

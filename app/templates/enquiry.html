@@ -133,8 +133,18 @@
 
         <div class="field-row">
           <div>
-            <label for="attendee_count">Number Of Attendees *</label>
-            <input type="number" id="attendee_count" name="attendee_count" min="1" max="5000" required>
+            {#
+              The guest count is asked as its two halves, not as a total
+              plus an optional split. A blank "adults" used to be resolved
+              by treating every attendee as an adult and recording zero
+              under-18s -- so zero read as "nobody asked" rather than "no
+              minors", and an 18th booked that way never required the RSA
+              line on its Event Order. Asked outright, zero means zero.
+              The total is derived from the pair server-side, so the three
+              numbers cannot disagree (Aaron, 2026-09-09).
+            #}
+            <label for="adult_count">Number Of Guests 18 And Over *</label>
+            <input type="number" id="adult_count" name="adult_count" min="0" max="5000" required>
           </div>
           <div>
             <label for="event_type">Event Type *</label>
@@ -149,9 +159,10 @@
 
         <div class="field-row">
           <div>
-            <label for="adult_count">Number Of Adults</label>
-            <input type="number" id="adult_count" name="adult_count" min="0" max="5000">
-            <p class="field-hint">Only if you know it already -- we'll ask if not.</p>
+            <label for="child_count">Number Of Guests Under 18 *</label>
+            <input type="number" id="child_count" name="child_count" min="0" max="5000" required>
+            <p class="field-hint">Enter 0 if none. We ask because it changes your minimum spend and,
+              for an 18th, the responsible-service conditions on the night.</p>
           </div>
           <div>
             <label for="dates_flexible">Are Dates Flexible *</label>

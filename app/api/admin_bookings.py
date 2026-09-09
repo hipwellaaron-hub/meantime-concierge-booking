@@ -288,6 +288,7 @@ def create_new_booking(
     event_type: str = Form(...),
     attendee_count: str | None = Form(None),
     adult_count: str | None = Form(None),
+    child_count: str | None = Form(None),
     proposed_time_slot: str | None = Form(None),
     comments: str | None = Form(None),
     lead_source: str | None = Form(None),
@@ -306,7 +307,8 @@ def create_new_booking(
             first_name=first_name, last_name=last_name, email=email, phone=phone,
             company_name=company_name, event_name=event_name, event_date=event_date,
             dates_flexible=dates_flexible, event_type=event_type, attendee_count=attendee_count,
-            adult_count=adult_count, proposed_time_slot=proposed_time_slot, comments=comments,
+            adult_count=adult_count, child_count=child_count,
+            proposed_time_slot=proposed_time_slot, comments=comments,
             lead_source=lead_source,
         )
     except ValidationError as exc:
@@ -327,8 +329,15 @@ def create_new_booking(
         event_type=payload.event_type,
         event_date=payload.event_date,
         proposed_time_slot=payload.proposed_time_slot,
-        attendee_count=payload.attendee_count,
+        # Same derivation as the public form: the total comes from the
+        # split when both were given, so the three numbers cannot disagree.
+        attendee_count=(
+            payload.adult_count + payload.child_count
+            if payload.adult_count is not None and payload.child_count is not None
+            else payload.attendee_count
+        ),
         adult_count=payload.adult_count,
+        child_count=payload.child_count,
         company_name=payload.company_name,
         dates_flexible=payload.dates_flexible,
         comments=payload.comments,
