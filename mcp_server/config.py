@@ -42,8 +42,24 @@ class Settings(BaseSettings):
     # metadata documents. Must match what claude.ai is pointed at.
     public_url: str = ""
 
-    access_token_ttl_seconds: int = 3600
-    refresh_token_ttl_seconds: int = 60 * 60 * 24 * 30
+    # Access tokens: 30 days. Refresh tokens: 90 days -- strictly longer,
+    # because issue_tokens stamps both from one clock and a refresh grant
+    # presented AFTER the access token expired must still find a live
+    # refresh token (with equal lifetimes it would die the same second).
+    #
+    # Why not the hour it was: the Railway http logs for 2026-09-08/09
+    # show claude.ai refreshing at next use, a minute or two after each
+    # hourly expiry, for 28 hours; then from 2026-09-09 18:08 AEST a
+    # client (same user agent and egress range -- the logs cannot say
+    # which surface) presented the expired token without ever calling
+    # /token and was 401 for a day until Aaron re-authorised.
+    #
+    # The trade-off, stated: a leaked access token is now usable for 30
+    # days rather than one hour, and the only revocation -- rotating
+    # MCP_SIGNING_SECRET -- also invalidates every registered client. What
+    # it buys: a connector that does not need re-authorising every hour.
+    access_token_ttl_seconds: int = 60 * 60 * 24 * 30
+    refresh_token_ttl_seconds: int = 60 * 60 * 24 * 90
     auth_code_ttl_seconds: int = 120
 
 

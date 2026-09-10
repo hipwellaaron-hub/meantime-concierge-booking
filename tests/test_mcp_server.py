@@ -469,3 +469,37 @@ def test_health_reports_configuration_without_leaking_it(client):
     assert body["status"] == "ok"
     assert body["configured"] is True
     assert body["tools"] == 9  # seven reads, the proposal read, and the one write
+
+
+def test_refresh_tokens_outlive_access_tokens_and_a_late_refresh_still_works():
+    """An hour-long access token cost a day of 401s when a client that
+    never calls /token kept presenting it (2026-09-09/10). Access tokens
+    now last 30 days; refresh tokens must last LONGER, because both are
+    stamped from one clock and a refresh presented after the access token
+    expired must still find a live refresh token (equal lifetimes died in
+    the same second -- review, 2026-09-10). Asserted on the declared
+    defaults, so an environment override cannot fail or mask this."""
+    from mcp_server import oauth
+    from mcp_server.config import Settings, settings
+
+    defaults = {name: field.default for name, field in Settings.model_fields.items()}
+    assert defaults["access_token_ttl_seconds"] == 60 * 60 * 24 * 30
+    assert defaults["refresh_token_ttl_seconds"] > defaults["access_token_ttl_seconds"]
+
+    t0 = 1_800_000_000
+    with (
+        patch.object(settings, "mcp_signing_secret", "test-signing-secret"),
+        patch.object(settings, "access_token_ttl_seconds", 100),
+        patch.object(settings, "refresh_token_ttl_seconds", 300),
+    ):
+        with patch.object(oauth.time, "time", lambda: t0):
+            pair = oauth.issue_tokens()
+        with patch.object(oauth.time, "time", lambda: t0 + 101):
+            with pytest.raises(oauth.OAuthError):
+                oauth.verify_access_token(pair["access_token"])
+            fresh = oauth.refresh_tokens(pair["refresh_token"])  # late refresh: the grant it exists for
+        with patch.object(oauth.time, "time", lambda: t0 + 102):
+            oauth.verify_access_token(fresh["access_token"])
+        with patch.object(oauth.time, "time", lambda: t0 + 301):
+            with pytest.raises(oauth.OAuthError):
+                oauth.refresh_tokens(pair["refresh_token"])
