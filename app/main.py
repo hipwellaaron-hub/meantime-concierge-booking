@@ -1,7 +1,9 @@
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 from fastapi import FastAPI, Request
+from fastapi.exception_handlers import http_exception_handler
 from fastapi.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.responses import FileResponse, PlainTextResponse, RedirectResponse
 
@@ -27,6 +29,7 @@ from app.api.staff_app import router as staff_app_router
 from app.api.webhooks import router as webhooks_router
 from app.api.wizard import router as wizard_router
 from app.config import settings
+from app.templating import templates
 
 # Generous for the JSON/form payloads this app actually receives (an
 # enquiry, a signature) -- blocks gross abuse, not real use. Only catches
@@ -121,6 +124,69 @@ def _redirect_to_login(request: Request, exc: NotAuthenticated) -> RedirectRespo
     # quote(): the path is attacker-chosen, and an unencoded "&" or "#" in it
     # would inject further parameters into the login URL (2026-09-07 review).
     return RedirectResponse(url=f"/admin/login?next={quote(request.url.path, safe='/')}", status_code=303)
+
+
+# Headings that say what happened, per status. The detail itself carries
+# the specifics -- these only set the tone so a 404 does not read like a
+# refusal and a refusal does not read like a crash.
+_ERROR_HEADINGS = {
+    403: "Not allowed",
+    404: "Not found",
+    409: "That can't be done right now",
+    422: "That can't be saved",
+}
+
+
+def _safe_admin_back(request: Request) -> str:
+    """Where the Back button goes: the page they came from, if it is one.
+
+    PATH ONLY, and only an /admin one. The Referer header is chosen by
+    whoever made the request, and putting it into a link unvalidated is
+    the open redirect this codebase already had to fix once on
+    /admin/login (2026-09-07 review).
+    """
+    try:
+        path = urlparse(request.headers.get("referer") or "").path
+    except ValueError:
+        return "/admin"
+    return path if path.startswith("/admin/") else "/admin"
+
+
+@app.exception_handler(StarletteHTTPException)
+async def _admin_errors_get_a_page(request: Request, exc: StarletteHTTPException):
+    """A staff member who hits a refusal gets a page with a way back.
+
+    Every admin refusal raises HTTPException, and the default renders it
+    as {"detail": "..."} on an otherwise blank page. In the desktop app
+    there is no browser chrome and no Back button, so that is a DEAD END --
+    the only way out is to close and reopen the app. Aaron hit it on
+    2026-09-10 saving an agreed minimum without a reason, and there are 82
+    other raises in the admin routers that would each do the same.
+
+    This is the reasoning the NotAuthenticated handler above already
+    applies to a 401, extended to the rest: a browser-driven dashboard is
+    not an API client.
+
+    /admin ONLY. Everything under /api still answers JSON exactly as
+    before -- the AI read API and the MCP both depend on seeing the real
+    status and detail rather than an HTML page, which mcp_server/concierge
+    says out loud ("the model should see exactly that and stop, not
+    receive an empty result it might read as 'nothing found'"). The floor
+    app under /api/staff is JSON for the same reason.
+    """
+    if not request.url.path.startswith("/admin"):
+        return await http_exception_handler(request, exc)
+    detail = exc.detail if isinstance(exc.detail, str) else "That request could not be completed."
+    return templates.TemplateResponse(
+        request,
+        "admin/error.html",
+        {
+            "heading": _ERROR_HEADINGS.get(exc.status_code, "Something went wrong"),
+            "message": detail,
+            "back_url": _safe_admin_back(request),
+        },
+        status_code=exc.status_code,
+    )
 
 
 app.mount("/static", StaticFiles(directory="app/static"), name="static")

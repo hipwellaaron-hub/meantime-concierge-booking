@@ -1,0 +1,69 @@
+{#
+  A refusal a staff member can actually get out of.
+
+  Every admin refusal raises HTTPException, and the default renders it as
+  {"detail": "..."} on an otherwise blank page. In the desktop app there is
+  no browser chrome and no Back button, so that is a dead end -- the only
+  way out was to close and reopen the app (Aaron, 2026-09-10, on the agreed
+  minimum form).
+
+  DELIBERATELY STANDALONE, not extending admin/_base.html. The base needs a
+  `staff` object and a csrf_token that an exception handler has no session
+  to build, and more to the point: an error page that depends on the chrome
+  rendering correctly can fail the same way the page it is reporting on
+  did. This one needs nothing but its own three values.
+
+  Two ways back on purpose -- the button uses the validated Referer, which
+  after a form POST is the page they were on, and the Dashboard link covers
+  a request that arrived without one.
+#}
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ heading }} — Meantime Concierge</title>
+<style>
+  :root {
+    --bg: #f4f1ea; --surface: #ffffff; --ink: #1a1815; --muted: #6e6862;
+    --gold: #856637; --wine: #7a2e3a; --border: rgba(26,24,21,0.22);
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    line-height: 1.5; -webkit-font-smoothing: antialiased;
+    display: flex; align-items: flex-start; justify-content: center; padding: 3rem 1.25rem;
+  }
+  .card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-left: 4px solid var(--wine); border-radius: 12px;
+    padding: 1.5rem; max-width: 640px; width: 100%;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+  }
+  h1 { font-size: 1.15rem; margin: 0 0 0.6rem; color: var(--wine); }
+  p { margin: 0 0 0.9rem; }
+  .detail { white-space: pre-wrap; }
+  .muted { color: var(--muted); font-size: 0.85rem; }
+  .actions { margin: 1.25rem 0 0; }
+  a.btn {
+    display: inline-block; background: var(--ink); color: var(--bg);
+    border-radius: 8px; padding: 9px 16px; text-decoration: none; font-weight: 600;
+    font-size: 0.85rem;
+  }
+  a.btn:hover { background: var(--gold); }
+  a.plain { color: var(--gold); margin-left: 14px; font-size: 0.85rem; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <h1>{{ heading }}</h1>
+    <p class="detail">{{ message }}</p>
+    <p class="muted">Nothing was changed. Go back, fix it, and try again.</p>
+    <p class="actions">
+      <a class="btn" href="{{ back_url }}">&larr; Back</a>
+      {% if back_url != "/admin" %}<a class="plain" href="/admin">Dashboard</a>{% endif %}
+    </p>
+  </div>
+</body>
+</html>

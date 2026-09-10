@@ -407,7 +407,8 @@ def test_a_half_typed_price_is_refused_and_changes_nothing(db, loft, admin_clien
     )
 
     assert response.status_code == 422
-    assert "Oyster station" in response.json()["detail"]
+    # The message reaches a human on the refusal page, not as JSON.
+    assert "Oyster station" in response.text
     db.refresh(booking)
     db.refresh(document)
     assert booking.guest_arrival_time == before_arrival, "a refused save moved the booking"

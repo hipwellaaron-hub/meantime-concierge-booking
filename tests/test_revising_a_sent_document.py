@@ -290,7 +290,7 @@ def test_the_back_button_cannot_revise_the_version_it_just_replaced(admin_client
     # would also be a 409 and would mean the request had been quietly
     # redirected onto a different version -- which is not the same as
     # telling the staff member their page is stale.
-    assert "no longer the current version" in again.json()["detail"]
+    assert "no longer the current version" in again.text
     current = documents_service.get_current(db, booking.id, DocumentType.beo)
     assert str(current.id) == draft_id, "the draft made by the first click was discarded"
 

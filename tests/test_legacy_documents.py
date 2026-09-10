@@ -89,7 +89,7 @@ def test_the_staff_read_routes_refuse_a_legacy_document(admin_client, db, loft):
 
     assert preview.status_code == 409
     assert pdf.status_code == 409
-    assert "legacy-file" in pdf.json()["detail"], "it should say where the real one is"
+    assert "legacy-file" in pdf.text, "it should say where the real one is"
     # And the route it points at still serves the signed original.
     original = admin_client.get(f"/admin/bookings/{b.id}/documents/{doc.id}/legacy-file")
     assert original.status_code == 200
@@ -111,7 +111,7 @@ def test_a_record_only_legacy_agreement_is_not_sent_to_a_route_that_404s(admin_c
     resp = admin_client.get(f"/admin/bookings/{b.id}/documents/{doc.id}/pdf")
 
     assert resp.status_code == 409
-    detail = resp.json()["detail"]
+    detail = resp.text
     assert "legacy-file" not in detail, "it pointed at a route that 404s for this record"
     assert "attach one" in detail, "and it should say what to do instead"
     # The route it declined to name would indeed have 404ed.

@@ -645,7 +645,7 @@
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <div class="field-row">
       <div><label>Agreed minimum</label><input type="number" name="agreed_min_adults" value="{{ booking.agreed_min_adults }}" min="0" required></div>
-      <div><label>Reason (required if reduced)</label>
+      <div><label>Reason <span class="muted">(required whenever it differs from the standard, up or down)</span></label>
         <select name="reason">
           <option value="">— none —</option>
           {% for r in min_reduction_reasons %}<option value="{{ r.value }}"{% if booking.agreed_min_reduction_reason and booking.agreed_min_reduction_reason.value == r.value %} selected{% endif %}>{{ r.value }}</option>{% endfor %}
