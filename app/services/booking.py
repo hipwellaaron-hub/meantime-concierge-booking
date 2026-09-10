@@ -471,6 +471,25 @@ def has_paid_deposit(db: Session, booking: Booking) -> bool:
     )
 
 
+def has_approved_beo(db: Session, booking: Booking) -> bool:
+    """The *current* Event Order has been approved by the client -- typed
+    their name, accepted the date, accepted that it locks (Aaron's ruling,
+    2026-09-10). Same shape as has_signed_agreement: a superseded version's
+    approval does not carry, because what they approved no longer describes
+    the event."""
+    return (
+        db.execute(
+            select(Document.id).where(
+                Document.booking_id == booking.id,
+                Document.type == DocumentType.beo,
+                Document.status == DocumentStatus.signed,
+                Document.is_current.is_(True),
+            )
+        ).first()
+        is not None
+    )
+
+
 def has_signed_agreement(db: Session, booking: Booking) -> bool:
     """The *current* agreement specifically: regenerating an agreement
     supersedes the signed one (is_current flips to False), and what the

@@ -387,8 +387,11 @@
         <td>BEO</td>
         <td class="muted">{{ current_beo.version if current_beo else "—" }}</td>
         <td>
-          {% if current_beo %}<span class="badge {{ current_beo.status.value | status_badge }}">{{ current_beo.status.value }}</span>{% else %}<span class="muted">none</span>{% endif %}
+          {% if current_beo %}<span class="badge {{ current_beo.status.value | status_badge }}">{{ "approved" if current_beo.status.value == "signed" else current_beo.status.value }}</span>{% else %}<span class="muted">none</span>{% endif %}
           {% if current_beo and current_beo.viewed_at %}<div class="muted" style="font-size:0.8rem; margin-top:3px; color: var(--ink);">Opened {{ current_beo.viewed_at | sydney_time }}</div>{% endif %}
+          {# Who approved it and when -- the thing the floor needs to know
+             is agreed, and the thing a Revise sets aside. #}
+          {% if current_beo and current_beo.status.value == "signed" %}<div class="muted" style="font-size:0.8rem; margin-top:3px; color: var(--ink);">Approved by {{ current_beo.signer_name | person_name }} {{ current_beo.signed_at | sydney_time }}</div>{% endif %}
         </td>
         <td>
           <form class="inline" method="post" action="/admin/bookings/{{ booking.id }}/documents/beo/generate">

@@ -18,10 +18,11 @@ Two honest limits, both reported rather than papered over:
   "reply logged" event. Until that action exists (a Tier 1 write in a
   later step) no booking computes as `replied`, and `awaiting` will
   over-report "staff" for enquiries already answered by email.
-- `beo_sent` means the Event Order was issued, not that a client approved
-  it. Only agreements can be signed in Concierge, so BEO approval is not a
-  state that exists; `finalised` therefore rests on the final invoice
-  being paid.
+- `beo_sent` means the Event Order was issued. Since 2026-09-10 a client
+  CAN approve an Event Order at its link (status `signed`, shown as
+  "approved"); that is reported in `beo_status` and does not move the
+  stage. `finalised` rests on the final invoice being paid, by Aaron's
+  ruling -- approval is an operational fact for the floor, not a gate.
 """
 
 import datetime as dt

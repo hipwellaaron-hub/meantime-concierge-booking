@@ -296,7 +296,7 @@
 {{ beo_section("Accessibility", content.accessibility, staff) }}
 {{ beo_section("Decorations", content.decorations, staff) }}
 {{ beo_section("Special Notes", content.special_notes, staff) }}
-{{ beo_section("Status", content.status_text or document.status.value, staff, always=true) }}
+{{ beo_section("Status", ("Event Order approved by " ~ (document.signer_name | person_name) ~ " on " ~ (document.signed_at | sydney_time("%d %b %Y")) ~ ".") if document.status.value == "signed" else (content.status_text or document.status.value), staff, always=true) }}
 {% endmacro %}
 
 {% if is_pdf and document.type.value == "agreement" %}
@@ -460,9 +460,11 @@
     </table>
   </div>
 
+  {# The Event Order is APPROVED, not signed: it is a run sheet the client
+     accepts, not a contract they are bound by. Same line, honest verb. #}
   <div class="pdf-sign">
     {% if document.status.value == "signed" %}
-    <span class="signed">Signed by {{ document.signer_name }}</span> on {{ document.signed_at | sydney_time }}
+    <span class="signed">Approved by {{ document.signer_name | person_name }}</span> on {{ document.signed_at | sydney_time }}
     {% else %}
     <span class="unsigned-line">Signature ____________________________&nbsp;&nbsp;
     Name ____________________________&nbsp;&nbsp; Date ______________</span>
@@ -482,7 +484,7 @@
   <div class="subtitle">
     Booking Agreement
     · Ref {{ booking.reference_code }} · v{{ document.version }}
-    · <span class="status status-{{ document.status.value }}">{{ document.status.value }}</span>
+    · <span class="status status-{{ document.status.value }}">{{ "approved" if (document.type.value == "beo" and document.status.value == "signed") else document.status.value }}</span>
   </div>
   {% endif %}
 
@@ -610,7 +612,7 @@
 
   {% if document.status.value == "signed" %}
   <div class="signed-note">
-    Signed by {{ document.signer_name }} on {{ document.signed_at | sydney_time }}
+    {{ "Approved" if document.type.value == "beo" else "Signed" }} by {{ document.signer_name | person_name }} on {{ document.signed_at | sydney_time }}
   </div>
   {% elif not is_pdf and document.type.value == "agreement" and document.status.value in ("sent", "viewed") %}
   <form class="sign" method="post" action="/d/{{ document.access_token }}/sign">
@@ -619,6 +621,29 @@
     <p class="consent-text">
       By typing your name and clicking Accept &amp; Sign, you agree to be bound by the terms above, and consent to
       signing this document electronically. We record your name, IP address, and the time of acceptance.
+    </p>
+  </form>
+  {% elif not is_pdf and document.type.value == "beo" and document.status.value in ("sent", "viewed") %}
+  {#
+    Client approval of the Event Order. Three things at once, by Aaron's
+    ruling (2026-09-10): their name, the event date as printed above, and
+    that approving LOCKS this version. The checkbox is required here and
+    again on the server (app/api/documents.sign_document), because a form
+    field can be posted without the page. Approval confirms nothing about
+    the booking -- the agreement and deposit did that -- it records that
+    the run sheet was read and accepted.
+  #}
+  <form class="sign" method="post" action="/d/{{ document.access_token }}/sign">
+    <h3 style="margin:0 0 0.5rem;">Approve this Event Order</h3>
+    <label style="display:block; margin:0 0 0.75rem; font-size:0.9rem;">
+      <input type="checkbox" name="accept_lock" value="yes" required>
+      I confirm the details above are correct, including the event date, and I understand that approving
+      locks this Event Order. Any change after this goes through the venue and will need my approval again.
+    </label>
+    <input type="text" name="signer_name" placeholder="Your full name" required>
+    <button type="submit">Approve Event Order</button>
+    <p class="consent-text">
+      We record your name, IP address, and the time of approval.
     </p>
   </form>
   {% endif %}

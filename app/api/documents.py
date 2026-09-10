@@ -3,7 +3,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models.document import DocumentStatus
+from app.models.document import DocumentStatus, DocumentType
 from app.rate_limit import InMemoryRateLimiter, client_ip, rate_limit_dependency
 from app.services import documents as documents_service
 from app.services import policy
@@ -153,6 +153,7 @@ def sign_document(
     token: str,
     request: Request,
     signer_name: str = Form(..., max_length=255),
+    accept_lock: str | None = Form(None),
     db: Session = Depends(get_db),
 ):
     if not looks_like_a_token(token):
@@ -171,6 +172,18 @@ def sign_document(
     signer_name = signer_name.strip()
     if not signer_name:
         raise HTTPException(status_code=422, detail="Name is required to sign")
+    if document.type == DocumentType.beo and not accept_lock:
+        # Approving an Event Order is three things at once, and the third
+        # is the one that matters: their name, the event date as printed,
+        # and that approval LOCKS this version (Aaron's ruling,
+        # 2026-09-10). The checkbox is required in the HTML; this is the
+        # server saying so too, because a form field can be posted without
+        # the page.
+        raise HTTPException(
+            status_code=422,
+            detail="To approve, please tick the box confirming the details and the date are correct "
+            "and that approval locks this Event Order.",
+        )
 
     try:
         documents_service.sign(db, document, signer_name=signer_name, signer_ip=_client_ip(request))

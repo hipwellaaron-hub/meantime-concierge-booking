@@ -348,7 +348,7 @@ def _build_status_text(db: Session, booking: Booking) -> str:
     agreement signed. Awaiting Event Order approval and final invoice
     payment." Derived from real state, staff-overridable on the edit
     screen."""
-    from app.services.booking import has_paid_deposit, has_signed_agreement
+    from app.services.booking import has_approved_beo, has_paid_deposit, has_signed_agreement
 
     done = []
     if has_paid_deposit(db, booking):
@@ -356,6 +356,14 @@ def _build_status_text(db: Session, booking: Booking) -> str:
     if has_signed_agreement(db, booking):
         done.append("agreement signed")
     prefix = (", ".join(done) + ". ") if done else ""
+    # "Awaiting Event Order approval" used to be a fixed suffix -- approval
+    # was not a state that existed, so the sentence could never come true.
+    # It is a state now (the client approves the Event Order at its link),
+    # and this is derived like the two facts before it. Composed into the
+    # document at generation, so the rendered Status line ALSO overrides it
+    # at render time once THIS version is approved (document.html).
+    if has_approved_beo(db, booking):
+        return f"{prefix}Event Order approved. Awaiting final invoice payment."
     return f"{prefix}Awaiting Event Order approval and final invoice payment."
 
 

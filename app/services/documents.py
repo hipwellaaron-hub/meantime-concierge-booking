@@ -223,7 +223,17 @@ def revise(db: Session, document: Document, *, actor: str) -> Document:
             "this agreement has been signed -- revising it would supersede the contract the client "
             "agreed to. Issue a new agreement for them to sign instead."
         )
-    if document.status not in (DocumentStatus.sent, DocumentStatus.viewed):
+    # An APPROVED Event Order (status signed) can be revised. This is the
+    # one deliberate difference from the agreement rule above: a contract
+    # is what the client agreed to and stands; an Event Order changes
+    # right up to the day, and Revise is the safe way to change it. The
+    # approved version is never touched -- the copy starts as a draft, goes
+    # out again, and needs the client's approval again (Aaron, 2026-09-10:
+    # approval "locks it", and a change is a new version they approve).
+    revisable = (DocumentStatus.sent, DocumentStatus.viewed) + (
+        (DocumentStatus.signed,) if document.type == DocumentType.beo else ()
+    )
+    if document.status not in revisable:
         raise ValueError(
             f"only a sent {document.type.value} needs revising -- this one is "
             f"{document.status.value}"
@@ -434,6 +444,26 @@ def create_new_version(
         # booking was confirmed on that signature, a gate is lost: flag it
         # for a human, never move it (see booking.flag_if_confirmed_gate_lost).
         booking_service.flag_if_confirmed_gate_lost(db, booking, actor=actor)
+    if doc_type == DocumentType.beo and previous is not None and previous.status == DocumentStatus.signed:
+        # The client had APPROVED the version this replaces. Nothing is
+        # blocked -- Event Orders change until the day -- but the trail has
+        # to say an approval was set aside, because the new version goes out
+        # unapproved and the floor must not treat it as agreed.
+        db.add(
+            BookingEvent(
+                booking_id=booking.id,
+                event_type="beo_approval_superseded",
+                field_name="beo_version",
+                old_value=str(previous.version),
+                new_value=truncate(
+                    f"v{document.version} replaces v{previous.version}, which "
+                    f"{previous.signer_name or 'the client'} had approved -- needs approving again",
+                    500,
+                ),
+                actor=actor,
+            )
+        )
+        db.commit()
     return document
 
 
@@ -723,6 +753,16 @@ def sign(db: Session, document: Document, *, signer_name: str, signer_ip: str) -
     document.signer_ip = signer_ip
     actor = truncate(f"client:{signer_name}", BOOKING_EVENT_ACTOR_MAX_LENGTH)
     document = _transition(db, document, DocumentStatus.signed, actor=actor)
+
+    if document.type == DocumentType.beo:
+        # Approving an Event Order confirms NOTHING about the booking -- the
+        # agreement and deposit did that. It records that the client has
+        # read the run sheet and accepted it, and tells the venue so.
+        # Never raises: the client's approval must stand even if the alert
+        # cannot go.
+        from app.services import notifications
+
+        notifications.notify_beo_approved(document.booking, signer_name=signer_name, version=document.version)
 
     if document.type == DocumentType.agreement:
         # Signing is half of what confirms a booking; the deposit is the

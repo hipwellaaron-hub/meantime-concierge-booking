@@ -519,6 +519,54 @@ def notify_agreement_signed(booking: Booking, *, signer_name: str, deposit_paid:
         logger.exception("Agreement-signed alert failed for booking %s", booking.id)
 
 
+def build_beo_approved_subject(booking: Booking) -> str:
+    date_str = booking.event_date.strftime("%d %b") if booking.event_date else "date TBD"
+    return f"Event Order approved: {booking.event_name} — {date_str}"
+
+
+def build_beo_approved_body(booking: Booking, *, signer_name: str, version: int) -> str:
+    """Plain text, to the venue. An approval changes nothing about the
+    booking's status -- the agreement and deposit did that -- so the
+    headline is the one operational fact: the client has accepted this
+    version of the run sheet, and any change from here is a new version
+    they approve again. Same header treatment as the agreement alert."""
+    lines = [
+        f"The client has approved Event Order v{version}. It is locked as approved; a change means "
+        "a Revise, a re-send, and their approval again.",
+        "",
+        f"Approved by: {format_person_name(signer_name)}",
+        _booking_line(booking),
+    ]
+    return "\n".join(lines)
+
+
+def send_beo_approved_email(booking: Booking, *, signer_name: str, version: int, dashboard_base_url: str) -> None:
+    message = EmailMessage()
+    message["From"] = f"Meantime Concierge <{DIGEST_GMAIL_ADDRESS}>"
+    message["To"] = ENQUIRY_NOTIFICATION_RECIPIENT
+    message["Subject"] = build_beo_approved_subject(booking)
+    message["X-Concierge-Booking-Url"] = f"{dashboard_base_url}/admin/bookings/{booking.id}"
+    message.set_content(build_beo_approved_body(booking, signer_name=signer_name, version=version))
+    _send_via_gmail_smtp(message)
+
+
+def notify_beo_approved(booking: Booking, *, signer_name: str, version: int) -> None:
+    """Fire-and-forget venue alert that the client approved an Event Order.
+    Never raises -- a mail problem must not undo a client's approval. No-ops
+    (with a log line) until Gmail SMTP is configured, like every alert here."""
+    from app.config import settings
+
+    if not is_gmail_smtp_configured():
+        logger.warning("Event-Order-approved alert not sent for %s: Gmail SMTP not configured", booking.reference_code)
+        return
+    try:
+        send_beo_approved_email(
+            booking, signer_name=signer_name, version=version, dashboard_base_url=settings.dashboard_base_url
+        )
+    except Exception:  # noqa: BLE001 -- an alert must never take a real approval down with it
+        logger.exception("Event-Order-approved alert failed for booking %s", booking.id)
+
+
 def notify_deposit_paid(booking: Booking, *, amount: Decimal, agreement_signed: bool, now_confirmed: bool) -> None:
     """Fire-and-forget venue alert that a deposit was paid. Never raises --
     neither a client's card payment nor Stripe's webhook may fail because
