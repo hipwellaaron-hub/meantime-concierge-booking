@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Form, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from sqlalchemy.orm import Session
 
@@ -152,6 +152,7 @@ def download_document_pdf(token: str, request: Request, db: Session = Depends(ge
 def sign_document(
     token: str,
     request: Request,
+    background_tasks: BackgroundTasks,
     signer_name: str = Form(..., max_length=255),
     accept_lock: str | None = Form(None),
     db: Session = Depends(get_db),
@@ -201,5 +202,11 @@ def sign_document(
             # than {"detail": "cannot sign a document with status signed"}.
             return RedirectResponse(url=f"/d/{token}", status_code=303)
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    if document.type == DocumentType.beo:
+        # The venue alert and the client's receipt go AFTER this response:
+        # two serial SMTP conversations are not something a client waits
+        # on to have their click acknowledged (Aaron, 2026-09-10).
+        background_tasks.add_task(documents_service.deliver_beo_approval_emails, document.id, signer_name=signer_name)
 
     return RedirectResponse(url=f"/d/{token}", status_code=303)

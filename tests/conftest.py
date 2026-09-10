@@ -160,3 +160,17 @@ def _reset_rate_limiters():
     _sign_rate_limiter._hits.clear()
     _wizard_step_rate_limiter._hits.clear()
     login_rate_limiter._hits.clear()
+
+
+@pytest.fixture(autouse=True)
+def _background_work_uses_the_test_session(db, monkeypatch):
+    """documents.deliver_beo_approval_emails runs after the response with a
+    session of its own (documents.background_db). Under test it gets the
+    fixture session, so its writes land in the transaction the test can
+    see -- and so no test can reach the real database through a background
+    task by approving an Event Order through the route."""
+    from contextlib import nullcontext
+
+    from app.services import documents as documents_service
+
+    monkeypatch.setattr(documents_service, "background_db", lambda: nullcontext(db))

@@ -59,7 +59,7 @@
   <div class="card">
     <h1>{{ heading }}</h1>
     <p class="detail">{{ message }}</p>
-    <p class="muted">Nothing was changed. Go back, fix it, and try again.</p>
+    <p class="muted">{% if nothing_changed is not defined or nothing_changed %}Nothing was changed. Go back, fix it, and try again.{% else %}Go back and check the audit trail for what was recorded.{% endif %}</p>
     <p class="actions">
       <a class="btn" href="{{ back_url }}">&larr; Back</a>
       {% if back_url != "/admin" %}<a class="plain" href="/admin">Dashboard</a>{% endif %}

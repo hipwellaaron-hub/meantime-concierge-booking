@@ -415,13 +415,13 @@
     <tr>
       <td>
         <span class="k">Event Coordinator:</span> {{ venue_contact_name }}<br>
-        <span class="k">Client:</span> {{ client_name or "—" }}{% if ref.get("client_phone") %} ({{ ref.client_phone }}){% endif %}<br>
-        <span class="k">Onsite Contact:</span> {# Never the client's name on the staff copy: an unfilled onsite contact that prints a name reads as a decision, and on the night that is the number somebody calls. #}{{ (content.get("onsite_contact") | person_name) or (none if staff else client_name) or "—" }}
+        <span class="k">Client:</span> {{ client_name or "—" }}{% if ref.get("client_phone") and not floor_pdf %} ({{ ref.client_phone }}){% endif %}<br>
+        <span class="k">Onsite Contact:</span> {# Never the client's name on the staff copy: an unfilled onsite contact that prints a name reads as a decision, and on the night that is the number somebody calls. #}{{ (content.get("onsite_contact") | person_name) or (none if (staff or floor_pdf) else client_name) or "—" }}
       </td>
       <td class="right">
         <span class="k">Event Order:</span> EO-{{ booking.reference_code }}-v{{ document.version }}<br>
-        <span class="k">Booking Reference:</span> {{ booking.reference_code }}<br>
-        <span class="k">Total Paid:</span> {{ ("A$" + ref.total_paid) if ref.get("total_paid") else "—" }}
+        <span class="k">Booking Reference:</span> {{ booking.reference_code }}{% if not floor_pdf %}<br>
+        <span class="k">Total Paid:</span> {{ ("A$" + ref.total_paid) if ref.get("total_paid") else "—" }}{% endif %}
       </td>
     </tr>
   </table>
@@ -443,7 +443,7 @@
         {# staff, not a hardcoded false: the client render passes false anyway
            because is_staff_preview is unset, and hardcoding it here was the
            second place the PDF was made blind to staff-facing markers. #}
-        {{ beo_left_column(content, staff) }}
+        {{ beo_left_column(content, staff, floor_pdf) }}
       </td>
       <td class="col-right" width="50%">
         {{ beo_right_column(content, staff, document) }}
@@ -451,6 +451,9 @@
     </tr>
   </table>
 
+  {# The floor's downloadable copy (floor_pdf) withholds the money like the
+     floor screen does -- it is the copy that gets left on a bar. #}
+  {% if not floor_pdf %}
   <div class="beo-billing">
     <table>
       <tr><td><b>Billing Summary</b></td><td style="text-align:right;"></td></tr>
@@ -459,6 +462,7 @@
       <tr><td><b>Balance owing</b></td><td style="text-align:right;"><b>{{ ("$" + content.total_food_spend.balance_due) if content.total_food_spend.balance_due else "—" }}</b></td></tr>
     </table>
   </div>
+  {% endif %}
 
   {# The Event Order is APPROVED, not signed: it is a run sheet the client
      accepts, not a contract they are bound by. Same line, honest verb. #}
@@ -530,25 +534,35 @@
     clean -- it is the copy that can leave the team.)
   #}
   {% set internal = staff or is_floor_app %}
+  {# The floor's two surfaces -- its screen and its downloadable PDF --
+     both withhold the client's phone, Total Paid, the Total Food Spend
+     block and the Billing Summary. Per-line food totals stay on both.
+     The PDF is the copy that gets left on a bar (Aaron, 2026-09-10). #}
+  {% set withhold = is_floor_app or floor_pdf %}
   {% set gaps = document.content | unfilled_fields if internal else [] %}
   {% set content = document.content %}
   {% set ref = content._reference %}
   {% set client_name = (ref.get("client_name") or (booking.contact.name if booking.contact else None)) | person_name %}
 
   {# The floor works from the APPROVED version (Aaron, 2026-09-10). This
-     line is the floor's only way of knowing which version is on screen
-     and whether staff have since revised it -- an unapproved revision is
-     something the client has not agreed to and may never have seen. #}
+     note is the floor's only way of knowing which version is on screen,
+     whether staff have since revised it (an unapproved revision is
+     something the client has not agreed to and may never have seen),
+     whether RSA applies without the line, and what has changed on the
+     booking since this version was built. #}
   {% if is_floor_app %}
   {% if document.status.value == "signed" %}
   <div class="floor-version-note" style="margin:0 0 14px; padding:9px 12px; border:1px solid #c9a96e; border-radius:6px; font-size:0.95rem;">
     <strong>Approved by the client</strong> &mdash; v{{ document.version }}, {{ document.signer_name }}{% if document.signed_at %}, {{ document.signed_at | sydney_time("%d %b %Y") }}{% endif %}.
     {% if floor_newer_version %}A newer version (v{{ floor_newer_version.version }}, {{ floor_newer_version.status.value }}) exists and has <strong>not</strong> been approved &mdash; work from this one.{% endif %}
+    {% if floor_rsa_gap %}<div style="margin-top:6px;"><strong>RSA:</strong> {{ floor_rsa_gap }}</div>{% endif %}
     {% if floor_drift %}<div style="margin-top:6px;"><strong>The booking has changed since this version:</strong> {{ floor_drift | join("; ") }}.</div>{% endif %}
   </div>
   {% else %}
   <div class="floor-version-note" style="margin:0 0 14px; padding:9px 12px; border:1px solid #999; border-radius:6px; font-size:0.95rem; color:#555;">
     v{{ document.version }} &mdash; not yet approved by the client.
+    {% if floor_newer_version %}A newer version (v{{ floor_newer_version.version }}, {{ floor_newer_version.status.value }}) is being prepared and has not gone out yet &mdash; this is the last one sent.{% endif %}
+    {% if floor_rsa_gap %}<div style="margin-top:6px;"><strong>RSA:</strong> {{ floor_rsa_gap }}</div>{% endif %}
     {% if floor_drift %}<div style="margin-top:6px;"><strong>The booking has changed since this version:</strong> {{ floor_drift | join("; ") }}.</div>{% endif %}
   </div>
   {% endif %}
@@ -574,12 +588,12 @@
   <div class="beo-meta">
     <div>
       <span class="k">Event Coordinator:</span> {{ venue_contact_name }}<br>
-      <span class="k">Client:</span> {{ client_name or "—" }}{% if ref.get("client_phone") and not is_floor_app %} ({{ ref.client_phone }}){% endif %}<br>
+      <span class="k">Client:</span> {{ client_name or "—" }}{% if ref.get("client_phone") and not withhold %} ({{ ref.client_phone }}){% endif %}<br>
       <span class="k">Onsite Contact:</span> {# Never the client's name on an internal copy: an unfilled onsite contact that prints a name reads as a decision, and on the night that is the number somebody calls -- which is exactly why the floor screen is included here and not just the staff preview. #}{{ (content.get("onsite_contact") | person_name) or (none if internal else client_name) or "—" }}
     </div>
     <div class="right">
       <span class="k">Event Order:</span> EO-{{ booking.reference_code }}-v{{ document.version }}<br>
-      <span class="k">Booking Reference:</span> {{ booking.reference_code }}{% if not is_floor_app %}<br>
+      <span class="k">Booking Reference:</span> {{ booking.reference_code }}{% if not withhold %}<br>
       <span class="k">Total Paid:</span> {{ ("A$" + ref.total_paid) if ref.get("total_paid") else "—" }}{% endif %}
     </div>
   </div>
@@ -593,7 +607,7 @@
 
   <div class="beo-cols">
     <div>
-      {{ beo_left_column(content, staff, is_floor_app) }}
+      {{ beo_left_column(content, staff, withhold) }}
     </div>
     <div>
       {{ beo_right_column(content, staff, document) }}
@@ -605,7 +619,7 @@
      paid/owing pill answers that -- not the dollar figures. The client's
      own PDF (is_pdf, the clean render served by booking_beo_pdf) keeps
      the full billing summary. #}
-  {% if not is_floor_app %}
+  {% if not withhold %}
   <div class="beo-billing">
     <table>
       <tr><td><b>Billing Summary</b></td><td style="text-align:right;"></td></tr>

@@ -777,12 +777,329 @@ def test_a_dateless_booking_gets_an_honest_line_not_a_date(client, db, loft, out
     """Approval is name + accepting THE DATE + lock. With no date on the
     booking the receipt must not read as if one was confirmed."""
     booking = _booking(db, loft, "Approve No Date")
-    sent = _sent_beo(db, booking)
-    booking.event_date = None
+    booking.event_date = None  # BEFORE the Event Order is built: the version itself prints no date
     db.commit()
+    sent = _sent_beo(db, booking)
 
     client.post(f"/d/{sent.access_token}/sign", data={"signer_name": "Caitlin Hobday", "accept_lock": "yes"})
 
     body = next(m for m in outbox if m["To"] == booking.contact.email).get_content()
     assert "The event date is still to be confirmed with us." in body
     assert " on " not in body.splitlines()[2], body.splitlines()[2]
+
+
+# --- the emails go after the response ----------------------------------------------
+
+
+def test_sign_sends_nothing_and_the_route_schedules_delivery(client, db, loft, outbox, monkeypatch):
+    """Aaron, 2026-09-10: "a client shouldn't wait on our mail server to
+    acknowledge their click." sign() records; the route hands delivery to
+    a background task that runs once the 303 has gone."""
+    scheduled = []
+    monkeypatch.setattr(
+        documents_service, "deliver_beo_approval_emails", lambda document_id, **kw: scheduled.append((document_id, kw))
+    )
+    booking = _booking(db, loft, "Approve Background")
+    sent = _sent_beo(db, booking)
+
+    documents_service.sign(db, sent, signer_name="Direct Call", signer_ip="10.0.0.1")
+    assert outbox == [], "sign() itself must not talk to the mail server"
+    assert _events(db, booking) == []
+
+    other = _sent_beo(db, _booking(db, loft, "Approve Background Two"))
+    resp = client.post(f"/d/{other.access_token}/sign", data={"signer_name": "Caitlin Hobday", "accept_lock": "yes"}, follow_redirects=False)
+
+    assert resp.status_code == 303
+    assert scheduled == [(other.id, {"signer_name": "Caitlin Hobday"})]
+
+
+def test_delivery_sends_nothing_for_a_row_that_never_signed(db, loft, outbox):
+    booking = _booking(db, loft, "Approve Delivery Guard")
+    sent = _sent_beo(db, booking)
+
+    documents_service.deliver_beo_approval_emails(sent.id, signer_name="Caitlin Hobday")
+
+    assert outbox == []
+    assert _events(db, booking) == []
+
+
+def test_signing_an_agreement_schedules_no_delivery(client, db, loft, monkeypatch):
+    scheduled = []
+    monkeypatch.setattr(documents_service, "deliver_beo_approval_emails", lambda *a, **kw: scheduled.append(a))
+    booking = _booking(db, loft, "Approve Agreement No Task")
+    agreement = documents_service.create_new_version(
+        db, booking, DocumentType.agreement, generate_agreement_content(booking), actor="staff:test"
+    )
+    documents_service.mark_sent(db, agreement, actor="staff:test")
+
+    client.post(f"/d/{agreement.access_token}/sign", data={"signer_name": "Caitlin Hobday"})
+
+    assert scheduled == []
+
+
+# --- a receipt that did not go is a banner with a resend ------------------------------
+
+
+def _fail_the_receipt(monkeypatch):
+    from app.services import notifications
+
+    monkeypatch.setattr(notifications, "is_gmail_smtp_configured", lambda: False)
+
+
+def test_a_failed_receipt_is_a_banner_with_a_resend_button(client, admin_client, db, loft, monkeypatch):
+    """Aaron, 2026-09-10: "An audit row nobody reads is the silence problem
+    again. If a client's approval receipt didn't go, I need to see it on
+    the booking page and be able to resend from there."
+    """
+    _fail_the_receipt(monkeypatch)
+    booking = _booking(db, loft, "Approve Banner")
+    sent = _sent_beo(db, booking)
+    client.post(f"/d/{sent.access_token}/sign", data={"signer_name": "Caitlin Hobday", "accept_lock": "yes"})
+
+    page = admin_client.get(f"/admin/bookings/{booking.id}").text
+
+    assert "approval receipt did not send" in page
+    assert "Gmail SMTP not configured" in page, "the reason, on the page, not in a collapsed table"
+    assert f'action="/admin/bookings/{booking.id}/beo-approval-emails/resend"' in page
+    assert ">Resend</button>" in page
+
+
+def test_no_banner_when_the_receipt_went(client, admin_client, db, loft, outbox):
+    booking = _booking(db, loft, "Approve No Banner")
+    sent = _sent_beo(db, booking)
+    client.post(f"/d/{sent.access_token}/sign", data={"signer_name": "Caitlin Hobday", "accept_lock": "yes"})
+
+    page = admin_client.get(f"/admin/bookings/{booking.id}").text
+
+    assert "approval receipt did not send" not in page
+
+
+def test_resend_sends_the_receipt_records_it_and_clears_the_banner(client, admin_client, db, loft, monkeypatch):
+    from app.services import notifications
+    from tests.test_staff_app import _csrf_of
+
+    _fail_the_receipt(monkeypatch)
+    booking = _booking(db, loft, "Approve Resend")
+    sent = _sent_beo(db, booking)
+    client.post(f"/d/{sent.access_token}/sign", data={"signer_name": "Caitlin Hobday", "accept_lock": "yes"})
+    failure = _events(db, booking)[0]
+    assert failure.event_type == "beo_approval_receipt_not_sent"
+    # (booking_events is append-only -- a trigger refuses UPDATE -- so the
+    # failure cannot be backdated here; latest_receipt_outcome resolves
+    # the one-transaction tie in favour of the resend instead.)
+
+    outbox = []
+    monkeypatch.setattr(notifications, "is_gmail_smtp_configured", lambda: True)
+    monkeypatch.setattr(notifications, "_send_via_gmail_smtp", lambda message: outbox.append(message))
+    csrf = _csrf_of(admin_client, f"/admin/bookings/{booking.id}")
+    resp = admin_client.post(
+        f"/admin/bookings/{booking.id}/beo-approval-emails/resend", data={"csrf_token": csrf}, follow_redirects=False
+    )
+
+    assert resp.status_code == 303, resp.text
+    # Both emails had failed (Gmail was off at approval), so both are resent:
+    # the client's receipt and the venue's alert.
+    assert sorted(m["To"] for m in outbox) == sorted([booking.contact.email, "meantimehamilton@gmail.com"])
+    receipt = next(m for m in outbox if m["To"] == booking.contact.email)
+    assert "We've received your approval of the Event Order for Approve Resend" in receipt.get_content()
+    assert [e.event_type for e in _events(db, booking, prefix="beo_approved_alert")] == [
+        "beo_approved_alert_not_sent", "beo_approved_alert_sent"
+    ]
+    events = _events(db, booking)
+    assert [e.event_type for e in events] == ["beo_approval_receipt_not_sent", "beo_approval_receipt_sent"]
+    assert events[1].actor.startswith("staff:"), "a resend is the staff member's act, on the trail as such"
+    assert "approval receipt did not send" not in admin_client.get(f"/admin/bookings/{booking.id}").text
+
+
+def test_a_resend_that_fails_is_a_page_with_a_way_back(client, admin_client, db, loft, monkeypatch):
+    from app.services import notifications
+    from tests.test_staff_app import _csrf_of
+
+    _fail_the_receipt(monkeypatch)
+    booking = _booking(db, loft, "Approve Resend Fails")
+    sent = _sent_beo(db, booking)
+    client.post(f"/d/{sent.access_token}/sign", data={"signer_name": "Caitlin Hobday", "accept_lock": "yes"})
+
+    csrf = _csrf_of(admin_client, f"/admin/bookings/{booking.id}")
+    resp = admin_client.post(f"/admin/bookings/{booking.id}/beo-approval-emails/resend", data={"csrf_token": csrf})
+
+    assert resp.status_code == 502
+    assert "text/html" in resp.headers["content-type"], "an admin refusal is a page, not JSON"
+    assert "Resend failed" in resp.text and "Gmail SMTP not configured" in resp.text
+    assert "Nothing was changed" not in resp.text, "the attempt IS on the trail; the page must not deny it"
+    assert "audit trail" in resp.text
+    assert [e.event_type for e in _events(db, booking)] == ["beo_approval_receipt_not_sent"] * 2
+
+
+def test_resend_without_an_approved_event_order_is_refused(admin_client, db, loft):
+    from tests.test_staff_app import _csrf_of
+
+    booking = _booking(db, loft, "Approve Resend Nothing")
+    _sent_beo(db, booking)
+
+    csrf = _csrf_of(admin_client, f"/admin/bookings/{booking.id}")
+    resp = admin_client.post(f"/admin/bookings/{booking.id}/beo-approval-emails/resend", data={"csrf_token": csrf})
+
+    assert resp.status_code == 409
+    assert "no approved Event Order" in resp.text
+
+
+# --- the review of the follow-ups ------------------------------------------------------
+
+
+def test_a_resent_receipt_names_the_date_the_client_approved_not_the_live_one(client, admin_client, db, loft, monkeypatch):
+    """Approval is name + accepting THE DATE as printed. A resend days
+    later, after the date moved, told the client they had approved a date
+    they never saw (review, 2026-09-10)."""
+    from app.services import notifications
+    from app.services.document_generation import format_date_long
+    from tests.test_staff_app import _csrf_of
+
+    _fail_the_receipt(monkeypatch)
+    booking = _booking(db, loft, "Approve Old Date")
+    sent = _sent_beo(db, booking)
+    client.post(f"/d/{sent.access_token}/sign", data={"signer_name": "Caitlin Hobday", "accept_lock": "yes"})
+    booking.event_date = dt.date(2027, 6, 20)
+    db.commit()
+
+    outbox = []
+    monkeypatch.setattr(notifications, "is_gmail_smtp_configured", lambda: True)
+    monkeypatch.setattr(notifications, "_send_via_gmail_smtp", lambda message: outbox.append(message))
+    csrf = _csrf_of(admin_client, f"/admin/bookings/{booking.id}")
+    admin_client.post(f"/admin/bookings/{booking.id}/beo-approval-emails/resend", data={"csrf_token": csrf})
+
+    receipt = next(m for m in outbox if m["To"] == booking.contact.email).get_content()
+    assert f"on {format_date_long(dt.date(2027, 5, 14))}." in receipt, "the date printed on the version they approved"
+    assert "20 June 2027" not in receipt
+
+
+def test_resend_is_refused_once_everything_has_gone(client, admin_client, db, loft, monkeypatch):
+    from app.services import notifications
+    from tests.test_staff_app import _csrf_of
+
+    _fail_the_receipt(monkeypatch)
+    booking = _booking(db, loft, "Approve Resend Twice")
+    sent = _sent_beo(db, booking)
+    client.post(f"/d/{sent.access_token}/sign", data={"signer_name": "Caitlin Hobday", "accept_lock": "yes"})
+    monkeypatch.setattr(notifications, "is_gmail_smtp_configured", lambda: True)
+    monkeypatch.setattr(notifications, "_send_via_gmail_smtp", lambda message: None)
+    csrf = _csrf_of(admin_client, f"/admin/bookings/{booking.id}")
+    first = admin_client.post(f"/admin/bookings/{booking.id}/beo-approval-emails/resend", data={"csrf_token": csrf}, follow_redirects=False)
+    assert first.status_code == 303
+
+    second = admin_client.post(f"/admin/bookings/{booking.id}/beo-approval-emails/resend", data={"csrf_token": csrf})
+
+    assert second.status_code == 409
+    assert "already been sent" in second.text
+    assert [e.event_type for e in _events(db, booking)] == ["beo_approval_receipt_not_sent", "beo_approval_receipt_sent"]
+
+
+def test_an_invalid_contact_email_gets_fix_it_first_not_a_button(client, admin_client, db, loft, monkeypatch):
+    from tests.test_staff_app import _csrf_of
+
+    _fail_the_receipt(monkeypatch)
+    booking = _booking(db, loft, "Approve Bad Email")
+    sent = _sent_beo(db, booking)
+    client.post(f"/d/{sent.access_token}/sign", data={"signer_name": "Caitlin Hobday", "accept_lock": "yes"})
+    booking.contact.email = "not-an-email"
+    db.commit()
+
+    page = admin_client.get(f"/admin/bookings/{booking.id}").text
+    assert "approval receipt did not send" in page
+    assert "Fix the contact" in page
+    assert "beo-approval-emails/resend" not in page, "a click could only fail again"
+
+    csrf = _csrf_of(admin_client, f"/admin/bookings/{booking.id}")
+    resp = admin_client.post(f"/admin/bookings/{booking.id}/beo-approval-emails/resend", data={"csrf_token": csrf})
+    assert resp.status_code == 409
+    assert "email address is not valid" in resp.text
+
+
+def test_the_venue_alerts_failure_is_on_the_banner_and_resent_too(client, admin_client, db, loft, outbox, monkeypatch):
+    """The venue's own alert used to fail silently. Same banner, same
+    resend (Aaron: an audit row nobody reads is the silence problem)."""
+    from app.services import notifications
+    from tests.test_staff_app import _csrf_of
+
+    attempts = []
+
+    def alert_fails_once(booking, **kw):
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise notifications.GmailSendRejected("Gmail rejected the email: 421 try later")
+
+    monkeypatch.setattr(notifications, "send_beo_approved_email", alert_fails_once)
+    booking = _booking(db, loft, "Approve Alert Fails")
+    sent = _sent_beo(db, booking)
+    client.post(f"/d/{sent.access_token}/sign", data={"signer_name": "Caitlin Hobday", "accept_lock": "yes"})
+
+    alert_rows = _events(db, booking, prefix="beo_approved_alert")
+    assert [e.event_type for e in alert_rows] == ["beo_approved_alert_not_sent"]
+    assert "421 try later" in alert_rows[0].new_value
+    assert [e.event_type for e in _events(db, booking)] == ["beo_approval_receipt_sent"], "the receipt itself went"
+    page = admin_client.get(f"/admin/bookings/{booking.id}").text
+    assert "approval alert did not send" in page
+    assert "421 try later" in page
+
+    csrf = _csrf_of(admin_client, f"/admin/bookings/{booking.id}")
+    resp = admin_client.post(f"/admin/bookings/{booking.id}/beo-approval-emails/resend", data={"csrf_token": csrf}, follow_redirects=False)
+
+    assert resp.status_code == 303, resp.text
+    assert len(attempts) == 2, "the alert was resent"
+    assert [e.event_type for e in _events(db, booking, prefix="beo_approved_alert")] == [
+        "beo_approved_alert_not_sent", "beo_approved_alert_sent"
+    ]
+    assert len([m for m in outbox if m["To"] == booking.contact.email]) == 1, "the receipt was NOT sent again"
+    assert "did not send" not in admin_client.get(f"/admin/bookings/{booking.id}").text
+
+
+def test_an_approval_with_no_delivery_row_is_a_banner(client, admin_client, db, loft, monkeypatch):
+    """The background task never finishing must not look like success."""
+    monkeypatch.setattr(documents_service, "deliver_beo_approval_emails", lambda *a, **kw: None)
+    booking = _booking(db, loft, "Approve No Row")
+    sent = _sent_beo(db, booking)
+    client.post(f"/d/{sent.access_token}/sign", data={"signer_name": "Caitlin Hobday", "accept_lock": "yes"})
+    assert _events(db, booking) == []
+
+    page = admin_client.get(f"/admin/bookings/{booking.id}").text
+
+    assert "approval receipt did not send" in page
+    assert "no delivery was recorded" in page
+
+
+def test_receipt_outcome_follows_time_and_a_later_send_clears_a_failure(db, loft):
+    """booking_events is append-only, but INSERT with an explicit
+    created_at is allowed -- so the ordering rule is exercised directly,
+    which the routes cannot do inside one test transaction."""
+    booking = _booking(db, loft, "Approve Outcome Order")
+    t0 = dt.datetime(2026, 9, 10, 8, 0, tzinfo=dt.timezone.utc)
+
+    def row(event_type, minutes, reason=None):
+        db.add(BookingEvent(booking_id=booking.id, event_type=event_type, new_value=reason, actor="test", created_at=t0 + dt.timedelta(minutes=minutes)))
+        db.commit()
+
+    row("beo_approval_receipt_sent", 0)
+    assert documents_service.latest_receipt_outcome(db, booking.id) == ("sent", None)
+    row("beo_approval_receipt_not_sent", 5, "later failure")
+    assert documents_service.latest_receipt_outcome(db, booking.id) == ("not_sent", "later failure")
+    row("beo_approval_receipt_sent", 10)
+    assert documents_service.latest_receipt_outcome(db, booking.id) == ("sent", None)
+    # A tie (one transaction, e.g. a failure and its resend under test) resolves to the send.
+    row("beo_approval_receipt_not_sent", 20, "tied failure")
+    row("beo_approval_receipt_sent", 20)
+    assert documents_service.latest_receipt_outcome(db, booking.id) == ("sent", None)
+    # Among tied failures the later insert's reason is the one shown.
+    row("beo_approval_receipt_not_sent", 30, "first of two")
+    row("beo_approval_receipt_not_sent", 30, "second of two")
+    assert documents_service.latest_receipt_outcome(db, booking.id) == ("not_sent", "second of two")
+
+
+def test_a_resend_post_missing_the_csrf_field_is_a_page_not_json(admin_client, db, loft):
+    booking = _booking(db, loft, "Approve No Csrf")
+
+    resp = admin_client.post(f"/admin/bookings/{booking.id}/beo-approval-emails/resend", data={})
+
+    assert resp.status_code == 422
+    assert "text/html" in resp.headers["content-type"], "an /admin validation error is a page with a way back"
+    assert "csrf_token" in resp.text
+    assert 'href="/admin' in resp.text

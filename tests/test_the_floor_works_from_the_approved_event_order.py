@@ -196,6 +196,7 @@ def test_the_floor_is_told_what_changed_on_the_booking_since_the_approved_versio
 
     booking.event_date = dt.date(2026, 10, 10)
     booking.adult_count = 55
+    booking.child_count = 3
     db.commit()
 
     page = client.get(f"/api/staff/bookings/{booking.id}/beo", headers=headers).text
@@ -203,8 +204,16 @@ def test_the_floor_is_told_what_changed_on_the_booking_since_the_approved_versio
     from app.services.document_generation import format_date_long
 
     assert "The booking has changed since this version" in page
-    assert f"the date is now {format_date_long(dt.date(2026, 10, 10))}" in page, "the same form the run sheet prints"
-    assert "guests are now 55 adults and 0 under 18" in page
+    note = page[page.index("The booking has changed since this version"):]
+    # Under-18s and RSA come FIRST -- the floor needs them more than a room change.
+    assert note.index("under-18s are now 3 (this version says 0)") < note.index("the date is now")
+    # RSA is its own line, ABOVE the "changed" list -- it is a standing
+    # fact about this version, not a change.
+    assert "RSA applies to this booking" in page
+    assert page.index("RSA applies to this booking") < page.index("The booking has changed since this version")
+    assert "Special notes do not carry the RSA line" in page
+    assert f"the date is now {format_date_long(dt.date(2026, 10, 10))}" in note, "the same form the run sheet prints"
+    assert "adults are now 55 (this version says 40)" in note
 
 
 def test_the_floor_screen_is_wired_to_the_new_fields():
@@ -217,6 +226,7 @@ def test_the_floor_screen_is_wired_to_the_new_fields():
     assert "b.beo_newer_unapproved" in source
     assert "Approved by the client" in source
     assert "Not yet approved by the client" in source
+    assert "is being prepared" in source, "a Revise in flight is said on the sheet"
     # Approved is GREEN, the same as PAID -- the colour the team already reads as done.
     assert 'class="pill beo approved"' in source
     # Server strings reach innerHTML only through esc().
@@ -252,3 +262,183 @@ def test_regenerate_over_an_approval_leaves_the_floor_on_the_approved_version(cl
     assert detail["beo_approved"] is True
     assert detail["beo_newer_unapproved"] == {"version": 2, "status": "draft"}
     assert "v1, Caitlin Hobday" in page
+
+
+def test_a_sent_run_sheet_stays_on_the_floor_during_a_revise(client, db, loft, contact):
+    """Aaron, 2026-09-10: "If the floor is working from a sent document
+    and I start a revise, they should keep seeing what they had until the
+    new version goes out, with a note that a newer one is coming."
+    """
+    headers = _login(client)
+    booking = _confirmed_booking(db, loft, contact)
+    v1 = documents_service.create_new_version(db, booking, DocumentType.beo, _beo_content(booking), actor="test")
+    documents_service.mark_sent(db, v1, actor="test")
+    documents_service.revise(db, v1, actor="staff:aaron")
+
+    detail = _detail(client, headers, booking)
+    page = client.get(f"/api/staff/bookings/{booking.id}/beo", headers=headers)
+    pdf = client.get(f"/api/staff/bookings/{booking.id}/beo.pdf", headers=headers)
+
+    assert detail["beo_ready"] is True, "the sent run sheet did not vanish when the Revise began"
+    assert detail["beo_approved"] is False
+    assert detail["beo_newer_unapproved"] == {"version": 2, "status": "draft"}
+    assert page.status_code == 200
+    assert "not yet approved by the client" in page.text
+    assert "A newer version (v2, draft) is being prepared" in page.text
+    assert "this is the last one sent" in page.text
+    assert "BEO-v1.pdf" in pdf.headers["content-disposition"]
+
+
+def test_the_floor_pdf_withholds_the_phone_and_the_money_like_the_screen(client, db, loft, contact, monkeypatch):
+    """Aaron, 2026-09-10: "The floor team doesn't need the client's phone
+    on a document that gets left on a bar, and the billing summary is a
+    conversation for me, not them."
+    """
+    from app.api import staff_app
+    from app.templating import templates
+
+    captured = []
+
+    def fake_pdf(html):
+        captured.append(html)
+        return b"%PDF-1.4 fake"
+
+    monkeypatch.setattr(staff_app, "render_html_to_pdf", fake_pdf)
+    headers = _login(client)
+    booking = _confirmed_booking(db, loft, contact)
+    assert contact.phone == "0400000000"
+    v1 = documents_service.create_new_version(db, booking, DocumentType.beo, _beo_content(booking), actor="test")
+    documents_service.mark_sent(db, v1, actor="test")
+
+    resp = client.get(f"/api/staff/bookings/{booking.id}/beo.pdf", headers=headers)
+
+    assert resp.status_code == 200 and len(captured) == 1
+    html = captured[0]
+    assert "0400000000" not in html, "the client's phone is on the bar"
+    assert "Billing Summary" not in html and "Total Paid" not in html and "Balance owing" not in html
+    assert "fire pizzas" not in html, "kitchen notes still stay off the shareable copy"
+    assert "floor-version-note" not in html, "the version note is the screen's, not the PDF's"
+    # The client's own PDF is untouched: it keeps the billing summary.
+    client_pdf = templates.get_template("document.html").render(document=v1, booking=booking, is_pdf=True)
+    assert "Billing Summary" in client_pdf and "0400000000" in client_pdf
+
+
+# --- the review of the follow-ups ------------------------------------------------------
+
+
+def test_an_untouched_under_18_approval_gets_the_rsa_line_but_no_changed_heading(client, db, loft, contact):
+    """The RSA warning is true of a booking nobody touched; printing it
+    under 'The booking has changed' was a lie (review, 2026-09-10)."""
+    headers = _login(client)
+    booking = _confirmed_booking(db, loft, contact, child_count=3)
+    _approved_v1(db, booking)
+
+    page = client.get(f"/api/staff/bookings/{booking.id}/beo", headers=headers).text
+
+    assert "RSA applies to this booking" in page
+    assert "The booking has changed since this version" not in page
+
+
+def test_no_rsa_line_when_the_version_already_carries_it(client, db, loft, contact):
+    headers = _login(client)
+    booking = _confirmed_booking(db, loft, contact, child_count=3)
+    content = _beo_content(booking)
+    content["special_notes"] = "Strict RSA applies; no alcohol to under-18s."
+    v1 = documents_service.create_new_version(db, booking, DocumentType.beo, content, actor="test")
+    documents_service.mark_sent(db, v1, actor="test")
+    documents_service.sign(db, v1, signer_name="Caitlin Hobday", signer_ip="10.0.0.1")
+
+    page = client.get(f"/api/staff/bookings/{booking.id}/beo", headers=headers).text
+
+    assert "RSA applies to this booking" not in page
+
+
+def test_a_deleted_draft_does_not_blank_the_floor(client, db, loft, contact):
+    """Revise, then delete the draft: no version is current at all. The
+    last one sent stays on the floor (the client's link is a separate,
+    pre-existing question)."""
+    headers = _login(client)
+    booking = _confirmed_booking(db, loft, contact)
+    v1 = documents_service.create_new_version(db, booking, DocumentType.beo, _beo_content(booking), actor="test")
+    documents_service.mark_sent(db, v1, actor="test")
+    v2 = documents_service.revise(db, v1, actor="staff:aaron")
+    documents_service.delete_draft(db, v2, actor="staff:aaron")
+    db.refresh(v1)
+    assert v1.is_current is False, "the deleted draft did not hand currency back (pre-existing)"
+
+    detail = _detail(client, headers, booking)
+
+    assert detail["beo_ready"] is True
+    assert detail["beo_newer_unapproved"] is None
+    assert client.get(f"/api/staff/bookings/{booking.id}/beo", headers=headers).status_code == 200
+
+
+def test_a_viewed_run_sheet_stays_during_a_revise(client, db, loft, contact):
+    headers = _login(client)
+    booking = _confirmed_booking(db, loft, contact)
+    v1 = documents_service.create_new_version(db, booking, DocumentType.beo, _beo_content(booking), actor="test")
+    documents_service.mark_sent(db, v1, actor="test")
+    assert client.get(f"/d/{v1.access_token}").status_code == 200  # the client opens it: viewed
+    db.refresh(v1)
+    assert v1.status == DocumentStatus.viewed
+    documents_service.revise(db, v1, actor="staff:aaron")
+
+    detail = _detail(client, headers, booking)
+
+    assert detail["beo_ready"] is True
+    assert detail["beo_newer_unapproved"] == {"version": 2, "status": "draft"}
+
+
+def test_two_sent_versions_then_a_draft_opens_the_newest_sent(client, db, loft, contact):
+    headers = _login(client)
+    booking = _confirmed_booking(db, loft, contact)
+    v1 = documents_service.create_new_version(db, booking, DocumentType.beo, _beo_content(booking), actor="test")
+    documents_service.mark_sent(db, v1, actor="test")
+    v2 = documents_service.revise(db, v1, actor="staff:aaron")
+    documents_service.mark_sent(db, v2, actor="staff:aaron")
+    documents_service.revise(db, v2, actor="staff:aaron")
+
+    detail = _detail(client, headers, booking)
+    pdf = client.get(f"/api/staff/bookings/{booking.id}/beo.pdf", headers=headers)
+
+    assert detail["beo_newer_unapproved"] == {"version": 3, "status": "draft"}
+    assert "BEO-v2.pdf" in pdf.headers["content-disposition"]
+
+
+def test_a_legacy_sent_row_never_stays_during_a_revise(client, db, loft, contact):
+    headers = _login(client)
+    booking = _confirmed_booking(db, loft, contact)
+    v1 = documents_service.create_new_version(db, booking, DocumentType.beo, _beo_content(booking), actor="test")
+    v2 = documents_service.create_new_version(db, booking, DocumentType.beo, _beo_content(booking), actor="test")
+    v1.status = DocumentStatus.sent
+    v1.is_legacy = True
+    db.commit()
+    assert v2.status == DocumentStatus.draft and v2.is_current
+
+    detail = _detail(client, headers, booking)
+
+    assert detail["beo_ready"] is False
+    assert detail["beo_newer_unapproved"] is None
+    assert client.get(f"/api/staff/bookings/{booking.id}/beo", headers=headers).status_code == 404
+
+
+def test_the_floor_pdf_of_an_approved_version_says_so_and_still_withholds(client, db, loft, contact, monkeypatch):
+    from app.api import staff_app
+
+    captured = []
+    monkeypatch.setattr(staff_app, "render_html_to_pdf", lambda html: captured.append(html) or b"%PDF-1.4 fake")
+    headers = _login(client)
+    booking = _confirmed_booking(db, loft, contact)
+    content = _beo_content(booking)
+    content["onsite_contact"] = None
+    v1 = documents_service.create_new_version(db, booking, DocumentType.beo, content, actor="test")
+    documents_service.mark_sent(db, v1, actor="test")
+    documents_service.sign(db, v1, signer_name="Caitlin Hobday", signer_ip="10.0.0.1")
+
+    resp = client.get(f"/api/staff/bookings/{booking.id}/beo.pdf", headers=headers)
+
+    assert resp.status_code == 200
+    html = captured[0]
+    assert "Approved by Caitlin Hobday" in html
+    assert "0400000000" not in html and "Billing Summary" not in html
+    assert "Onsite Contact:</span> —" in html, "an unfilled onsite contact is a dash on the bar copy, never the client's name"

@@ -202,6 +202,26 @@
   {% endif %}
 </div>
 
+{% set receipt_failed = receipt_outcome and receipt_outcome[0] == "not_sent" %}
+{% set alert_failed = alert_outcome and alert_outcome[0] == "not_sent" %}
+{% if receipt_failed or alert_failed %}
+<div class="card" style="border-color: var(--ember); background: rgba(212,98,43,0.08);">
+  <h2 style="color: var(--ember); margin-bottom: 10px;">{% if receipt_failed %}The client's Event Order approval receipt did not send{% else %}The venue's Event Order approval alert did not send{% endif %}</h2>
+  <p class="muted" style="margin-bottom:10px;">The client approved the Event Order.
+    {% if receipt_failed %}Their one-line receipt never reached them: {{ receipt_outcome[1] or "no reason recorded" }}.{% endif %}
+    {% if alert_failed %}The venue's own alert did not go: {{ alert_outcome[1] or "no reason recorded" }}.{% endif %}
+  </p>
+  {% if receipt_failed and not contact_email_valid %}
+  <p class="muted"><strong>Fix the contact's email address above, then resend.</strong> A resend to this address can only fail again.</p>
+  {% else %}
+  <form method="post" action="/admin/bookings/{{ booking.id }}/beo-approval-emails/resend" onsubmit="this.querySelector('button').disabled = true;">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button class="btn" type="submit">Resend</button>
+  </form>
+  {% endif %}
+</div>
+{% endif %}
+
 {% if enquiry_notification_failed %}
 <div class="card" style="border-color: var(--ember); background: rgba(212,98,43,0.08);">
   <h2 style="color: var(--ember); margin-bottom: 10px;">Enquiry notification failed to send</h2>

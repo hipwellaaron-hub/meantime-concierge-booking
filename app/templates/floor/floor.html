@@ -307,7 +307,9 @@
             ? '<div class="empty" style="padding:8px 0 0;">Approved by the client' +
               (b.beo_newer_unapproved ? " &middot; a newer v" + b.beo_newer_unapproved.version + " (" + b.beo_newer_unapproved.status + ") is not approved yet &mdash; the approved one opens" : "") +
               "</div>"
-            : '<div class="empty" style="padding:8px 0 0;">Not yet approved by the client.</div>') :
+            : '<div class="empty" style="padding:8px 0 0;">Not yet approved by the client' +
+              (b.beo_newer_unapproved ? " &middot; a newer v" + b.beo_newer_unapproved.version + " (" + b.beo_newer_unapproved.status + ") is being prepared &mdash; this is the last one sent" : ".") +
+              "</div>") :
           '<div class="empty" style="padding:14px 0 0;">BEO not finalised yet.</div>') +
         '<button class="sheet-close" id="sheet-close">Close</button>' +
         "</div>";

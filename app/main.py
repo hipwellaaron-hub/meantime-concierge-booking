@@ -1,7 +1,8 @@
 from urllib.parse import quote, urlparse
 
 from fastapi import FastAPI, Request
-from fastapi.exception_handlers import http_exception_handler
+from fastapi.exception_handlers import http_exception_handler, request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.sessions import SessionMiddleware
@@ -184,8 +185,36 @@ async def _admin_errors_get_a_page(request: Request, exc: StarletteHTTPException
             "heading": _ERROR_HEADINGS.get(exc.status_code, "Something went wrong"),
             "message": detail,
             "back_url": _safe_admin_back(request),
+            # A 4xx refused before doing anything. A 5xx may have recorded
+            # the attempt (a resend writes its outcome to the trail before
+            # reporting it), so it must not claim nothing changed.
+            "nothing_changed": exc.status_code < 500,
         },
         status_code=exc.status_code,
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def _admin_validation_errors_get_a_page(request: Request, exc: RequestValidationError):
+    """The same rule for a form that arrived incomplete (a missing field,
+    a value of the wrong shape): under /admin that is a page with a way
+    back, not {"detail": [...]}. /api and the public routes keep JSON."""
+    if not request.url.path.startswith("/admin"):
+        return await request_validation_exception_handler(request, exc)
+    problems = []
+    for error in exc.errors():
+        where = ".".join(str(part) for part in error.get("loc", ()) if part not in ("body", "query", "path"))
+        problems.append(f"{where}: {error.get('msg', 'invalid')}" if where else str(error.get("msg", "invalid")))
+    return templates.TemplateResponse(
+        request,
+        "admin/error.html",
+        {
+            "heading": _ERROR_HEADINGS[422],
+            "message": "The form was missing something or had a value the server could not read -- " + "; ".join(problems),
+            "back_url": _safe_admin_back(request),
+            "nothing_changed": True,
+        },
+        status_code=422,
     )
 
 

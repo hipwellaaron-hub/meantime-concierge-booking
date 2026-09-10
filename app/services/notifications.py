@@ -564,50 +564,59 @@ def send_beo_approved_email(booking: Booking, *, signer_name: str, version: int,
     _send_via_gmail_smtp(message)
 
 
-def notify_beo_approved(booking: Booking, *, signer_name: str, version: int) -> None:
-    """Fire-and-forget venue alert that the client approved an Event Order.
-    Never raises -- a mail problem must not undo a client's approval. No-ops
-    (with a log line) until Gmail SMTP is configured, like every alert here."""
+def notify_beo_approved(booking: Booking, *, signer_name: str, version: int) -> str | None:
+    """Venue alert that the client approved an Event Order. Returns None
+    when it went, otherwise the reason it did not -- for the trail and the
+    booking-page banner, never for the client. Never raises: a mail
+    problem must not undo a client's approval."""
     from app.config import settings
 
     if not is_gmail_smtp_configured():
-        logger.warning("Event-Order-approved alert not sent for %s: Gmail SMTP not configured", booking.reference_code)
-        return
+        reason = "Gmail SMTP not configured"
+        logger.warning("Event-Order-approved alert not sent for %s: %s", booking.reference_code, reason)
+        return reason
     try:
         send_beo_approved_email(
             booking, signer_name=signer_name, version=version, dashboard_base_url=settings.dashboard_base_url
         )
-    except Exception:  # noqa: BLE001 -- an alert must never take a real approval down with it
+    except LookupError:
+        reason = "no venue profile for this booking's venue, so no address to alert"
+        logger.warning("Event-Order-approved alert not sent for %s: %s", booking.reference_code, reason)
+        return reason
+    except Exception as exc:  # noqa: BLE001 -- an alert must never take a real approval down with it
         logger.exception("Event-Order-approved alert failed for booking %s", booking.id)
+        return str(exc) or exc.__class__.__name__
+    return None
 
 
 def build_beo_approval_receipt_subject(booking: Booking) -> str:
     return f"Event Order approval received: {_header_safe(booking.event_name)}"
 
 
-def build_beo_approval_receipt_body(booking: Booking, *, version: int) -> str:
+def build_beo_approval_receipt_body(booking: Booking, *, version: int, event_date_display: str | None) -> str:
     """Plain text, TO THE CLIENT. One line and a sign-off (Aaron,
     2026-09-10): that their approval was received, and the date it is for.
     Nothing from the Event Order is restated -- the Event Order is the
     confirmation, and an email that repeats it undermines the point. The
-    version is deliberately absent: it is a number for the trail, not for
-    the client. Sign-off from the venue's profile, never policy.VENUE_*
-    (the 2026-09-03 rule)."""
+    version is deliberately absent: a number for the trail, not the client.
+
+    event_date_display is THE DATE AS THE APPROVED VERSION PRINTS IT
+    ("Friday, 14 May 2027"): the date they accepted, from that version's
+    own content -- never the booking's live date, which can have moved
+    since (a resend days later named a date the client had never seen).
+    None means the version was built without a date; then there is no
+    date to confirm and the line says so. Sign-off from the venue's
+    profile, never policy.VENUE_* (the 2026-09-03 rule)."""
     from app.services import venue_profile
-    from app.services.document_generation import format_date_long
 
     profile = venue_profile.for_booking(booking)
     contact = booking.contact
     name = (contact.name or "").strip() if contact else ""
     greeting = f"Hi {format_person_name(name)}," if name else "Hi,"
-    # THE date, in the form the Event Order they just approved prints it
-    # ("Friday, 14 May 2027") -- with its year; an approval can land a year
-    # out. If the booking has no date there is nothing to confirm, and the
-    # line says so instead of reading as if it did.
-    if booking.event_date is not None:
+    if event_date_display:
         line = (
             f"We've received your approval of the Event Order for {booking.event_name} "
-            f"on {format_date_long(booking.event_date)}. Thank you."
+            f"on {event_date_display}. Thank you."
         )
     else:
         line = (
@@ -625,9 +634,9 @@ def build_beo_approval_receipt_body(booking: Booking, *, version: int) -> str:
     return "\n".join(lines)
 
 
-def send_beo_approval_receipt_email(booking: Booking, *, version: int) -> None:
-    """The second place this system deliberately emails a CLIENT (the
-    wizard resume link is the first). Refuses without a valid contact
+def send_beo_approval_receipt_email(booking: Booking, *, version: int, event_date_display: str | None) -> None:
+    """One of two places this system deliberately emails a CLIENT (the
+    wizard resume link is the other). Refuses without a valid contact
     email. Single attempt, raises on failure; the caller records the
     outcome."""
     from app.services import venue_profile
@@ -642,11 +651,11 @@ def send_beo_approval_receipt_email(booking: Booking, *, version: int) -> None:
     message["To"] = contact.email
     message["Reply-To"] = profile.contact_email
     message["Subject"] = build_beo_approval_receipt_subject(booking)
-    message.set_content(build_beo_approval_receipt_body(booking, version=version))
+    message.set_content(build_beo_approval_receipt_body(booking, version=version, event_date_display=event_date_display))
     _send_via_gmail_smtp(message)
 
 
-def notify_beo_approval_receipt(booking: Booking, *, version: int) -> str | None:
+def notify_beo_approval_receipt(booking: Booking, *, version: int, event_date_display: str | None) -> str | None:
     """Sends the client their receipt. Returns None when it went, otherwise
     the reason it did not -- for the trail, never for the client, whose
     approval stands regardless. Never raises."""
@@ -655,7 +664,7 @@ def notify_beo_approval_receipt(booking: Booking, *, version: int) -> str | None
         logger.warning("Event-Order approval receipt not sent for %s: %s", booking.reference_code, reason)
         return reason
     try:
-        send_beo_approval_receipt_email(booking, version=version)
+        send_beo_approval_receipt_email(booking, version=version, event_date_display=event_date_display)
     except LookupError:
         # venue_profile.for_booking: this venue has no profile, so there is
         # no name to sign the receipt off with. The trail gets a reason in

@@ -785,40 +785,13 @@ def sign(db: Session, document: Document, *, signer_name: str, signer_ip: str) -
     actor = truncate(f"client:{signer_name}", BOOKING_EVENT_ACTOR_MAX_LENGTH)
     document = _transition(db, document, DocumentStatus.signed, actor=actor)
 
-    if document.type == DocumentType.beo:
-        # Approving an Event Order confirms NOTHING about the booking -- the
-        # agreement and deposit did that. It records that the client has
-        # read the run sheet and accepted it, and tells the venue so.
-        # Never raises: the client's approval must stand even if the alert
-        # cannot go.
-        from app.services import notifications
-
-        # Everything from here runs AFTER the approval is committed and
-        # must never turn it into an error for the client -- same shape
-        # as the agreement branch below. (Review of this change: a failure
-        # in the trail commit gave a 500 for an approval that already
-        # stood.) The two alert functions never raise; this guards the
-        # trail write and anything they might grow.
-        try:
-            notifications.notify_beo_approved(document.booking, signer_name=signer_name, version=document.version)
-            # The client's own receipt (Aaron, 2026-09-10): one line saying
-            # their approval and the date were received, and a sign-off.
-            # Nothing restated -- the Event Order is the confirmation, and
-            # an email that repeats it undermines the point. The outcome is
-            # recorded in the audit trail either way, best-effort.
-            not_sent = notifications.notify_beo_approval_receipt(document.booking, version=document.version)
-            db.add(
-                BookingEvent(
-                    booking_id=document.booking_id,
-                    event_type="beo_approval_receipt_sent" if not_sent is None else "beo_approval_receipt_not_sent",
-                    new_value=truncate(not_sent, 500) if not_sent else None,
-                    actor=actor,
-                )
-            )
-            db.commit()
-        except Exception:  # noqa: BLE001 -- see above; nothing here may undo a committed approval
-            db.rollback()
-            logger.exception("Post-approval alerts or trail failed for document %s", document.id)
+    # An Event Order approval confirms NOTHING about the booking -- the
+    # agreement and deposit did that. It records that the client has read
+    # the run sheet and accepted it. The venue alert and the client's
+    # receipt are NOT sent here: the route schedules
+    # deliver_beo_approval_emails to run after the client has their
+    # response (Aaron, 2026-09-10: "a client shouldn't wait on our mail
+    # server to acknowledge their click").
 
     if document.type == DocumentType.agreement:
         # Signing is half of what confirms a booking; the deposit is the
@@ -846,6 +819,172 @@ def sign(db: Session, document: Document, *, signer_name: str, signer_ip: str) -
         )
 
     return document
+
+
+def background_db():
+    """A session for work that runs after the response has gone (FastAPI
+    BackgroundTasks): by then the request's own session is closed. Tests
+    replace this with contextlib.nullcontext(their fixture session), so
+    the work lands in the same transaction the test can see."""
+    from contextlib import closing
+
+    from app.database import SessionLocal
+
+    return closing(SessionLocal())
+
+
+RECEIPT_SENT, RECEIPT_NOT_SENT = "beo_approval_receipt_sent", "beo_approval_receipt_not_sent"
+ALERT_SENT, ALERT_NOT_SENT = "beo_approved_alert_sent", "beo_approved_alert_not_sent"
+
+
+def _outcome_event(booking_id: uuid.UUID, not_sent: str | None, *, sent_type: str, not_sent_type: str, actor: str):
+    return BookingEvent(
+        booking_id=booking_id,
+        event_type=sent_type if not_sent is None else not_sent_type,
+        new_value=truncate(not_sent, 500) if not_sent else None,
+        actor=actor,
+    )
+
+
+def printed_event_date(document: Document) -> str | None:
+    """The date THIS version prints ("Friday, 14 May 2027"), which is the
+    date the client accepted when they approved it -- not the booking's
+    live date, which can have moved since (review, 2026-09-10: a resend
+    named a date the client had never seen). None when the version was
+    built without a date and prints the [REVIEW] marker instead."""
+    timeline = (document.content or {}).get("event_timeline") or {}
+    shown = timeline.get("event_date_display")
+    if not shown or "[REVIEW]" in shown:
+        return None
+    return shown
+
+
+def deliver_beo_approval_emails(document_id: uuid.UUID, *, signer_name: str) -> None:
+    """Runs AFTER the client has their 303. The venue alert, then the
+    client's one-line receipt (Aaron, 2026-09-10: that their approval and
+    the date were received, nothing restated), then a trail row for each
+    saying whether it went and why not. Never raises: an exception here
+    would surface as a server error for a request that already succeeded.
+
+    Re-reads the row and sends nothing unless it is an approval -- the
+    guard for a task scheduled against a row that never signed. A Revise
+    landing in the gap does NOT cancel the receipt: the client did approve
+    that version, and the receipt names that version's own printed date."""
+    from app.services import notifications
+
+    actor = truncate(f"client:{signer_name}", BOOKING_EVENT_ACTOR_MAX_LENGTH)
+    try:
+        with background_db() as db:
+            try:
+                document = db.get(Document, document_id)
+                if document is None or document.status != DocumentStatus.signed:
+                    return
+                booking = document.booking
+                alert_not_sent = notifications.notify_beo_approved(
+                    booking, signer_name=signer_name, version=document.version
+                )
+                db.add(_outcome_event(booking.id, alert_not_sent, sent_type=ALERT_SENT, not_sent_type=ALERT_NOT_SENT, actor=actor))
+                receipt_not_sent = notifications.notify_beo_approval_receipt(
+                    booking, version=document.version, event_date_display=printed_event_date(document)
+                )
+                db.add(
+                    _outcome_event(
+                        booking.id, receipt_not_sent, sent_type=RECEIPT_SENT, not_sent_type=RECEIPT_NOT_SENT, actor=actor
+                    )
+                )
+                db.commit()
+            except Exception:  # noqa: BLE001 -- see docstring
+                db.rollback()
+                logger.exception("Post-approval alerts or trail failed for document %s", document_id)
+    except Exception:  # noqa: BLE001 -- could not even open a session; the approval itself is committed
+        logger.exception("Post-approval delivery could not start for document %s", document_id)
+
+
+def _latest_approved_row(db: Session, booking_id: uuid.UUID):
+    rows = version_rows(db, booking_id, DocumentType.beo)
+    return next((r for r in rows if r.status == DocumentStatus.signed and not r.is_legacy), None)
+
+
+def _latest_outcome(db: Session, booking_id: uuid.UUID, *, sent_type: str, not_sent_type: str) -> tuple[str | None, str | None]:
+    """("sent" | "not_sent" | None, reason). QUERIED, ordered by created_at,
+    the later row winning among equals (a failure and its resend are
+    separate requests, so separate transactions, so distinct timestamps in
+    production -- Postgres now() is the transaction start; the only tie is
+    inside one transaction, where the later insert is the later act).
+    "not_sent" only while the latest failure has no send at or after it."""
+    rows = db.execute(
+        select(BookingEvent.event_type, BookingEvent.new_value, BookingEvent.created_at)
+        .where(BookingEvent.booking_id == booking_id, BookingEvent.event_type.in_((sent_type, not_sent_type)))
+        .order_by(BookingEvent.created_at)
+    ).all()
+    if not rows:
+        return None, None
+    last_failure = None
+    for r in rows:
+        if r.event_type == not_sent_type:
+            last_failure = r  # later rows win, ties included
+    if last_failure is None:
+        return "sent", None
+    if any(r.event_type == sent_type and r.created_at >= last_failure.created_at for r in rows):
+        return "sent", None
+    return "not_sent", last_failure.new_value
+
+
+def latest_receipt_outcome(db: Session, booking_id: uuid.UUID) -> tuple[str | None, str | None]:
+    """The client's approval receipt. An approved Event Order with NO
+    receipt row at all is a failure too (review, 2026-09-10): the
+    background delivery never finished, and silence is the thing the
+    banner exists to end."""
+    state, reason = _latest_outcome(db, booking_id, sent_type=RECEIPT_SENT, not_sent_type=RECEIPT_NOT_SENT)
+    if state is None and _latest_approved_row(db, booking_id) is not None:
+        return "not_sent", "no delivery was recorded for this approval -- the mail step never finished"
+    return state, reason
+
+
+def latest_alert_outcome(db: Session, booking_id: uuid.UUID) -> tuple[str | None, str | None]:
+    """The venue's own approval alert -- its failure was silent before."""
+    return _latest_outcome(db, booking_id, sent_type=ALERT_SENT, not_sent_type=ALERT_NOT_SENT)
+
+
+def resend_beo_approval_emails(db: Session, booking: Booking, *, actor: str) -> list[str]:
+    """Staff resend from the booking page banner. Sends whichever of the
+    two approval emails did not go -- the client's receipt (for the
+    highest approved Event Order, naming ITS printed date) and the venue's
+    alert -- writes each outcome to the trail under the staff actor, and
+    returns the reasons for anything that still failed (empty when all
+    went). Refuses, with a reason a person can act on, when nothing can be
+    sent: no approved Event Order; both already sent; the contact's email
+    is invalid (fix that first -- a click can only append another failure)."""
+    from app.services import notifications
+
+    approved = _latest_approved_row(db, booking.id)
+    if approved is None:
+        raise ValueError("this booking has no approved Event Order, so there is no receipt to send")
+    receipt_state, _ = latest_receipt_outcome(db, booking.id)
+    alert_state, _ = latest_alert_outcome(db, booking.id)
+    if receipt_state == "sent" and alert_state != "not_sent":
+        raise ValueError("the approval receipt has already been sent; there is nothing to resend")
+    if receipt_state != "sent" and (booking.contact is None or not is_valid_email(booking.contact.email)):
+        raise ValueError("the contact's email address is not valid -- fix it on this page first, then resend")
+
+    document = db.get(Document, approved.id)
+    failures: list[str] = []
+    if receipt_state != "sent":
+        not_sent = notifications.notify_beo_approval_receipt(
+            booking, version=approved.version, event_date_display=printed_event_date(document)
+        )
+        db.add(_outcome_event(booking.id, not_sent, sent_type=RECEIPT_SENT, not_sent_type=RECEIPT_NOT_SENT, actor=actor))
+        if not_sent:
+            failures.append(f"client receipt: {not_sent}")
+    if alert_state == "not_sent":
+        not_sent = notifications.notify_beo_approved(
+            booking, signer_name=document.signer_name or "the client", version=approved.version
+        )
+        db.add(_outcome_event(booking.id, not_sent, sent_type=ALERT_SENT, not_sent_type=ALERT_NOT_SENT, actor=actor))
+        if not_sent:
+            failures.append(f"venue alert: {not_sent}")
+    db.commit()
+    return failures
 
 
 def get_beos_awaiting_review(db: Session, venue) -> list[Document]:

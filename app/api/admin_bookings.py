@@ -373,6 +373,12 @@ def booking_detail(
             enquiry_notification_failed=any(
                 e.event_type == "enquiry_notification_failed" for e in booking.events
             ) and booking.enquiry_notification_sent_at is None,
+            # (state, reason) of the client's Event Order approval receipt.
+            # Aaron, 2026-09-10: "an audit row nobody reads is the silence
+            # problem again" -- a receipt that did not go is a banner with
+            # a resend, not a line in a collapsed table.
+            receipt_outcome=documents_service.latest_receipt_outcome(db, booking.id),
+            alert_outcome=documents_service.latest_alert_outcome(db, booking.id),
             beo_proposal_waiting=len(beo_review_rows),
             beo_proposal_document_id=beo_draft.id if beo_draft is not None else None,
             first_touch_channel=summarize_channel(booking.first_touch_attribution),
@@ -1932,6 +1938,25 @@ def preview_enquiry_notification(
             reply_to=contact.email if contact and is_valid_email(contact.email) else None,
         ),
     )
+
+
+@router.post("/{booking_id}/beo-approval-emails/resend", dependencies=[Depends(require_csrf)])
+def resend_beo_approval_emails(
+    booking_id: uuid.UUID, request: Request, db: Session = Depends(get_db), staff: StaffUser = Depends(require_staff)
+):
+    booking = _get_booking_or_404(db, booking_id)
+    try:
+        failures = documents_service.resend_beo_approval_emails(db, booking, actor=_actor(staff))
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if failures:
+        # Each attempt is on the audit trail already; this is the page
+        # with a way back, and it says so rather than "nothing changed".
+        raise HTTPException(
+            status_code=502,
+            detail="Resend failed -- " + "; ".join(failures) + ". The attempt is recorded on the audit trail.",
+        )
+    return _redirect_to_detail(booking_id)
 
 
 @router.post("/{booking_id}/enquiry-notification/resend", dependencies=[Depends(require_csrf)])

@@ -249,6 +249,13 @@ _CLIENT_REQUEST = re.compile(
 _RSA_LINE = re.compile(r"(?<!\w)r\.?s\.?a\.?(?!\w)|responsible\s+service\s+of\s+alcohol", re.IGNORECASE)
 
 
+def mentions_rsa(text: str | None) -> bool:
+    """Whether Special notes (or any text) carries the RSA line, by the one
+    definition the proposal rules use. The floor's drift note asks this of
+    a superseded version."""
+    return bool(_RSA_LINE.search(normalise(text)))
+
+
 @dataclass
 class RuleViolation:
     code: str

@@ -24,6 +24,7 @@ from app.models.document import DocumentStatus, DocumentType
 from app.models.invoice import InvoiceStatus
 from app.models.staff_user import StaffUser
 from app.rate_limit import InMemoryRateLimiter, rate_limit_dependency
+from app.services import beo_rules
 from app.services import documents as documents_service
 from app.services import staff_auth
 from app.services.document_generation import format_date_long
@@ -94,23 +95,52 @@ def _floor_beo(db: Session, booking: Booking):
     the client actually agreed to. If staff have revised it since, that
     revision -- draft, sent or viewed -- is something the client has not
     approved and may never have seen, so the team gets the approved one
-    and is told a newer version exists. With no approval anywhere, the
-    current non-draft version is what it always was.
+    and is told a newer version exists.
+
+    With no approval anywhere: the current version if it has gone out;
+    otherwise -- a Revise in flight (the draft is current; the client's
+    link already answers "being updated"), or a draft deleted so that no
+    version is current -- the last version that went out, with a note.
+    Aaron: "a blank screen mid-service is worse than a stale one with a
+    warning on it."
 
     A legacy row is never the working version: its content is a
     placeholder for an uploaded PDF, and the floor was the one surface
-    still rendering that placeholder (the admin preview refuses it, the
-    public link 404s). No writer in the repo creates a legacy Event Order,
-    so this is the defensive path, stated rather than assumed."""
+    still rendering that placeholder. No writer in the repo creates a
+    legacy Event Order, so this is the defensive path, stated rather than
+    assumed."""
     rows = documents_service.version_rows(db, booking.id, DocumentType.beo)
     approved = next((r for r in rows if r.status == DocumentStatus.signed and not r.is_legacy), None)
     current = next((r for r in rows if r.is_current), None)
     if approved is not None:
         newer = current if current is not None and current.id != approved.id else None
         return approved, newer
-    if current is not None and current.status != DocumentStatus.draft and not current.is_legacy:
+    if current is not None and not current.is_legacy and current.status != DocumentStatus.draft:
         return current, None
+    last_sent = next(
+        (r for r in rows if r.status in (DocumentStatus.sent, DocumentStatus.viewed) and not r.is_legacy), None
+    )
+    if last_sent is not None:
+        newer = current if current is not None and not current.is_legacy and current.id != last_sent.id else None
+        return last_sent, newer
     return None, None
+
+
+def _floor_rsa_gap(document: Document, booking: Booking) -> str | None:
+    """The one warning that is not a change: RSA applies to this booking
+    now (an 18th, or under-18s on it) and the version on screen never
+    carried the RSA line in its Special notes. Kept apart from the "what
+    changed" list (review, 2026-09-10) because it is true of an untouched
+    approval too, and a heading that says "changed" must not lie."""
+    rsa_now = booking.child_count > 0 or beo_rules.looks_like_eighteenth(
+        event_type=booking.event_type, event_name=booking.event_name, notes=booking.notes
+    )
+    if rsa_now and not beo_rules.mentions_rsa((document.content or {}).get("special_notes")):
+        return (
+            "RSA applies to this booking (an 18th, or under-18s on it) and this version's "
+            "Special notes do not carry the RSA line."
+        )
+    return None
 
 
 def _floor_drift(document: Document, booking: Booking) -> list[str]:
@@ -119,11 +149,16 @@ def _floor_drift(document: Document, booking: Booking) -> list[str]:
     older than the booking: a date, room or guest-count change made after
     approval is invisible on the run sheet itself (the header band reads
     the live name and rooms, the rest is the snapshot), so the floor note
-    says what moved. Review finding of 2026-09-10."""
+    says what moved. Under-18s FIRST (Aaron, 2026-09-10: "the floor needs
+    it more than they need a room change"). Only real deltas belong here;
+    the standing RSA warning is _floor_rsa_gap."""
     content = document.content or {}
     ref = content.get("_reference") or {}
     timeline = content.get("event_timeline") or {}
     drift: list[str] = []
+    then_kids = ref.get("child_count")
+    if then_kids is not None and then_kids != booking.child_count:
+        drift.append(f"under-18s are now {booking.child_count} (this version says {then_kids})")
     live_date = format_date_long(booking.event_date) if booking.event_date else None
     then_date = timeline.get("event_date_display")
     if live_date and then_date and then_date != live_date:
@@ -131,12 +166,9 @@ def _floor_drift(document: Document, booking: Booking) -> list[str]:
     then_rooms = ref.get("space_name")
     if then_rooms and then_rooms != booking.all_space_names:
         drift.append(f"the rooms are now {booking.all_space_names} (this version says {then_rooms})")
-    then_counts = (ref.get("adult_count"), ref.get("child_count"))
-    if None not in then_counts and then_counts != (booking.adult_count, booking.child_count):
-        drift.append(
-            f"guests are now {booking.adult_count} adults and {booking.child_count} under 18 "
-            f"(this version says {then_counts[0]} and {then_counts[1]})"
-        )
+    then_adults = ref.get("adult_count")
+    if then_adults is not None and then_adults != booking.adult_count:
+        drift.append(f"adults are now {booking.adult_count} (this version says {then_adults})")
     then_name = ref.get("event_name")
     if then_name and then_name != booking.event_name:
         drift.append(f"the event is now named {booking.event_name!r} (this version says {then_name!r})")
@@ -261,6 +293,7 @@ def booking_beo(
             "is_floor_app": True,
             "floor_newer_version": newer,
             "floor_drift": _floor_drift(document, booking),
+            "floor_rsa_gap": _floor_rsa_gap(document, booking),
         },
     )
 
@@ -272,11 +305,16 @@ def booking_beo_pdf(
     db: Session = Depends(get_db),
     staff: StaffUser = Depends(require_app_token),
 ):
-    """Download/share copy: the CLEAN client render, without internal
-    notes -- a shared PDF can leave the team."""
+    """Download/share copy: the client render without internal notes (a
+    shared PDF can leave the team) and, like the floor screen, without
+    the client's phone or the billing summary (Aaron, 2026-09-10: "the
+    floor team doesn't need the client's phone on a document that gets
+    left on a bar, and the billing summary is a conversation for me")."""
     booking = _get_visible_booking_or_404(db, booking_id)
     document, _newer = _get_floor_beo_or_404(db, booking)
-    html = templates.get_template("document.html").render(document=document, booking=booking, is_pdf=True)
+    html = templates.get_template("document.html").render(
+        document=document, booking=booking, is_pdf=True, floor_pdf=True
+    )
     filename = f"{booking.reference_code}-BEO-v{document.version}.pdf"
     return Response(
         content=render_html_to_pdf(html),
