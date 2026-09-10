@@ -5,8 +5,13 @@
 <h1>Edit agreement</h1>
 <p class="muted">
   Draft v{{ document.version }} &middot; {{ booking.reference_code }}.
-  Only the terms below are editable. Venue, date, time, guest numbers and the deposit figure always come
-  straight from the booking record, so the contract can never drift from what's actually in Concierge.
+  Only the terms below are editable. Venue, date, time, guest numbers and the deposit figure were copied
+  from the booking <b>when this version was generated</b> and are not edited here. If the booking has
+  changed since, this draft still says what it said then &mdash; Regenerate to refresh them.
+  {# This used to say those facts "always come straight from the booking record, so the contract can
+     never drift from what's actually in Concierge." They are a snapshot (document_generation
+     .build_agreement_content copies them into content), and the save keeps that snapshot verbatim --
+     so the sentence promised a guarantee the code does not make, on the page that edits the contract. #}
 </p>
 
 {% if conflict %}

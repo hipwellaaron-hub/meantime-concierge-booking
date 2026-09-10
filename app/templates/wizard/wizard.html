@@ -1043,6 +1043,14 @@
       // An incomplete step (browser validation, nothing selected yet)
       // must not block stepping away -- their earlier steps are saved.
       if (err && err.handledByBrowser) return;
+      // ANYTHING ELSE means this step did not reach the server: a dropped
+      // connection, a 500, a rejected value. Swallowing it here let the
+      // chain run on and show "Saved -- everything you've entered so far
+      // is safe" over content that was never stored, which is the exact
+      // failure this whole area of the app exists to prevent. Rethrow, so
+      // the .catch at the end of this chain -- which already re-enables
+      // the button and says "Couldn't save right now" -- gets it.
+      throw err;
     });
     saveCurrent.then(function () {
       return fetch("/w/" + TOKEN + "/save-for-later", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" })

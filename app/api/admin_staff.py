@@ -29,6 +29,7 @@ def _redirect() -> RedirectResponse:
 def staff_list(
     request: Request,
     welcome: str | None = None,
+    outcome: str | None = None,
     db: Session = Depends(get_db),
     staff: StaffUser = Depends(require_staff),
 ):
@@ -39,7 +40,7 @@ def staff_list(
     return templates.TemplateResponse(
         request,
         "admin/staff_users.html",
-        admin_ctx(request, staff, users=users, tokens_by_user=tokens_by_user, me=staff, welcome=welcome),
+        admin_ctx(request, staff, users=users, tokens_by_user=tokens_by_user, me=staff, welcome=welcome, outcome=outcome),
     )
 
 
@@ -56,6 +57,15 @@ def create_staff(
     name, email = name.strip(), email.strip()
     if not name or not email or len(password) < 8:
         raise HTTPException(status_code=422, detail="Name, email and a password of at least 8 characters are required")
+    # Whether this ADDS or OVERWRITES, decided before the write. The
+    # service is create_OR_UPDATE: an email already on file has its
+    # password reset, its role set to whatever is picked here, and
+    # is_active forced back to True -- so this form silently reactivates
+    # somebody who was deliberately deactivated, and the page then said
+    # "account created". That is the only password-reset path there is
+    # (no self-serve reset in v1), so the behaviour stays and the screen
+    # stops misreporting it.
+    existed = staff_auth.get_by_email(db, email) is not None
     try:
         new_user = staff_auth.create_or_update_staff_user(db, email=email, name=name, password=password, role=role)
     except ValueError as exc:
@@ -66,10 +76,13 @@ def create_staff(
     # dashboard, not /floor, so they get none. The account is already
     # created regardless -- surface whether the email went so a failure is
     # visible rather than silent.
+    outcome = "updated" if existed else "created"
     if new_user.role == "floor":
         sent = notifications.notify_floor_welcome(name=new_user.name, email=new_user.email)
-        return RedirectResponse(url=f"/admin/staff?welcome={'sent' if sent else 'failed'}", status_code=303)
-    return _redirect()
+        return RedirectResponse(
+            url=f"/admin/staff?welcome={'sent' if sent else 'failed'}&outcome={outcome}", status_code=303
+        )
+    return RedirectResponse(url=f"/admin/staff?outcome={outcome}", status_code=303)
 
 
 @router.post("/{user_id}/resend-welcome", dependencies=[Depends(require_csrf)])

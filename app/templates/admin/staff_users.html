@@ -2,10 +2,24 @@
 {% block title %}Staff accounts{% endblock %}
 {% block content %}
 <h1>Staff accounts</h1>
+{#
+  "created" and "updated" are different events and the page used to call
+  both of them created. An email already on file is not rejected: the
+  service resets that person's password, sets their role to whatever is
+  picked here, and forces is_active back to True -- so this form is also
+  the only password reset there is (no self-serve reset in v1), and it
+  silently reactivates somebody who was deliberately deactivated.
+  The behaviour stays; the screen stops misreporting it.
+#}
+{% set made = "Floor account created" if outcome != "updated" else "Existing account updated" %}
 {% if welcome == "sent" %}
-<div class="card" style="border-color:var(--safe-green);"><b style="color:var(--safe-green-text);">Floor account created.</b> A setup email with install and usage instructions has been sent to them. Give them their password separately.</div>
+<div class="card" style="border-color:var(--safe-green);"><b style="color:var(--safe-green-text);">{{ made }}.</b> A setup email with install and usage instructions has been sent to them. Give them their password separately.</div>
 {% elif welcome == "failed" %}
-<div class="card" style="border-color:var(--wine);"><b style="color:var(--wine);">Floor account created</b>, but the setup email couldn't be sent (check Gmail is connected). They can still sign in at <code>/floor</code> &mdash; you'll need to send them the instructions manually.</div>
+<div class="card" style="border-color:var(--wine);"><b style="color:var(--wine);">{{ made }}</b>, but the setup email couldn't be sent (check Gmail is connected). They can still sign in at <code>/floor</code> &mdash; you'll need to send them the instructions manually.</div>
+{% elif outcome == "updated" %}
+<div class="card" style="border-color:var(--wine);"><b style="color:var(--wine);">Existing account updated.</b> That email was already on file, so their password was reset, their role set to what you picked, and the account reactivated if it had been deactivated.</div>
+{% elif outcome == "created" %}
+<div class="card" style="border-color:var(--safe-green);"><b style="color:var(--safe-green-text);">Account created.</b> Give them their password separately.</div>
 {% endif %}
 <p class="muted">
   <b>Admin</b> accounts use the full Concierge dashboard. <b>Floor</b> accounts can only log into the
@@ -14,7 +28,10 @@
 </p>
 
 <div class="card">
-  <h2>Add an account</h2>
+  <h2>Add or update an account</h2>
+  <p class="muted" style="font-size:0.85rem; margin:-4px 0 12px;">An email already on file is not a new account:
+    that person's password is reset, their role becomes whatever is picked here, and a deactivated account is
+    reactivated. That is also how you reset a forgotten password &mdash; there is no self-serve reset.</p>
   <form method="post" action="/admin/staff/create" class="field-row" style="align-items:flex-end;">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <div><label>Name</label><input type="text" name="name" required maxlength="255"></div>
