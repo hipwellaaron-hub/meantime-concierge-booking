@@ -630,9 +630,25 @@ def test_the_same_submission_id_with_different_content_is_a_new_lead(client, db)
     second = client.post("/enquiries", data={**_payload(event_date="2027-11-21"), "submission_id": sid})
     assert first.status_code == second.status_code == 303
     assert first.headers["location"] != second.headers["location"]
-    rows = db.query(Booking).filter_by(event_name="Completion Enquiry").order_by(Booking.created_at).all()
+    rows = db.query(Booking).filter_by(event_name="Completion Enquiry").all()
     assert len(rows) == 2
-    assert str(rows[0].submission_id) == sid and rows[1].submission_id is None
+    # Identified by the thing the client CHANGED, never by row order.
+    #
+    # This used to order_by(created_at) and read rows[0]/rows[1], and it
+    # flaked. created_at is server_default=func.now(), and Postgres now()
+    # is TRANSACTION start time -- the db fixture runs the whole test in
+    # one transaction whose commits are savepoint releases, so every row a
+    # test creates carries a byte-identical timestamp. Proved: both rows
+    # here came back 2026-09-10 12:31:57.976676.
+    #
+    # An ORDER BY on a tied column is not an order. Which row comes first
+    # depends on the plan and the heap, and both vary with whatever else
+    # is in the table -- which is why it passed alone and in most full
+    # runs, and failed in one. Touching the first row was enough to flip it
+    # from SID-FIRST to SID-SECOND on demand.
+    by_date = {r.event_date: r for r in rows}
+    assert str(by_date[dt.date(2027, 11, 14)].submission_id) == sid, "the original kept the id"
+    assert by_date[dt.date(2027, 11, 21)].submission_id is None, "the resubmission did not reuse it"
 
 
 def test_the_same_submission_id_under_a_different_email_is_a_new_lead(client, db, monkeypatch):
