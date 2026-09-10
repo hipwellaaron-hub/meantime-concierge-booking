@@ -133,8 +133,10 @@ def pipeline(
                 "exists, an answered enquiry still reads as 'enquiry' and 'awaiting: staff'."
             ),
             "beo_sent": (
-                "Means the Event Order was issued, not that a client approved it -- "
-                "only agreements can be signed in Concierge."
+                "The Event Order has been issued. Since 2026-09-10 a client can APPROVE it at "
+                "its link: beo_status then reads 'signed', which for an Event Order means "
+                "approved (name, date and lock accepted), not a contract signature. Approval "
+                "does not move the stage; finalised rests on the final invoice being paid."
             ),
         },
     }

@@ -394,7 +394,11 @@
           {% if current_beo and current_beo.status.value == "signed" %}<div class="muted" style="font-size:0.8rem; margin-top:3px; color: var(--ink);">Approved by {{ current_beo.signer_name | person_name }} {{ current_beo.signed_at | sydney_time }}</div>{% endif %}
         </td>
         <td>
-          <form class="inline" method="post" action="/admin/bookings/{{ booking.id }}/documents/beo/generate">
+          {# Regenerate over an APPROVED Event Order sets the client's approval
+             aside. The loss screen only fires for hand-edited content, so
+             without this a one-click Regenerate did that with no signal at
+             all. The approver is named so the click is a decision. #}
+          <form class="inline" method="post" action="/admin/bookings/{{ booking.id }}/documents/beo/generate"{% if current_beo and current_beo.status.value == "signed" %} onsubmit="return confirm('This Event Order was approved by {{ current_beo.signer_name | e }}. Regenerating sets that approval aside -- the new version goes out unapproved and will need approving again. Continue?');"{% endif %}>
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <button class="btn secondary" type="submit">{{ "Regenerate" if current_beo else "Generate" }}</button>
           </form>

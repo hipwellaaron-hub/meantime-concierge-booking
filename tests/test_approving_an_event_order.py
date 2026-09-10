@@ -73,7 +73,7 @@ def test_a_sent_event_order_offers_approval(client, db, loft):
 
     assert page.status_code == 200
     assert "Approve this Event Order" in page.text
-    assert 'name="accept_lock"' in page.text
+    assert 'name="accept_lock" value="yes" required' in page.text, "the browser half of the two-layer rule"
     assert "locks this Event Order" in page.text, "the lock has to be said before they tick it"
     assert "including the event date" in page.text
     assert "Accept &amp; Sign" not in page.text, "that is the agreement's wording, not this document's"
@@ -147,9 +147,16 @@ def test_an_agreement_does_not_need_the_tick(client, db, loft):
     assert agreement.status == DocumentStatus.signed
 
 
-def test_approval_confirms_nothing_about_the_booking(client, db, loft):
-    """The agreement and the deposit confirm a booking. An approved run
-    sheet must not move status, and must not fire the agreement's alert."""
+def test_approval_confirms_nothing_about_the_booking(client, db, loft, monkeypatch):
+    """The agreement and the deposit confirm a booking. The thing that does
+    that is booking_service.auto_confirm_if_ready, which sign() calls for an
+    agreement -- pin that it is NOT called for an Event Order. (The first
+    version of this test looked for an event sign() never writes, so it
+    could not fail.)"""
+    from app.services import booking as booking_service
+
+    calls = []
+    monkeypatch.setattr(booking_service, "auto_confirm_if_ready", lambda db_, b, **kw: calls.append(b.id))
     booking = _booking(db, loft, "Approve No Confirm")
     sent = _sent_beo(db, booking)
     status_before = booking.status
@@ -158,8 +165,14 @@ def test_approval_confirms_nothing_about_the_booking(client, db, loft):
 
     db.refresh(booking)
     assert booking.status == status_before
-    kinds = {e.event_type for e in db.query(BookingEvent).filter_by(booking_id=booking.id).all()}
-    assert "agreement_signed" not in kinds
+    assert calls == [], "approving an Event Order tried to confirm the booking"
+
+    agreement = documents_service.create_new_version(
+        db, booking, DocumentType.agreement, generate_agreement_content(booking), actor="staff:test"
+    )
+    documents_service.mark_sent(db, agreement, actor="staff:test")
+    client.post(f"/d/{agreement.access_token}/sign", data={"signer_name": "Caitlin Hobday"})
+    assert calls == [booking.id], "and signing the agreement still does"
 
 
 # --- what the approved document then says --------------------------------------
@@ -176,33 +189,53 @@ def test_the_approved_document_reads_approved_everywhere(client, db, loft):
     db.refresh(sent)
 
     page = client.get(f"/d/{sent.access_token}").text
-    assert "Approved by Caitlin Hobday" in page, "the signed-note should use the honest verb and recase the name"
+    # AS TYPED. "caitlin hobday" is what they approved as, and a signature
+    # prints what was signed -- recasing it is the admin page's business.
+    assert "Approved by caitlin hobday" in page, "the signed-note should use the honest verb, as typed"
+    assert "Approved by Caitlin Hobday" not in page, "a client surface recased the name they typed"
     # No badge assertion: the Event Order's screen view has no status pill
     # (the reference layout never had one) -- its Status SECTION is the
     # status, and that is asserted next.
-    assert "Event Order approved by Caitlin Hobday" in page, "the Status line still said 'Awaiting Event Order approval'"
+    assert "Event Order approved by caitlin hobday" in page, "the Status line still said 'Awaiting Event Order approval'"
     assert ">signed<" not in page, "nothing on a run sheet should call an approval a signature"
     assert "Awaiting Event Order approval" not in page
     assert "Approve this Event Order" not in page, "the form must go once approved"
 
     pdf_html = templates.get_template("document.html").render(document=sent, booking=booking, is_pdf=True)
-    assert "Approved by caitlin hobday" in pdf_html or "Approved by Caitlin Hobday" in pdf_html
+    assert "Approved by caitlin hobday" in pdf_html, "the PDF must print the name as typed, exactly"
     assert "Signed by" not in pdf_html
 
 
-def test_status_text_at_generation_derives_approval(db, loft):
-    """The suffix "Awaiting Event Order approval" was fixed text that could
-    never come true. Now it is derived, like the two facts before it."""
+def test_a_new_version_is_never_generated_as_approved(db, loft):
+    """REVERSED on review. The first version derived "Event Order approved"
+    from has_approved_beo -- which runs while the OLD version is still
+    current, so every unapproved replacement was born saying it had been
+    approved. A new version is unapproved by definition; only the approved
+    version's own render says otherwise."""
     booking = _booking(db, loft, "Approve Status Text")
-    assert "Awaiting Event Order approval" in _build_status_text(db, booking)
-
     sent = _sent_beo(db, booking)
     documents_service.sign(db, sent, signer_name="Caitlin Hobday", signer_ip="10.0.0.1")
+    assert has_approved_beo(db, booking) is True, "the old version is still current at this moment"
 
     text = _build_status_text(db, booking)
-    assert "Event Order approved" in text
-    assert "Awaiting Event Order approval" not in text
-    assert "Awaiting final invoice payment" in text
+
+    assert "Awaiting Event Order approval" in text
+    assert "Event Order approved" not in text, "a replacement was composed as already approved"
+
+
+def test_the_unapproved_replacement_does_not_print_approved(client, db, loft):
+    """End to end: approve, Revise, send the copy -- the copy must read as
+    awaiting approval, not carry the old approval's sentence."""
+    booking = _booking(db, loft, "Approve Replacement")
+    sent = _sent_beo(db, booking)
+    client.post(f"/d/{sent.access_token}/sign", data={"signer_name": "Caitlin Hobday", "accept_lock": "yes"})
+    draft = documents_service.revise(db, sent, actor="staff:aaron")
+    documents_service.mark_sent(db, draft, actor="staff:aaron")
+
+    page = client.get(f"/d/{draft.access_token}").text
+
+    assert "Event Order approved" not in page, "the replacement claims an approval it never got"
+    assert "Approve this Event Order" in page, "and it should be asking for one"
 
 
 # --- the lock, and what it does not lock ------------------------------------------
@@ -391,3 +424,131 @@ def test_the_client_still_gets_the_form(client, db, loft):
 
     assert "Approve this Event Order" in page
     assert f'action="/d/{beo.access_token}/sign"' in page
+
+
+# --- refusals on the public POST are pages, not JSON ---------------------------
+
+
+def test_approving_in_the_revise_window_gets_the_being_updated_card_not_json(client, db, loft):
+    """Staff press Revise while the approval page is open; the click lands
+    on a superseded version. The GET already showed the "being updated"
+    card for exactly this window (Aaron's 2026-09-08 ruling); the POST
+    answered {"detail": "This offer is no longer available..."} as JSON."""
+    booking = _booking(db, loft, "Approve Revise Window")
+    sent = _sent_beo(db, booking)
+    documents_service.revise(db, sent, actor="staff:aaron")  # a draft copy; the old link is now dead
+
+    resp = client.post(f"/d/{sent.access_token}/sign", data={"signer_name": "Caitlin Hobday", "accept_lock": "yes"})
+
+    assert resp.status_code == 410
+    assert "text/html" in resp.headers["content-type"], "a client got raw JSON"
+    assert "being updated" in resp.text, "the POST should say what the GET says"
+    db.refresh(sent)
+    assert sent.status == DocumentStatus.sent, "and nothing was signed"
+
+
+def test_a_double_click_shows_the_approved_page_not_a_409(client, db, loft):
+    booking = _booking(db, loft, "Approve Double Click")
+    sent = _sent_beo(db, booking)
+    data = {"signer_name": "Caitlin Hobday", "accept_lock": "yes"}
+    first = client.post(f"/d/{sent.access_token}/sign", data=data, follow_redirects=False)
+    second = client.post(f"/d/{sent.access_token}/sign", data=data, follow_redirects=False)
+
+    assert first.status_code == 303
+    assert second.status_code == 303, "the second click should land on the approved page, not a JSON 409"
+    db.refresh(sent)
+    assert sent.signer_name == "Caitlin Hobday"
+
+
+def test_the_tick_is_a_value_not_a_presence(client, db, loft):
+    """"0", "no" and "off" are not acceptance. The form posts "yes"."""
+    booking = _booking(db, loft, "Approve Tick Value")
+    sent = _sent_beo(db, booking)
+
+    resp = client.post(f"/d/{sent.access_token}/sign", data={"signer_name": "Caitlin Hobday", "accept_lock": "0"})
+
+    assert resp.status_code == 422
+    db.refresh(sent)
+    assert sent.status == DocumentStatus.sent
+
+
+def test_sign_refuses_a_superseded_row_under_the_lock(db, loft):
+    """The route checks is_current before calling sign(); this is the same
+    check under the row lock, for the Revise that lands between the two.
+    Superseding never changes status, so the row is still `sent`."""
+    booking = _booking(db, loft, "Approve Superseded Sign")
+    sent = _sent_beo(db, booking)
+    documents_service.revise(db, sent, actor="staff:aaron")
+    db.refresh(sent)
+    assert sent.status == DocumentStatus.sent and sent.is_current is False
+
+    with pytest.raises(ValueError) as exc:
+        documents_service.sign(db, sent, signer_name="Caitlin Hobday", signer_ip="10.0.0.1")
+
+    assert "newer version" in str(exc.value)
+
+
+# --- the agreement is byte-for-byte what it was --------------------------------
+
+
+def test_the_agreements_signed_note_prints_the_name_as_typed(client, db, loft):
+    """Rule 4 of the review. The first approval commit put a recasing
+    filter on the note the agreement shares, so a contract's on-screen
+    "Signed by" stopped matching its own PDF. A signature is what was
+    signed."""
+    booking = _booking(db, loft, "Approve Agreement Verbatim")
+    agreement = documents_service.create_new_version(
+        db, booking, DocumentType.agreement, generate_agreement_content(booking), actor="staff:test"
+    )
+    documents_service.mark_sent(db, agreement, actor="staff:test")
+    client.post(f"/d/{agreement.access_token}/sign", data={"signer_name": "pat wilson"})
+
+    page = client.get(f"/d/{agreement.access_token}").text
+
+    assert "Signed by pat wilson on" in page
+    assert "Signed by Pat Wilson" not in page
+
+
+# --- superseding an approval is never silent ----------------------------------
+
+
+def test_a_wizard_submission_over_an_approved_event_order_is_not_clean(db, loft, menu_items):
+    """A wizard session is submitted once, so the real shape of this is:
+    staff generate and send an Event Order by hand, the client approves it,
+    and the wizard invite they were also holding gets submitted afterwards.
+    The wizard rebuilds the Event Order from its answers, superseding the
+    approved one -- the replacement goes out unapproved, and that must
+    escalate, not auto-route as clean."""
+    from tests.test_wizard_generation import _complete_all_steps, _make_booking, _pay_deposit
+    from app.services import wizard as wizard_service
+
+    booking = _make_booking(db, loft)
+    _pay_deposit(db, booking)
+    session = wizard_service.get_or_create_session(db, booking, actor="staff:test")
+    approved = _sent_beo(db, booking)
+    documents_service.sign(db, approved, signer_name="Caitlin Hobday", signer_ip="10.0.0.1")
+    _complete_all_steps(db, session, menu_items)
+
+    session, result = wizard_service.submit_review(db, session, actor="wizard_client:test", final_notes=None)
+
+    assert result.is_clean is False, "an approved Event Order was replaced and the system called it clean"
+    assert any("approved by Caitlin Hobday" in item for item in result.outstanding_items), result.outstanding_items
+    db.refresh(approved)
+    assert approved.is_current is False and result.document.status == DocumentStatus.draft
+
+
+def test_regenerate_asks_before_setting_an_approval_aside(admin_client, db, loft):
+    """One-click Regenerate went through the loss screen only for
+    hand-edited content; an approval is not content, so it was set aside
+    with no signal. The button now confirms, naming the approver."""
+    booking = _booking(db, loft, "Approve Regenerate Confirm")
+    sent = _sent_beo(db, booking)
+
+    before = admin_client.get(f"/admin/bookings/{booking.id}").text
+    assert "was approved by" not in before, "no confirm while it is merely sent"
+
+    documents_service.sign(db, sent, signer_name="Caitlin Hobday", signer_ip="10.0.0.1")
+    after = admin_client.get(f"/admin/bookings/{booking.id}").text
+
+    assert "was approved by Caitlin Hobday" in after
+    assert "sets that approval aside" in after

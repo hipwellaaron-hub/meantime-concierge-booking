@@ -296,7 +296,7 @@
 {{ beo_section("Accessibility", content.accessibility, staff) }}
 {{ beo_section("Decorations", content.decorations, staff) }}
 {{ beo_section("Special Notes", content.special_notes, staff) }}
-{{ beo_section("Status", ("Event Order approved by " ~ (document.signer_name | person_name) ~ " on " ~ (document.signed_at | sydney_time("%d %b %Y")) ~ ".") if document.status.value == "signed" else (content.status_text or document.status.value), staff, always=true) }}
+{{ beo_section("Status", ("Event Order approved by " ~ document.signer_name ~ " on " ~ (document.signed_at | sydney_time("%d %b %Y")) ~ ".") if document.status.value == "signed" else (content.status_text or document.status.value), staff, always=true) }}
 {% endmacro %}
 
 {% if is_pdf and document.type.value == "agreement" %}
@@ -464,7 +464,7 @@
      accepts, not a contract they are bound by. Same line, honest verb. #}
   <div class="pdf-sign">
     {% if document.status.value == "signed" %}
-    <span class="signed">Approved by {{ document.signer_name | person_name }}</span> on {{ document.signed_at | sydney_time }}
+    <span class="signed">Approved by {{ document.signer_name }}</span> on {{ document.signed_at | sydney_time }}
     {% else %}
     <span class="unsigned-line">Signature ____________________________&nbsp;&nbsp;
     Name ____________________________&nbsp;&nbsp; Date ______________</span>
@@ -484,7 +484,7 @@
   <div class="subtitle">
     Booking Agreement
     · Ref {{ booking.reference_code }} · v{{ document.version }}
-    · <span class="status status-{{ document.status.value }}">{{ "approved" if (document.type.value == "beo" and document.status.value == "signed") else document.status.value }}</span>
+    · <span class="status status-{{ document.status.value }}">{{ document.status.value }}</span>
   </div>
   {% endif %}
 
@@ -612,7 +612,7 @@
 
   {% if document.status.value == "signed" %}
   <div class="signed-note">
-    {{ "Approved" if document.type.value == "beo" else "Signed" }} by {{ document.signer_name | person_name }} on {{ document.signed_at | sydney_time }}
+    {{ "Approved" if document.type.value == "beo" else "Signed" }} by {{ document.signer_name }} on {{ document.signed_at | sydney_time }}
   </div>
   {#
     THE CLIENT'S render only. is_staff_preview is the admin reading it and

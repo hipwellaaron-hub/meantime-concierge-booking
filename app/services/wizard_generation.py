@@ -24,7 +24,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.models import Booking, BookingEvent, Document, Invoice
-from app.models.document import DocumentType
+from app.models.document import DocumentStatus, DocumentType
 from app.models.invoice import InvoiceStatus, InvoiceType
 from app.models.wizard_session import WizardSession
 from app.services import catalogue
@@ -348,7 +348,7 @@ def _build_status_text(db: Session, booking: Booking) -> str:
     agreement signed. Awaiting Event Order approval and final invoice
     payment." Derived from real state, staff-overridable on the edit
     screen."""
-    from app.services.booking import has_approved_beo, has_paid_deposit, has_signed_agreement
+    from app.services.booking import has_paid_deposit, has_signed_agreement
 
     done = []
     if has_paid_deposit(db, booking):
@@ -356,14 +356,15 @@ def _build_status_text(db: Session, booking: Booking) -> str:
     if has_signed_agreement(db, booking):
         done.append("agreement signed")
     prefix = (", ".join(done) + ". ") if done else ""
-    # "Awaiting Event Order approval" used to be a fixed suffix -- approval
-    # was not a state that existed, so the sentence could never come true.
-    # It is a state now (the client approves the Event Order at its link),
-    # and this is derived like the two facts before it. Composed into the
-    # document at generation, so the rendered Status line ALSO overrides it
-    # at render time once THIS version is approved (document.html).
-    if has_approved_beo(db, booking):
-        return f"{prefix}Event Order approved. Awaiting final invoice payment."
+    # ALWAYS "awaiting" here, and deliberately NOT derived from
+    # has_approved_beo. This runs while composing a NEW version, before
+    # create_new_version supersedes the old one -- so the previous, approved
+    # version is still current at this moment and has_approved_beo answers
+    # True about it. Deriving from that baked "Event Order approved." into
+    # every unapproved replacement (review of 7804b5d). A new version is
+    # unapproved by definition; the approved version's own Status line is
+    # overridden at render time instead (document.html), which is the only
+    # place the answer is about THIS version.
     return f"{prefix}Awaiting Event Order approval and final invoice payment."
 
 
@@ -433,6 +434,15 @@ def generate_beo_and_invoice(db: Session, session: WizardSession, *, actor: str)
     # for the same reason the staff path is: this reads the current
     # document, decides from it, and then writes.
     current = documents_service.lock_current_for_update(db, booking.id, DocumentType.beo)
+    if current is not None and current.status == DocumentStatus.signed:
+        # The client approved the version this submission replaces. The
+        # replacement is unapproved and goes out as such -- that is not
+        # "clean", whatever else is in it, because a run sheet somebody had
+        # signed off is being set aside without a human looking.
+        outstanding_items.append(
+            f"The previous Event Order (v{current.version}) was approved by "
+            f"{current.signer_name or 'the client'}; this replacement needs their approval again"
+        )
     at_risk = document_regeneration.losses(db, current, beo_content)
     if at_risk:
         # The keep set, minus anything this path must not keep. losses() is

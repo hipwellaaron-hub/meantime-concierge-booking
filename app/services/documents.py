@@ -443,16 +443,11 @@ def create_new_version(
                 actor=actor,
             )
         )
-    db.commit()
-    db.refresh(document)
-
-    if doc_type == DocumentType.agreement and previous is not None and previous.status == DocumentStatus.signed:
-        # Superseding a signed agreement voids the client's signature. If the
-        # booking was confirmed on that signature, a gate is lost: flag it
-        # for a human, never move it (see booking.flag_if_confirmed_gate_lost).
-        booking_service.flag_if_confirmed_gate_lost(db, booking, actor=actor)
     if doc_type == DocumentType.beo and previous is not None and previous.status == DocumentStatus.signed:
-        # The client had APPROVED the version this replaces. Nothing is
+        # The client had APPROVED the version this replaces. Written in the
+        # SAME transaction as the version, per this function's own rule
+        # above: a crash between the two must not leave an approval set
+        # aside with no record of it. Nothing is
         # blocked -- Event Orders change until the day -- but the trail has
         # to say an approval was set aside, because the new version goes out
         # unapproved and the floor must not treat it as agreed.
@@ -470,7 +465,14 @@ def create_new_version(
                 actor=actor,
             )
         )
-        db.commit()
+    db.commit()
+    db.refresh(document)
+
+    if doc_type == DocumentType.agreement and previous is not None and previous.status == DocumentStatus.signed:
+        # Superseding a signed agreement voids the client's signature. If the
+        # booking was confirmed on that signature, a gate is lost: flag it
+        # for a human, never move it (see booking.flag_if_confirmed_gate_lost).
+        booking_service.flag_if_confirmed_gate_lost(db, booking, actor=actor)
     return document
 
 
@@ -754,6 +756,13 @@ def sign(db: Session, document: Document, *, signer_name: str, signer_ip: str) -
     db.refresh(document, with_for_update=True)
     if document.status not in (DocumentStatus.sent, DocumentStatus.viewed):
         raise ValueError(f"cannot sign a document with status {document.status.value}")
+    if not document.is_current:
+        # The route checks is_current before calling here; this is the same
+        # check UNDER THE LOCK. A Revise landing between the two leaves a
+        # row that is still `sent` -- superseding never changes status --
+        # and signing it would record the client agreeing to a version
+        # nobody can open, and alert the venue as if they had.
+        raise ValueError("a newer version of this document has replaced the one you were sent")
 
     document.signed_at = dt.datetime.now(dt.timezone.utc)
     document.signer_name = signer_name

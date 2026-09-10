@@ -167,12 +167,18 @@ def sign_document(
         # admin instead.
         raise HTTPException(status_code=404, detail="Document not found")
     if not _is_live(document):
-        raise HTTPException(status_code=410, detail="This offer is no longer available. Please get in touch.")
+        # The same card the GET shows, not raw JSON. This is the one refusal
+        # a real client hits: staff press Revise while the approval page is
+        # open, is_current clears, and the click lands here. Before this the
+        # POST answered {"detail": "This offer is no longer available..."}
+        # while a refresh of the same link said "being updated -- you'll be
+        # sent a new link". One route, one answer.
+        return _unavailable_response(request, document, being_updated=_being_updated(db, document))
 
     signer_name = signer_name.strip()
     if not signer_name:
         raise HTTPException(status_code=422, detail="Name is required to sign")
-    if document.type == DocumentType.beo and not accept_lock:
+    if document.type == DocumentType.beo and accept_lock != "yes":
         # Approving an Event Order is three things at once, and the third
         # is the one that matters: their name, the event date as printed,
         # and that approval LOCKS this version (Aaron's ruling,
@@ -188,6 +194,12 @@ def sign_document(
     try:
         documents_service.sign(db, document, signer_name=signer_name, signer_ip=_client_ip(request))
     except ValueError as exc:
+        db.refresh(document)
+        if document.status == DocumentStatus.signed:
+            # A double-clicked button, or a retry after a slow response: the
+            # first click already did it. Show them the signed page rather
+            # than {"detail": "cannot sign a document with status signed"}.
+            return RedirectResponse(url=f"/d/{token}", status_code=303)
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     return RedirectResponse(url=f"/d/{token}", status_code=303)
