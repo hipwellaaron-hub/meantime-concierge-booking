@@ -314,3 +314,80 @@ def test_approving_alerts_the_venue_and_signing_an_agreement_does_not_cross_wire
 
     assert signed == [booking.id]
     assert len(approved) == 1, "an agreement signature fired the Event Order alert"
+
+
+# --- the form is the CLIENT's, and nobody else's ------------------------------
+
+
+def _floor_client(db, hamilton):
+    """A logged-in floor user, so the floor app's own BEO route renders."""
+    from app.services import staff_auth
+
+    staff_auth.create_or_update_staff_user(
+        db, email="floor.approve@meantime.com.au", name="Floor Approve", password="floorpassword1", role="floor"
+    )
+    app.dependency_overrides[get_db] = lambda: db
+    c = TestClient(app)
+    resp = c.post("/api/staff/login", json={"email": "floor.approve@meantime.com.au", "password": "floorpassword1"})
+    assert resp.status_code == 200, resp.text
+    return c, {"Authorization": f"Bearer {resp.json()['token']}"}
+
+
+def test_the_staff_preview_never_shows_a_live_approve_or_sign_form(admin_client, db, loft):
+    """The admin preview used to render the agreement's real Accept & Sign
+    form, and this commit had added Approve beside it. Both post to
+    /d/{token}/sign and record the signer as "client:<name>" from THAT
+    request's IP -- a staff member could sign a contract, or approve a run
+    sheet, in the client's name. The legacy-upload path is how a
+    paper-signed agreement gets on record; this is not."""
+    booking = _booking(db, loft, "Approve Staff Preview")
+    beo = _sent_beo(db, booking)
+    agreement = documents_service.create_new_version(
+        db, booking, DocumentType.agreement, generate_agreement_content(booking), actor="staff:test"
+    )
+    documents_service.mark_sent(db, agreement, actor="staff:test")
+
+    beo_preview = admin_client.get(f"/admin/bookings/{booking.id}/documents/{beo.id}/preview").text
+    agr_preview = admin_client.get(f"/admin/bookings/{booking.id}/documents/{agreement.id}/preview").text
+
+    assert "Approve this Event Order" not in beo_preview
+    assert 'name="accept_lock"' not in beo_preview
+    assert "Accept &amp; Sign" not in agr_preview
+    assert "/sign" not in beo_preview and "/sign" not in agr_preview, "a live sign action on an internal page"
+
+
+def test_the_floor_app_never_shows_the_approve_form(db, hamilton, loft):
+    """A bartender's phone. It shows the run sheet; it must not offer to
+    approve it in the client's name."""
+    try:
+        client, headers = _floor_client(db, hamilton)
+        # test_staff_app's own helper: it already knows how to make a booking
+        # the floor app will show, and guessing at change_status's signature
+        # is how the first version of this test failed.
+        from tests.test_staff_app import _confirmed_booking
+
+        contact = Contact(name="Floor Approve Client", email="floor.approve.client@example.com")
+        db.add(contact)
+        db.flush()
+        booking = _confirmed_booking(db, loft, contact, event_name="Approve Floor")
+        beo = _sent_beo(db, booking)
+
+        page = client.get(f"/api/staff/bookings/{booking.id}/beo", headers=headers)
+    finally:
+        app.dependency_overrides.clear()
+
+    assert page.status_code == 200, page.text[:300]
+    assert "Approve this Event Order" not in page.text
+    assert 'name="accept_lock"' not in page.text
+    assert "/sign" not in page.text
+
+
+def test_the_client_still_gets_the_form(client, db, loft):
+    """The gate must cost the real path nothing."""
+    booking = _booking(db, loft, "Approve Client Still")
+    beo = _sent_beo(db, booking)
+
+    page = client.get(f"/d/{beo.access_token}").text
+
+    assert "Approve this Event Order" in page
+    assert f'action="/d/{beo.access_token}/sign"' in page

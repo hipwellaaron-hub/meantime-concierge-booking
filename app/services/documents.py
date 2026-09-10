@@ -174,6 +174,13 @@ def revise(db: Session, document: Document, *, actor: str) -> Document:
     gates on is_current. It does NOT rewrite what they are holding
     underneath them, which is the thing that would be unacceptable.
 
+    An APPROVED EVENT ORDER (status signed, 2026-09-10) CAN be revised. The
+    approved version is never touched; the copy starts as a draft, goes out
+    again, and needs the client's approval again, and the trail records
+    that an approval was set aside. An Event Order changes right up to the
+    day, and this is the safe way to change one. The next paragraph is the
+    contrast that makes that a decision rather than an accident.
+
     A SIGNED AGREEMENT is refused outright (Aaron's ruling, 2026-09-08): a
     signed contract is the client's evidence of what they agreed to, and
     changing one means a new agreement they sign again, not a quiet

@@ -614,7 +614,15 @@
   <div class="signed-note">
     {{ "Approved" if document.type.value == "beo" else "Signed" }} by {{ document.signer_name | person_name }} on {{ document.signed_at | sydney_time }}
   </div>
-  {% elif not is_pdf and document.type.value == "agreement" and document.status.value in ("sent", "viewed") %}
+  {#
+    THE CLIENT'S render only. is_staff_preview is the admin reading it and
+    is_floor_app is a bartender's phone; both used to get a LIVE form that
+    posts to /d/{token}/sign and records the signer as "client:<name>" from
+    that request's IP -- a staff member could sign a contract, or approve a
+    run sheet, in the client's name. Neither surface may. The legacy-upload
+    path is how a paper-signed agreement gets on record.
+  #}
+  {% elif not is_pdf and not is_staff_preview and not is_floor_app and document.type.value == "agreement" and document.status.value in ("sent", "viewed") %}
   <form class="sign" method="post" action="/d/{{ document.access_token }}/sign">
     <input type="text" name="signer_name" placeholder="Your full name" required>
     <button type="submit">Accept &amp; Sign</button>
@@ -623,7 +631,7 @@
       signing this document electronically. We record your name, IP address, and the time of acceptance.
     </p>
   </form>
-  {% elif not is_pdf and document.type.value == "beo" and document.status.value in ("sent", "viewed") %}
+  {% elif not is_pdf and not is_staff_preview and not is_floor_app and document.type.value == "beo" and document.status.value in ("sent", "viewed") %}
   {#
     Client approval of the Event Order. Three things at once, by Aaron's
     ruling (2026-09-10): their name, the event date as printed above, and
