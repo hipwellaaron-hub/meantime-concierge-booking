@@ -47,6 +47,21 @@ def get_current(db: Session, booking_id: uuid.UUID, doc_type: DocumentType) -> D
     ).scalar_one_or_none()
 
 
+def version_rows(db: Session, booking_id: uuid.UUID, doc_type: DocumentType) -> list:
+    """Every version of this type as (id, version, status, is_current,
+    is_legacy), NEWEST FIRST. Narrow on purpose -- no content, no
+    legacy_file -- for the same reason as is_mid_revision below: the floor
+    list asks this once per booking to answer three booleans, and loading
+    whole rows meant every version's JSONB content crossing the wire for a
+    document nobody is reading there. Callers that render a version load
+    it by id afterwards."""
+    return db.execute(
+        select(Document.id, Document.version, Document.status, Document.is_current, Document.is_legacy)
+        .where(Document.booking_id == booking_id, Document.type == doc_type)
+        .order_by(Document.version.desc())
+    ).all()
+
+
 # How many times the locked read may come back empty while an unlocked
 # read still finds a current document. See lock_current_for_update.
 _LOCK_ATTEMPTS = 5
@@ -778,7 +793,32 @@ def sign(db: Session, document: Document, *, signer_name: str, signer_ip: str) -
         # cannot go.
         from app.services import notifications
 
-        notifications.notify_beo_approved(document.booking, signer_name=signer_name, version=document.version)
+        # Everything from here runs AFTER the approval is committed and
+        # must never turn it into an error for the client -- same shape
+        # as the agreement branch below. (Review of this change: a failure
+        # in the trail commit gave a 500 for an approval that already
+        # stood.) The two alert functions never raise; this guards the
+        # trail write and anything they might grow.
+        try:
+            notifications.notify_beo_approved(document.booking, signer_name=signer_name, version=document.version)
+            # The client's own receipt (Aaron, 2026-09-10): one line saying
+            # their approval and the date were received, and a sign-off.
+            # Nothing restated -- the Event Order is the confirmation, and
+            # an email that repeats it undermines the point. The outcome is
+            # recorded in the audit trail either way, best-effort.
+            not_sent = notifications.notify_beo_approval_receipt(document.booking, version=document.version)
+            db.add(
+                BookingEvent(
+                    booking_id=document.booking_id,
+                    event_type="beo_approval_receipt_sent" if not_sent is None else "beo_approval_receipt_not_sent",
+                    new_value=truncate(not_sent, 500) if not_sent else None,
+                    actor=actor,
+                )
+            )
+            db.commit()
+        except Exception:  # noqa: BLE001 -- see above; nothing here may undo a committed approval
+            db.rollback()
+            logger.exception("Post-approval alerts or trail failed for document %s", document.id)
 
     if document.type == DocumentType.agreement:
         # Signing is half of what confirms a booking; the deposit is the

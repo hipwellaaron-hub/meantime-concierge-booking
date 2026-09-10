@@ -535,6 +535,25 @@
   {% set ref = content._reference %}
   {% set client_name = (ref.get("client_name") or (booking.contact.name if booking.contact else None)) | person_name %}
 
+  {# The floor works from the APPROVED version (Aaron, 2026-09-10). This
+     line is the floor's only way of knowing which version is on screen
+     and whether staff have since revised it -- an unapproved revision is
+     something the client has not agreed to and may never have seen. #}
+  {% if is_floor_app %}
+  {% if document.status.value == "signed" %}
+  <div class="floor-version-note" style="margin:0 0 14px; padding:9px 12px; border:1px solid #c9a96e; border-radius:6px; font-size:0.95rem;">
+    <strong>Approved by the client</strong> &mdash; v{{ document.version }}, {{ document.signer_name }}{% if document.signed_at %}, {{ document.signed_at | sydney_time("%d %b %Y") }}{% endif %}.
+    {% if floor_newer_version %}A newer version (v{{ floor_newer_version.version }}, {{ floor_newer_version.status.value }}) exists and has <strong>not</strong> been approved &mdash; work from this one.{% endif %}
+    {% if floor_drift %}<div style="margin-top:6px;"><strong>The booking has changed since this version:</strong> {{ floor_drift | join("; ") }}.</div>{% endif %}
+  </div>
+  {% else %}
+  <div class="floor-version-note" style="margin:0 0 14px; padding:9px 12px; border:1px solid #999; border-radius:6px; font-size:0.95rem; color:#555;">
+    v{{ document.version }} &mdash; not yet approved by the client.
+    {% if floor_drift %}<div style="margin-top:6px;"><strong>The booking has changed since this version:</strong> {{ floor_drift | join("; ") }}.</div>{% endif %}
+  </div>
+  {% endif %}
+  {% endif %}
+
   <div class="beo-header">
     <div>
       <h1>{{ client_name or booking.event_name }} Event Order</h1>

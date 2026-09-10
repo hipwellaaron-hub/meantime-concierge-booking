@@ -310,8 +310,9 @@ def build_wizard_resume_body(booking: Booking, *, resume_url: str, due_date_disp
 
 
 def send_wizard_resume_email(booking: Booking, *, resume_url: str, due_date_display: str | None) -> None:
-    """The save-and-come-back-later email -- the one place this system
-    deliberately emails a CLIENT (explicitly requested: eight steps is a
+    """The save-and-come-back-later email -- one of two places this system
+    deliberately emails a CLIENT; the other is the Event Order approval
+    receipt below (explicitly requested: eight steps is a
     long form, and the resume link has to reach the person who needs it).
     Refuses without a valid contact email. Single attempt, raises on
     failure; the caller records the outcome and the on-screen panel
@@ -450,8 +451,9 @@ def build_floor_welcome_body(*, name: str, email: str, floor_url: str, help_emai
             "- Upcoming: the next functions, each with a green PAID or red OWING pill.",
             "- Calendar: the month at a glance (Monday and Tuesday are closed).",
             "- Tap a function for its setup / arrival / food times and to open the BEO run sheet.",
-            "- Green PAID plus a gold BEO chip means good to go. A green pill on a booking",
-            "  months away just means nothing is owing yet.",
+            "- Green PAID plus a green 'BEO' tick means good to go: the client has approved",
+            "  the run sheet. A gold BEO chip is a run sheet the client has NOT approved yet.",
+            "  A green PAID pill on a booking months away just means nothing is owing yet.",
             "",
             "It's read-only -- you can't change anything, so tap around freely.",
             "",
@@ -519,9 +521,16 @@ def notify_agreement_signed(booking: Booking, *, signer_name: str, deposit_paid:
         logger.exception("Agreement-signed alert failed for booking %s", booking.id)
 
 
+def _header_safe(value: str | None) -> str:
+    """One line. A pasted event name can carry a CR/LF; EmailMessage
+    refuses such a header outright, which cost BOTH approval emails
+    rather than one character (review, 2026-09-10)."""
+    return " ".join(str(value or "").split())
+
+
 def build_beo_approved_subject(booking: Booking) -> str:
     date_str = booking.event_date.strftime("%d %b") if booking.event_date else "date TBD"
-    return f"Event Order approved: {booking.event_name} — {date_str}"
+    return f"Event Order approved: {_header_safe(booking.event_name)} — {date_str}"
 
 
 def build_beo_approved_body(booking: Booking, *, signer_name: str, version: int) -> str:
@@ -541,9 +550,14 @@ def build_beo_approved_body(booking: Booking, *, signer_name: str, version: int)
 
 
 def send_beo_approved_email(booking: Booking, *, signer_name: str, version: int, dashboard_base_url: str) -> None:
+    # The BOOKING's venue, not the Hamilton constant (the 2026-09-03 rule):
+    # for a venue with no profile this raises LookupError, which
+    # notify_beo_approved logs rather than mis-addressing the alert.
+    from app.services import venue_profile
+
     message = EmailMessage()
     message["From"] = f"Meantime Concierge <{DIGEST_GMAIL_ADDRESS}>"
-    message["To"] = ENQUIRY_NOTIFICATION_RECIPIENT
+    message["To"] = venue_profile.for_booking(booking).contact_email
     message["Subject"] = build_beo_approved_subject(booking)
     message["X-Concierge-Booking-Url"] = f"{dashboard_base_url}/admin/bookings/{booking.id}"
     message.set_content(build_beo_approved_body(booking, signer_name=signer_name, version=version))
@@ -565,6 +579,94 @@ def notify_beo_approved(booking: Booking, *, signer_name: str, version: int) -> 
         )
     except Exception:  # noqa: BLE001 -- an alert must never take a real approval down with it
         logger.exception("Event-Order-approved alert failed for booking %s", booking.id)
+
+
+def build_beo_approval_receipt_subject(booking: Booking) -> str:
+    return f"Event Order approval received: {_header_safe(booking.event_name)}"
+
+
+def build_beo_approval_receipt_body(booking: Booking, *, version: int) -> str:
+    """Plain text, TO THE CLIENT. One line and a sign-off (Aaron,
+    2026-09-10): that their approval was received, and the date it is for.
+    Nothing from the Event Order is restated -- the Event Order is the
+    confirmation, and an email that repeats it undermines the point. The
+    version is deliberately absent: it is a number for the trail, not for
+    the client. Sign-off from the venue's profile, never policy.VENUE_*
+    (the 2026-09-03 rule)."""
+    from app.services import venue_profile
+    from app.services.document_generation import format_date_long
+
+    profile = venue_profile.for_booking(booking)
+    contact = booking.contact
+    name = (contact.name or "").strip() if contact else ""
+    greeting = f"Hi {format_person_name(name)}," if name else "Hi,"
+    # THE date, in the form the Event Order they just approved prints it
+    # ("Friday, 14 May 2027") -- with its year; an approval can land a year
+    # out. If the booking has no date there is nothing to confirm, and the
+    # line says so instead of reading as if it did.
+    if booking.event_date is not None:
+        line = (
+            f"We've received your approval of the Event Order for {booking.event_name} "
+            f"on {format_date_long(booking.event_date)}. Thank you."
+        )
+    else:
+        line = (
+            f"We've received your approval of the Event Order for {booking.event_name}. Thank you. "
+            "The event date is still to be confirmed with us."
+        )
+    lines = [
+        greeting,
+        "",
+        line,
+        "",
+        profile.contact_name,
+        profile.trading_name,
+    ]
+    return "\n".join(lines)
+
+
+def send_beo_approval_receipt_email(booking: Booking, *, version: int) -> None:
+    """The second place this system deliberately emails a CLIENT (the
+    wizard resume link is the first). Refuses without a valid contact
+    email. Single attempt, raises on failure; the caller records the
+    outcome."""
+    from app.services import venue_profile
+
+    contact = booking.contact
+    if contact is None or not is_valid_email(contact.email):
+        raise GmailSendNotConfigured("this booking has no contact with a valid email address on file")
+    profile = venue_profile.for_booking(booking)
+
+    message = EmailMessage()
+    message["From"] = f"{profile.trading_name} <{DIGEST_GMAIL_ADDRESS}>"
+    message["To"] = contact.email
+    message["Reply-To"] = profile.contact_email
+    message["Subject"] = build_beo_approval_receipt_subject(booking)
+    message.set_content(build_beo_approval_receipt_body(booking, version=version))
+    _send_via_gmail_smtp(message)
+
+
+def notify_beo_approval_receipt(booking: Booking, *, version: int) -> str | None:
+    """Sends the client their receipt. Returns None when it went, otherwise
+    the reason it did not -- for the trail, never for the client, whose
+    approval stands regardless. Never raises."""
+    if not is_gmail_smtp_configured():
+        reason = "Gmail SMTP not configured"
+        logger.warning("Event-Order approval receipt not sent for %s: %s", booking.reference_code, reason)
+        return reason
+    try:
+        send_beo_approval_receipt_email(booking, version=version)
+    except LookupError:
+        # venue_profile.for_booking: this venue has no profile, so there is
+        # no name to sign the receipt off with. The trail gets a reason in
+        # the receipt's own terms, not the AI drafter's.
+        reason = "no venue profile for this booking's venue, so nothing to sign the receipt off from"
+        logger.warning("Event-Order approval receipt not sent for %s: %s", booking.reference_code, reason)
+        return reason
+    except Exception as exc:  # noqa: BLE001 -- a receipt must never take a real approval down with it
+        logger.exception("Event-Order approval receipt failed for booking %s", booking.id)
+        return str(exc) or exc.__class__.__name__
+    return None
 
 
 def notify_deposit_paid(booking: Booking, *, amount: Decimal, agreement_signed: bool, now_confirmed: bool) -> None:

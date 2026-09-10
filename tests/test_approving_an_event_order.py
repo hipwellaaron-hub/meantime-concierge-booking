@@ -552,3 +552,237 @@ def test_regenerate_asks_before_setting_an_approval_aside(admin_client, db, loft
 
     assert "was approved by Caitlin Hobday" in after
     assert "sets that approval aside" in after
+
+
+# --- the client's receipt ---------------------------------------------------------
+#
+# Aaron, 2026-09-10: "yes, but a short one. Just that we've received their
+# approval and the date, nothing restated. The Event Order is the
+# confirmation, an email that repeats it undermines the point. One line and
+# a sign-off."
+
+
+@pytest.fixture()
+def outbox(monkeypatch):
+    """Gmail 'configured', and the one function that talks to it captured."""
+    import dataclasses
+
+    from app.services import notifications, venue_profile
+
+    sent = []
+    monkeypatch.setattr(notifications, "is_gmail_smtp_configured", lambda: True)
+    monkeypatch.setattr(notifications, "DIGEST_GMAIL_ADDRESS", "concierge@example.com")
+    monkeypatch.setattr(notifications, "_send_via_gmail_smtp", lambda message: sent.append(message))
+    # A profile whose values differ from policy.VENUE_*, so a builder that
+    # quietly reads the Hamilton constants instead of the venue's profile
+    # (the 2026-09-03 rule) fails here rather than passing by coincidence.
+    hamilton = venue_profile._PROFILES["hamilton"]
+    monkeypatch.setitem(
+        venue_profile._PROFILES,
+        "hamilton",
+        dataclasses.replace(
+            hamilton, contact_name="Ruby", trading_name="Meantime Test Venue", contact_email="venue@example.com"
+        ),
+    )
+    return sent
+
+
+def _events(db, booking, prefix="beo_approval_receipt"):
+    return [
+        e for e in db.query(BookingEvent).filter_by(booking_id=booking.id).all() if e.event_type.startswith(prefix)
+    ]
+
+
+def test_the_client_gets_a_one_line_receipt_and_the_trail_says_so(client, db, loft, outbox):
+    booking = _booking(db, loft, "Approve Receipt")
+
+    sent = _sent_beo(db, booking)
+    client.post(f"/d/{sent.access_token}/sign", data={"signer_name": "Caitlin Hobday", "accept_lock": "yes"})
+
+    receipts = [m for m in outbox if m["To"] == booking.contact.email]
+    assert len(receipts) == 1, [(m["To"], m["Subject"]) for m in outbox]
+    message = receipts[0]
+    body = message.get_content()
+
+    from app.services.document_generation import format_date_long
+
+    assert message["Subject"] == "Event Order approval received: Approve Receipt"
+    assert message["From"] == "Meantime Test Venue <concierge@example.com>", "the venue's name, from its profile"
+    assert message["Reply-To"] == "venue@example.com"
+    assert body.splitlines()[0] == "Hi Approving Client,"
+    # THE date, exactly as the Event Order they approved prints it -- with the year.
+    the_date = format_date_long(dt.date(2027, 5, 14))
+    assert "2027" in the_date
+    assert f"We've received your approval of the Event Order for Approve Receipt on {the_date}. Thank you." in body
+    assert body.rstrip().splitlines()[-2:] == ["Ruby", "Meantime Test Venue"], "the sign-off is the venue's"
+    # ONE line. Nothing from the run sheet is restated.
+    content_lines = [ln for ln in body.splitlines() if ln.strip() and not ln.startswith("Hi ")]
+    assert len(content_lines) == 3, content_lines  # the sentence, and the two sign-off lines
+    for restated in ("Platter", "Pizza", "$", "Bar", "Setup", "v1", "version"):
+        assert restated not in body, f"the receipt restated the Event Order: {restated!r}"
+
+    events = _events(db, booking)
+    assert [e.event_type for e in events] == ["beo_approval_receipt_sent"]
+    assert events[0].actor == "client:Caitlin Hobday"
+
+
+def test_no_receipt_when_gmail_is_not_configured_and_the_approval_stands(client, db, loft, monkeypatch):
+    from app.services import notifications
+
+    monkeypatch.setattr(notifications, "is_gmail_smtp_configured", lambda: False)
+    booking = _booking(db, loft, "Approve Receipt Unconfigured")
+    sent = _sent_beo(db, booking)
+
+    resp = client.post(f"/d/{sent.access_token}/sign", data={"signer_name": "Caitlin Hobday", "accept_lock": "yes"}, follow_redirects=False)
+
+    assert resp.status_code == 303
+    db.refresh(sent)
+    assert sent.status == DocumentStatus.signed
+    events = _events(db, booking)
+    assert [e.event_type for e in events] == ["beo_approval_receipt_not_sent"]
+    assert "not configured" in events[0].new_value
+
+
+def test_no_receipt_without_a_valid_email_and_the_reason_is_on_the_trail(client, db, loft, outbox):
+    booking = _booking(db, loft, "Approve Receipt No Email")
+    document = _sent_beo(db, booking)  # sent while the email was good...
+    booking.contact.email = "not-an-email"  # ...and edited to rubbish afterwards
+    db.commit()
+
+    resp = client.post(f"/d/{document.access_token}/sign", data={"signer_name": "Caitlin Hobday", "accept_lock": "yes"}, follow_redirects=False)
+
+    assert resp.status_code == 303
+    assert [m["To"] for m in outbox if m["To"] == "not-an-email"] == []
+    events = _events(db, booking)
+    assert [e.event_type for e in events] == ["beo_approval_receipt_not_sent"]
+    assert "valid email" in events[0].new_value
+
+
+def test_a_receipt_that_fails_to_send_never_undoes_the_approval(client, db, loft, monkeypatch):
+    from app.services import notifications
+
+    monkeypatch.setattr(notifications, "is_gmail_smtp_configured", lambda: True)
+
+    def explode(message):
+        raise notifications.GmailSendRejected("Gmail rejected the email: 535 bad password")
+
+    monkeypatch.setattr(notifications, "_send_via_gmail_smtp", explode)
+    booking = _booking(db, loft, "Approve Receipt Fails")
+    sent = _sent_beo(db, booking)
+
+    resp = client.post(f"/d/{sent.access_token}/sign", data={"signer_name": "Caitlin Hobday", "accept_lock": "yes"}, follow_redirects=False)
+
+    assert resp.status_code == 303
+    db.refresh(sent)
+    assert sent.status == DocumentStatus.signed and sent.signer_name == "Caitlin Hobday"
+    events = _events(db, booking)
+    assert [e.event_type for e in events] == ["beo_approval_receipt_not_sent"]
+    assert "535 bad password" in events[0].new_value
+
+
+def test_signing_an_agreement_sends_the_client_no_receipt(client, db, loft, outbox):
+    booking = _booking(db, loft, "Approve Receipt Agreement")
+    agreement = documents_service.create_new_version(
+        db, booking, DocumentType.agreement, generate_agreement_content(booking), actor="staff:test"
+    )
+    documents_service.mark_sent(db, agreement, actor="staff:test")
+
+    client.post(f"/d/{agreement.access_token}/sign", data={"signer_name": "Caitlin Hobday"})
+
+    assert [m for m in outbox if m["To"] == booking.contact.email] == []
+    assert _events(db, booking) == []
+
+
+def test_a_pasted_multi_line_event_name_does_not_cost_the_emails(client, db, loft, outbox):
+    """EmailMessage refuses a CR/LF in a header outright; before this a
+    two-line event name meant neither the venue alert nor the receipt
+    went, and the venue never knew."""
+    booking = _booking(db, loft, "Approve Two Lines")
+    booking.event_name = "Party" + chr(13) + chr(10) + "Bcc: evil@example.com"
+    db.commit()
+    sent = _sent_beo(db, booking)
+
+    client.post(f"/d/{sent.access_token}/sign", data={"signer_name": "Caitlin Hobday", "accept_lock": "yes"})
+
+    subjects = [m["Subject"] for m in outbox]
+    assert len(subjects) == 2, subjects  # the venue alert and the client receipt
+    assert all("Party Bcc: evil@example.com" in s and chr(10) not in s for s in subjects)
+    assert [e.event_type for e in _events(db, booking)] == ["beo_approval_receipt_sent"]
+
+
+def test_a_failure_after_the_approval_commit_never_reaches_the_client(client, db, loft, monkeypatch):
+    """The approval is committed before any alert or trail write. A bug
+    in that tail must log, not turn a standing approval into a 500."""
+    from app.services import notifications
+
+    def boom(booking, **kw):
+        raise RuntimeError("receipt path bug")
+
+    monkeypatch.setattr(notifications, "notify_beo_approval_receipt", boom)
+    booking = _booking(db, loft, "Approve Tail Bug")
+    sent = _sent_beo(db, booking)
+
+    resp = client.post(f"/d/{sent.access_token}/sign", data={"signer_name": "Caitlin Hobday", "accept_lock": "yes"}, follow_redirects=False)
+
+    assert resp.status_code == 303
+    db.refresh(sent)
+    assert sent.status == DocumentStatus.signed and sent.signer_name == "Caitlin Hobday"
+
+
+def test_a_venue_with_no_profile_records_why_and_the_approval_stands(client, db, loft, outbox, monkeypatch):
+    from app.services import venue_profile
+
+    def no_profile(booking):
+        raise LookupError("No AI venue profile for venue 'elsewhere'; nothing will draft for it.")
+
+    monkeypatch.setattr(venue_profile, "for_booking", no_profile)
+    booking = _booking(db, loft, "Approve No Profile")
+    sent = _sent_beo(db, booking)
+
+    resp = client.post(f"/d/{sent.access_token}/sign", data={"signer_name": "Caitlin Hobday", "accept_lock": "yes"}, follow_redirects=False)
+
+    assert resp.status_code == 303
+    db.refresh(sent)
+    assert sent.status == DocumentStatus.signed
+    assert outbox == [], "neither the venue alert nor the receipt may be mis-addressed to Hamilton"
+    events = _events(db, booking)
+    assert [e.event_type for e in events] == ["beo_approval_receipt_not_sent"]
+    assert "no venue profile" in events[0].new_value
+    assert "draft" not in events[0].new_value, "the drafter's wording is not a receipt reason"
+
+
+def test_the_venue_alert_goes_to_the_bookings_venue(client, db, loft, outbox):
+    booking = _booking(db, loft, "Approve Alert Venue")
+    sent = _sent_beo(db, booking)
+
+    client.post(f"/d/{sent.access_token}/sign", data={"signer_name": "Caitlin Hobday", "accept_lock": "yes"})
+
+    alerts = [m for m in outbox if m["Subject"].startswith("Event Order approved:")]
+    assert [m["To"] for m in alerts] == ["venue@example.com"], "the profile's address, not the Hamilton constant"
+
+
+def test_a_blank_contact_name_greets_without_a_dangling_comma(client, db, loft, outbox):
+    booking = _booking(db, loft, "Approve Blank Name")
+    booking.contact.name = "   "
+    db.commit()
+    sent = _sent_beo(db, booking)
+
+    client.post(f"/d/{sent.access_token}/sign", data={"signer_name": "Caitlin Hobday", "accept_lock": "yes"})
+
+    receipt = next(m for m in outbox if m["To"] == booking.contact.email)
+    assert receipt.get_content().splitlines()[0] == "Hi,"
+
+
+def test_a_dateless_booking_gets_an_honest_line_not_a_date(client, db, loft, outbox):
+    """Approval is name + accepting THE DATE + lock. With no date on the
+    booking the receipt must not read as if one was confirmed."""
+    booking = _booking(db, loft, "Approve No Date")
+    sent = _sent_beo(db, booking)
+    booking.event_date = None
+    db.commit()
+
+    client.post(f"/d/{sent.access_token}/sign", data={"signer_name": "Caitlin Hobday", "accept_lock": "yes"})
+
+    body = next(m for m in outbox if m["To"] == booking.contact.email).get_content()
+    assert "The event date is still to be confirmed with us." in body
+    assert " on " not in body.splitlines()[2], body.splitlines()[2]

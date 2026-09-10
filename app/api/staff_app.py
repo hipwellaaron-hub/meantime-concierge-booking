@@ -26,6 +26,7 @@ from app.models.staff_user import StaffUser
 from app.rate_limit import InMemoryRateLimiter, rate_limit_dependency
 from app.services import documents as documents_service
 from app.services import staff_auth
+from app.services.document_generation import format_date_long
 from app.services.pdf import render_html_to_pdf
 from app.templating import templates
 
@@ -84,9 +85,62 @@ def _payment_status(db: Session, booking: Booking) -> str:
     return "paid" if has_paid and not has_unpaid else "outstanding"
 
 
-def _beo_ready(db: Session, booking: Booking) -> bool:
-    current = documents_service.get_current(db, booking.id, DocumentType.beo)
-    return current is not None and current.status != DocumentStatus.draft
+def _floor_beo(db: Session, booking: Booking):
+    """(the version the floor works from, the newer version it must not),
+    as narrow (id, version, status, is_current, is_legacy) rows -- one
+    query per booking, no document content (see documents.version_rows).
+
+    Approved beats current (Aaron, 2026-09-10): the floor works from what
+    the client actually agreed to. If staff have revised it since, that
+    revision -- draft, sent or viewed -- is something the client has not
+    approved and may never have seen, so the team gets the approved one
+    and is told a newer version exists. With no approval anywhere, the
+    current non-draft version is what it always was.
+
+    A legacy row is never the working version: its content is a
+    placeholder for an uploaded PDF, and the floor was the one surface
+    still rendering that placeholder (the admin preview refuses it, the
+    public link 404s). No writer in the repo creates a legacy Event Order,
+    so this is the defensive path, stated rather than assumed."""
+    rows = documents_service.version_rows(db, booking.id, DocumentType.beo)
+    approved = next((r for r in rows if r.status == DocumentStatus.signed and not r.is_legacy), None)
+    current = next((r for r in rows if r.is_current), None)
+    if approved is not None:
+        newer = current if current is not None and current.id != approved.id else None
+        return approved, newer
+    if current is not None and current.status != DocumentStatus.draft and not current.is_legacy:
+        return current, None
+    return None, None
+
+
+def _floor_drift(document: Document, booking: Booking) -> list[str]:
+    """Facts on the booking that differ from the snapshot this version was
+    built from. The floor works from an APPROVED version, which can be
+    older than the booking: a date, room or guest-count change made after
+    approval is invisible on the run sheet itself (the header band reads
+    the live name and rooms, the rest is the snapshot), so the floor note
+    says what moved. Review finding of 2026-09-10."""
+    content = document.content or {}
+    ref = content.get("_reference") or {}
+    timeline = content.get("event_timeline") or {}
+    drift: list[str] = []
+    live_date = format_date_long(booking.event_date) if booking.event_date else None
+    then_date = timeline.get("event_date_display")
+    if live_date and then_date and then_date != live_date:
+        drift.append(f"the date is now {live_date} (this version was built for {then_date})")
+    then_rooms = ref.get("space_name")
+    if then_rooms and then_rooms != booking.all_space_names:
+        drift.append(f"the rooms are now {booking.all_space_names} (this version says {then_rooms})")
+    then_counts = (ref.get("adult_count"), ref.get("child_count"))
+    if None not in then_counts and then_counts != (booking.adult_count, booking.child_count):
+        drift.append(
+            f"guests are now {booking.adult_count} adults and {booking.child_count} under 18 "
+            f"(this version says {then_counts[0]} and {then_counts[1]})"
+        )
+    then_name = ref.get("event_name")
+    if then_name and then_name != booking.event_name:
+        drift.append(f"the event is now named {booking.event_name!r} (this version says {then_name!r})")
+    return drift
 
 
 def _booking_payload(db: Session, booking: Booking) -> dict:
@@ -94,6 +148,7 @@ def _booking_payload(db: Session, booking: Booking) -> dict:
     for child in booking.linked_bookings:
         if child.status in FLOOR_VISIBLE_STATUSES:
             spaces.append(child.space.name)
+    working, newer = _floor_beo(db, booking)
     return {
         "id": str(booking.id),
         "date": booking.event_date.isoformat() if booking.event_date else None,
@@ -106,7 +161,12 @@ def _booking_payload(db: Session, booking: Booking) -> dict:
         "adults": booking.adult_count,
         "kids": booking.child_count,
         "status": booking.status.value,
-        "beo_ready": _beo_ready(db, booking),
+        "beo_ready": working is not None,
+        # Whether the version the floor will open is the client's approved
+        # one, and -- if staff have since revised it -- the version they
+        # must NOT work from, named so the screen can say so.
+        "beo_approved": working is not None and working.status == DocumentStatus.signed,
+        "beo_newer_unapproved": {"version": newer.version, "status": newer.status.value} if newer is not None else None,
         "payment_status": _payment_status(db, booking),
     }
 
@@ -166,11 +226,16 @@ def booking_detail(
     return payload
 
 
-def _get_finalised_beo_or_404(db: Session, booking: Booking) -> Document:
-    current = documents_service.get_current(db, booking.id, DocumentType.beo)
-    if current is None or current.status == DocumentStatus.draft:
+def _get_floor_beo_or_404(db: Session, booking: Booking) -> tuple[Document, object | None]:
+    """The full Document to render, and the narrow row of the newer
+    unapproved version if there is one."""
+    working, newer = _floor_beo(db, booking)
+    if working is None:
         raise HTTPException(status_code=404, detail="No finalised BEO for this booking")
-    return current
+    document = db.get(Document, working.id)
+    if document is None:  # pragma: no cover -- the row was read a moment ago
+        raise HTTPException(status_code=404, detail="No finalised BEO for this booking")
+    return document, newer
 
 
 @router.get("/bookings/{booking_id}/beo", response_class=HTMLResponse)
@@ -186,9 +251,17 @@ def booking_beo(
     is_floor_app shows the internal kitchen/bar notes -- this is exactly
     the staff surface they exist for."""
     booking = _get_visible_booking_or_404(db, booking_id)
-    document = _get_finalised_beo_or_404(db, booking)
+    document, newer = _get_floor_beo_or_404(db, booking)
     return templates.TemplateResponse(
-        request, "document.html", {"document": document, "booking": booking, "is_floor_app": True}
+        request,
+        "document.html",
+        {
+            "document": document,
+            "booking": booking,
+            "is_floor_app": True,
+            "floor_newer_version": newer,
+            "floor_drift": _floor_drift(document, booking),
+        },
     )
 
 
@@ -202,7 +275,7 @@ def booking_beo_pdf(
     """Download/share copy: the CLEAN client render, without internal
     notes -- a shared PDF can leave the team."""
     booking = _get_visible_booking_or_404(db, booking_id)
-    document = _get_finalised_beo_or_404(db, booking)
+    document, _newer = _get_floor_beo_or_404(db, booking)
     html = templates.get_template("document.html").render(document=document, booking=booking, is_pdf=True)
     filename = f"{booking.reference_code}-BEO-v{document.version}.pdf"
     return Response(

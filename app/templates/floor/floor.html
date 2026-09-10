@@ -48,6 +48,8 @@
   .pill.paid { background: rgba(63,157,94,0.18); color: var(--green); border: 1px solid var(--green); }
   .pill.owing { background: rgba(207,78,53,0.18); color: var(--red); border: 1px solid var(--red); }
   .pill.beo { background: rgba(201,169,110,0.14); color: var(--gold); border: 1px solid var(--gold-dim); }
+  /* An APPROVED Event Order reads as done, the same green as PAID (Aaron, 2026-09-10). */
+  .pill.beo.approved { background: rgba(63,157,94,0.18); color: var(--green); border: 1px solid var(--green); }
 
   .cal-head { display: flex; justify-content: space-between; align-items: center; margin: 12px 0 6px; }
   .cal-head .month { font-family: var(--font-head); font-size: 1.05rem; }
@@ -170,6 +172,12 @@
   function isoOf(d) { return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); }
   function isoToday() { return isoOf(new Date()); }
   function displayDate(iso) { var p = iso.split("-"); return p[2] + "-" + p[1] + "-" + p[0]; }
+  // Every server string that reaches innerHTML goes through this. The
+  // event name is text a member of the public typed into the enquiry
+  // form, and this page holds a staff token (review, 2026-09-10).
+  function esc(s) {
+    return String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  }
   function time12(hm) {
     if (!hm) return "";
     var h = parseInt(hm.slice(0, 2), 10), m = hm.slice(3, 5);
@@ -194,7 +202,7 @@
 
   function badgeHtml(b) {
     return '<div class="badges">' +
-      (b.beo_ready ? '<span class="pill beo">BEO</span>' : "") +
+      (b.beo_ready ? (b.beo_approved ? '<span class="pill beo approved">BEO &#10003;</span>' : '<span class="pill beo">BEO</span>') : "") +
       (b.payment_status === "paid" ? '<span class="pill paid">PAID</span>' : '<span class="pill owing">OWING</span>') +
       "</div>";
   }
@@ -203,8 +211,8 @@
     var card = document.createElement("button");
     card.className = "event-card";
     card.innerHTML =
-      '<div class="row1"><span class="name">' + b.event_name + "</span>" + badgeHtml(b) + "</div>" +
-      '<div class="meta">' + displayDate(b.date) + " · " + b.spaces.join(" + ") + " · " +
+      '<div class="row1"><span class="name">' + esc(b.event_name) + "</span>" + badgeHtml(b) + "</div>" +
+      '<div class="meta">' + displayDate(b.date) + " · " + esc(b.spaces.join(" + ")) + " · " +
       time12(b.start_time) + "–" + time12(b.end_time) + " · " + b.adults + " adults" +
       (b.kids ? ", " + b.kids + " kids" : "") + "</div>";
     card.addEventListener("click", function () { openDetail(b); });
@@ -284,17 +292,22 @@
       function kv(k, v) { return v ? '<div class="kv"><span class="k">' + k + "</span><span>" + v + "</span></div>" : ""; }
       sheet.innerHTML =
         '<div class="sheet-inner">' +
-        '<h2>' + b.event_name + "</h2>" +
+        '<h2>' + esc(b.event_name) + "</h2>" +
         '<div style="margin:4px 0 10px;">' + badgeHtml(b) + "</div>" +
         kv("Date", displayDate(b.date)) +
-        kv("Space", b.spaces.join(" + ")) +
-        kv("Type", b.event_type) +
+        kv("Space", esc(b.spaces.join(" + "))) +
+        kv("Type", esc(b.event_type)) +
         kv("Event", time12(b.start_time) + " – " + time12(b.end_time)) +
         kv("Guests", b.adults + " adults" + (b.kids ? ", " + b.kids + " kids" : "")) +
         kv("Setup access", b.setup_access_time ? time12(b.setup_access_time) + (b.setup_access_confirmed ? " (confirmed)" : " (requested)") : null) +
         kv("Guests arrive", b.guest_arrival_time ? time12(b.guest_arrival_time) : null) +
         kv("Food service", b.food_service_time ? time12(b.food_service_time) : null) +
-        (b.beo_ready ? '<button class="primary" id="open-beo" style="margin-top:16px;">Open BEO</button>' :
+        (b.beo_ready ? '<button class="primary" id="open-beo" style="margin-top:16px;">Open BEO</button>' +
+          (b.beo_approved
+            ? '<div class="empty" style="padding:8px 0 0;">Approved by the client' +
+              (b.beo_newer_unapproved ? " &middot; a newer v" + b.beo_newer_unapproved.version + " (" + b.beo_newer_unapproved.status + ") is not approved yet &mdash; the approved one opens" : "") +
+              "</div>"
+            : '<div class="empty" style="padding:8px 0 0;">Not yet approved by the client.</div>') :
           '<div class="empty" style="padding:14px 0 0;">BEO not finalised yet.</div>') +
         '<button class="sheet-close" id="sheet-close">Close</button>' +
         "</div>";
