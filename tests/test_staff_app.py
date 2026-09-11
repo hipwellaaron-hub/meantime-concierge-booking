@@ -589,7 +589,15 @@ def _entrance_booking(db, contact):
     )
     db.add(deck)
     db.flush()
-    return _confirmed_booking(db, deck, contact, event_name="Entrance Function")
+    booking = _confirmed_booking(db, deck, contact, event_name="Entrance Function")
+    # It needs a FINALISED Event Order, or /beo answers 404 for the ordinary
+    # "no run sheet yet" reason and the assertion below proves nothing --
+    # review caught exactly that: deleting the venue predicate left it green.
+    document = documents_service.create_new_version(
+        db, booking, DocumentType.beo, _beo_content(booking), actor="test"
+    )
+    documents_service.mark_sent(db, document, actor="test")
+    return booking
 
 
 def test_the_floor_does_not_open_another_venues_booking_by_id(client, db, contact, loft, floor_user):
@@ -597,7 +605,19 @@ def test_the_floor_does_not_open_another_venues_booking_by_id(client, db, contac
     elsewhere = _entrance_booking(db, contact)
 
     assert client.get(f"/api/staff/bookings/{elsewhere.id}", headers=headers).status_code == 404
+
+
+def test_the_floor_does_not_open_another_venues_run_sheet(client, db, contact, loft, floor_user):
+    """Separate from the detail test on purpose. With them in one test the
+    detail assertion fails first and these two never run, so deleting the
+    predicate still showed a caught mutation while these lines had never
+    been exercised. One assertion per surface, each independently
+    load-bearing."""
+    headers = _login(client)
+    elsewhere = _entrance_booking(db, contact)
+
     assert client.get(f"/api/staff/bookings/{elsewhere.id}/beo", headers=headers).status_code == 404
+    assert client.get(f"/api/staff/bookings/{elsewhere.id}/beo.pdf", headers=headers).status_code == 404
 
 
 def test_the_floor_still_opens_its_own_venues_booking(client, db, contact, loft, floor_user):
