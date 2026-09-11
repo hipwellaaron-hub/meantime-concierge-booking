@@ -23,7 +23,7 @@ import logging
 import uuid
 from collections.abc import Iterable
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models import Booking, BookingEvent, Document
@@ -430,10 +430,23 @@ def create_new_version(
             f"the current {doc_type.value} is a legacy record of what was signed in iVvy -- "
             "it can't be regenerated over; the signed original stands"
         )
-    next_version = 1
+    # Count from the highest version that EXISTS, not from the current one.
+    # Those are the same number whenever a current version exists, and they
+    # differ in exactly the case that used to be unrecoverable: a booking
+    # left with NO current version (a draft deleted after it superseded a
+    # sent one, before 2026-09-11) counted from nothing, retried version 1,
+    # and hit uq_document_booking_type_version. The booking page only offers
+    # Delete on the CURRENT document, so there was no way back through the
+    # app -- that booking could never be given another document at all.
+    highest = db.execute(
+        select(func.max(Document.version)).where(
+            Document.booking_id == booking.id,
+            Document.type == doc_type,
+        )
+    ).scalar()
+    next_version = (highest or 0) + 1
     if previous is not None:
         previous.is_current = False
-        next_version = previous.version + 1
         db.flush()  # clear the partial-unique-index slot before the new current row claims it
 
     document = Document(
@@ -812,6 +825,7 @@ def delete_draft(db: Session, document: Document, *, actor: str) -> None:
     # exactly where it was, which is proven not to deadlock.
     booking_id, doc_type = document.booking_id, document.type
     deleted_version = document.version
+    restored = None
 
     db.add(
         BookingEvent(
@@ -894,6 +908,18 @@ def delete_draft(db: Session, document: Document, *, actor: str) -> None:
                 )
             )
     db.commit()
+
+    # NO auto-confirm call here, and the reason is worth writing down.
+    # Review found that restoring a SIGNED agreement hands back both halves
+    # of the confirmation gate while nothing re-checks it, leaving a booking
+    # at tentative holding a signed agreement and a paid deposit. That was
+    # real against the first version of this fix, which restored after a
+    # REGENERATE too. Making the restore Revise-only closed it: revise()
+    # refuses a signed agreement outright (see its own guard above), so a
+    # restored agreement can never be a signed one. An approved Event Order
+    # CAN be revised and restored, and the confirmation gate does not read
+    # Event Orders. Adding the call anyway would be a guard with nothing
+    # behind it, which is the thing this codebase does not do.
 
 
 def sign(db: Session, document: Document, *, signer_name: str, signer_ip: str) -> Document:

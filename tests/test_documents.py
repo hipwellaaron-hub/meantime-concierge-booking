@@ -714,6 +714,50 @@ def test_an_earlier_revise_in_the_chain_does_not_excuse_a_later_regenerate(db, b
     )
 
 
+def test_a_booking_with_no_current_version_can_still_get_another(db, booking):
+    """The worst state in the list: before this, a booking left with no
+    current version could never be given another document through the app.
+    Versions were numbered from the CURRENT row, so with none it retried
+    version 1 and hit the uniqueness constraint -- and the Delete button
+    only ever appears on the current document, so there was no way back.
+
+    The broken state is built here the way the old code left it, by hand,
+    because no supported path produces it any more."""
+    v1 = create_new_version(db, booking, DocumentType.agreement, generate_agreement_content(booking), actor="test")
+    mark_sent(db, v1, actor="test")
+    v2 = create_new_version(db, booking, DocumentType.agreement, generate_agreement_content(booking), actor="test")
+    delete_draft(db, v2, actor="test")  # a Regenerate: leaves nothing current
+    assert get_current(db, booking.id, DocumentType.agreement) is None
+
+    v3 = create_new_version(db, booking, DocumentType.agreement, generate_agreement_content(booking), actor="test")
+
+    # 2, not 3: the deleted draft gave its number back, and v1 is the
+    # highest that still exists. The point is that it does not retry 1 and
+    # collide with v1, which is what left the booking unrecoverable.
+    assert v3.version == 2
+    assert v3.is_current is True
+    assert get_current(db, booking.id, DocumentType.agreement).id == v3.id
+    assert {d.version for d in booking.documents if d.type == DocumentType.agreement} == {1, 2}
+
+
+def test_revise_refuses_a_signed_agreement_so_a_restore_can_never_re_arm_one(db, booking):
+    """This is what makes the confirmation-gate branch unnecessary rather
+    than missing. Review proved that restoring a SIGNED agreement gives
+    back both halves of the confirmation gate with nothing re-checking it.
+    That was real while the restore also fired after a Regenerate. It
+    cannot happen now, and this is the assertion that keeps it that way:
+    if revise ever starts accepting a signed agreement, this fails and the
+    gate question comes back with it."""
+    agreement = create_new_version(
+        db, booking, DocumentType.agreement, generate_agreement_content(booking), actor="test"
+    )
+    agreement = mark_sent(db, agreement, actor="test")
+    agreement = sign(db, agreement, signer_name="Pat Wilson", signer_ip="203.0.113.9")
+
+    with pytest.raises(ValueError, match="has been signed"):
+        revise(db, agreement, actor="staff:aaron")
+
+
 def test_deleting_a_first_draft_restores_nothing(db, booking):
     """There is no earlier version to come back to, and that is fine --
     the booking simply has no Event Order again. The guard must not invent
