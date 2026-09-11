@@ -255,7 +255,7 @@ def test_concurrent_confirmations_same_space_time_only_one_succeeds():
         session = TestSessionLocal()
         try:
             booking = Booking(
-                space_id=space_id, event_date=dt.date(2027, 9, 10),
+                space_id=space_id, venue_id=venue_id, event_date=dt.date(2027, 9, 10),
                 start_time=dt.time(18, 0), end_time=dt.time(23, 0),
                 status=BookingStatus.confirmed, event_name=f"Concurrent {key}",
                 adult_count=10, child_count=0, agreed_min_adults=0,

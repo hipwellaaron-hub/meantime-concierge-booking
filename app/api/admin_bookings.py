@@ -97,9 +97,10 @@ def _get_booking_or_404(db: Session, booking_id: uuid.UUID) -> Booking:
     Every OUTCOME is identical while Hamilton is the only venue -- which is
     the point of doing it now, against a system where it can be proved not to
     change anything, rather than in the middle of the venue switch. Not every
-    QUERY: on a cold session this costs two extra SELECTs, the `_venue` lookup
-    and a lazy load of `booking.space` that most routes did not trigger
-    before. Measured, and accepted for a single-operator admin.
+    QUERY: this costs one extra SELECT, the `_venue` lookup. It briefly cost
+    two -- the venue was read through `booking.space`, which most routes had
+    no reason to load -- until bookings gained their own venue_id column
+    (migration d8c3f1a7e920) and this became a plain column comparison.
 
     404, not 403: the venue a booking belongs to is not this operator's
     secret, but a different code would tell a caller the id exists
@@ -110,7 +111,7 @@ def _get_booking_or_404(db: Session, booking_id: uuid.UUID) -> Booking:
     booking and this cannot raise on a half-built row.
     """
     booking = db.get(Booking, booking_id)
-    if booking is None or booking.space.venue_id != _venue(db).id:
+    if booking is None or booking.venue_id != _venue(db).id:
         raise HTTPException(status_code=404, detail="Booking not found")
     return booking
 

@@ -253,7 +253,7 @@ def _get_visible_booking_or_404(db: Session, booking_id: uuid.UUID) -> Booking:
         booking is None
         or booking.status not in FLOOR_VISIBLE_STATUSES
         or booking.parent_booking_id is not None
-        or booking.space.venue_id != _venue(db).id
+        or booking.venue_id != _venue(db).id
     ):
         raise HTTPException(status_code=404, detail="Booking not found")
     return booking

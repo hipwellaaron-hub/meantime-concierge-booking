@@ -126,6 +126,11 @@ def create_booking(
 
     booking = Booking(
         space_id=space_id,
+        # Taken from the space HERE, at creation, and then never again: the
+        # composite FK and the immutability trigger both make this the
+        # booking's own fact from this moment rather than a view of the
+        # space's. Every other reader takes it off the booking.
+        venue_id=space.venue_id,
         contact_id=contact_id,
         event_date=event_date,
         start_time=start_time,

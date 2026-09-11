@@ -42,6 +42,7 @@ def test_concurrent_overlapping_inserts_cannot_both_succeed():
         try:
             booking = Booking(
                 space_id=space_id,
+                venue_id=venue_id,
                 event_date=dt.date(2027, 1, 1),
                 start_time=dt.time(12, 0),
                 end_time=dt.time(16, 0),

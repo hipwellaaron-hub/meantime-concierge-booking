@@ -76,6 +76,20 @@ class Booking(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     space_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("spaces.id"), nullable=False)
+    # EXPLICIT, never inferred from the space or the reference prefix
+    # (Aaron's rule). A booking's venue used to be reachable only by joining
+    # through its space, which meant it MOVED when the space moved -- and the
+    # reference prefix, the other thing people read it off, is a display
+    # string that is wrong on every booking made before 2026-09 anyway.
+    #
+    # Two database-level invariants stand behind this column, so neither is
+    # a thing a caller has to remember (migration d8c3f1a7e920):
+    #   * a composite FK (space_id, venue_id) -> spaces (id, venue_id) makes
+    #     it impossible for this to disagree with the space's own venue;
+    #   * a BEFORE UPDATE trigger refuses any change to it, so "a booking can
+    #     never move between venues" is a property of the table rather than
+    #     of the three service functions that assign a space.
+    venue_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("venues.id"), nullable=False)
     contact_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("contacts.id"), nullable=True)
 
     # NULL for a normal, single-space booking. Set when a single real event
