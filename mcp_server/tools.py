@@ -300,9 +300,18 @@ TOOLS: list[dict] = [
             "the proposal is stored and waits for a staff member to generate the Event Order. An "
             "Event Order that has already gone out is never touched; revising it is a staff "
             "decision, and the response says the proposal is waiting for that.\n\n"
-            "You cannot touch status, the food order, or any figure -- those are computed "
-            "from the catalogue, the wizard and the booking, and a proposed line item with a "
-            "wrong price is precisely the class of error this boundary exists to prevent.\n\n"
+            "THE FOOD ORDER is proposed as `food_order`: a list of catalogue items and "
+            "quantities -- [{menu_item_id, quantity}] (ids from the `catalogue` tool) or "
+            "[{name, quantity}] by exact catalogue name. NEVER a price and never a custom "
+            "line: a line carrying any price key is refused (food_price_sent); an unknown or "
+            "retired item is refused by name (food_unknown_item) with the active items listed; "
+            "an item this booking has no price on record for is refused (food_price_unavailable). "
+            "The price comes from the catalogue for this booking exactly as the client wizard's "
+            "does; staff see the lines and the computed total, approve or change quantities, "
+            "and the Event Order's line items are built from the catalogue. You cannot touch "
+            "status or any figure -- those are computed from the catalogue, the wizard and the "
+            "booking, and a proposed line with a wrong price is precisely the class of error "
+            "this boundary exists to prevent.\n\n"
             "THE TEN FIELDS, by exact name: catering_order_and_service_style, bar_structure, "
             "room_layout_notes, music, entertainment, dietaries, accessibility, decorations, "
             "special_notes, onsite_contact. Any other name (catering_notes, "
@@ -349,7 +358,26 @@ TOOLS: list[dict] = [
                         "onsite_contact": {"type": "string", "maxLength": 2000},
                     },
                     "additionalProperties": False,
-                    "minProperties": 1,
+                },
+                "food_order": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 50,
+                    "description": (
+                        "Catalogue items and quantities, never a price. Each line: menu_item_id "
+                        "(from `catalogue`) or name (exact catalogue name), and quantity (whole "
+                        "number, 1-500). One line per item."
+                    ),
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "menu_item_id": {"type": "string", "maxLength": 64},
+                            "name": {"type": "string", "maxLength": 255},
+                            "quantity": {"type": "integer", "minimum": 1, "maximum": 500},
+                        },
+                        "required": ["quantity"],
+                        "additionalProperties": False,
+                    },
                 },
                 "trigger": {
                     "type": "string",
@@ -368,13 +396,14 @@ TOOLS: list[dict] = [
                     ),
                 },
             },
-            "required": ["reference", "source", "fields"],
+            "required": ["reference", "source"],
         },
         "_call": lambda args: post_ai(
             f"/api/ai/bookings/{path_segment(args['reference'], name='reference')}/event-order-proposal",
             {
                 "source": args["source"],
-                "fields": args["fields"],
+                "fields": args.get("fields") or {},
+                "food_order": args.get("food_order"),
                 "trigger": args.get("trigger"),
                 "model": args.get("model"),
             },
@@ -404,8 +433,9 @@ class ToolArgumentError(ValueError):
 
 def _check(schema: dict, value: object, *, where: str, problems: list[str]) -> None:
     """The subset of JSON Schema these tools use, checked honestly: type
-    (object, string, integer), enum, required, unexpected keys, minProperties,
-    minLength and maxLength. An explicit null on an OPTIONAL key means
+    (object, string, integer, array), enum, required, unexpected keys,
+    minProperties, minLength/maxLength, minimum/maximum, minItems/maxItems
+    and items. An explicit null on an OPTIONAL key means
     "absent" -- Concierge accepts None for every optional and every _call
     reads them with .get(), so a client that sends null for what it has
     nothing to say about is not refused. Anything the schema cannot say
@@ -453,6 +483,23 @@ def _check(schema: dict, value: object, *, where: str, problems: list[str]) -> N
     elif kind == "integer":
         if isinstance(value, bool) or not isinstance(value, int):
             problems.append(f"{where} must be an integer")
+            return
+        if "minimum" in schema and value < schema["minimum"]:
+            problems.append(f"{where} must be at least {schema['minimum']}")
+        if "maximum" in schema and value > schema["maximum"]:
+            problems.append(f"{where} must be at most {schema['maximum']}")
+    elif kind == "array":
+        if not isinstance(value, list):
+            problems.append(f"{where} must be a list")
+            return
+        if "minItems" in schema and len(value) < schema["minItems"]:
+            problems.append(f"{where} must have at least {schema['minItems']} entry")
+        if "maxItems" in schema and len(value) > schema["maxItems"]:
+            problems.append(f"{where} must have at most {schema['maxItems']} entries")
+        item_schema = schema.get("items")
+        if item_schema:
+            for index, item in enumerate(value):
+                _check(item_schema, item, where=f"{where}[{index}]", problems=problems)
 
 
 def validate_arguments(tool: dict, arguments: object) -> None:

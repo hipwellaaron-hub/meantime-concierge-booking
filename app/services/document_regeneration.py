@@ -67,6 +67,26 @@ def _render_amount(value: object) -> str:
         return _render_text(value)
 
 
+def _food_order_approval_key(value: object) -> str:
+    """The stored food order in the spelling an approval records --
+    beo_proposals._selection_json's: catalogue ids and quantities, in the
+    order the lines are stored (the order they were proposed in).
+    Kept here rather than imported to avoid a cycle; one test pins the two
+    against each other."""
+    import json
+
+    if not isinstance(value, dict):
+        return ""
+    entries = []
+    for line in value.get("line_items") or []:
+        if not isinstance(line, dict) or not line.get("menu_item_id"):
+            return ""  # a hand-typed line has no catalogue identity to match
+        entries.append({"menu_item_id": str(line["menu_item_id"]), "quantity": int(line.get("quantity") or 0)})
+    if not entries:
+        return ""
+    return json.dumps(entries, separators=(",", ":"))
+
+
 def _render_food_order(value: object) -> str:
     """The food order as the money it commits to, one line per item.
 
@@ -139,6 +159,14 @@ class ProtectedField:
     name: str
     label: str
     render: Callable[[object], str] = _render_text
+    # How a value is spelled when asking "was exactly this approved?".
+    # Defaults to the rendered text, which is right for words. The food
+    # order's approvals record a selection of catalogue ids and
+    # quantities, not the rendered line list, so without this the one
+    # screen whose job is saying WHO put a value there showed an
+    # AI-approved food order as anonymous while the text fields approved
+    # in the same click carried the badge (review, 2026-09-11).
+    approval_key: Callable[[object], str] | None = None
     # Fields derived from this one, which must travel with it. An
     # agreement's terms_text is rebuilt from terms_sections, so keeping the
     # sections while letting the text regenerate would leave the document
@@ -166,7 +194,11 @@ PROTECTED_FIELDS: tuple[ProtectedField, ...] = tuple(
     # so it travels with them: keeping the lines alone produced a live document
     # whose own items summed to $1,220 under a heading reading $1,250.
     ProtectedField(
-        "food_order", "Food order", render=_render_food_order, companions=("total_food_spend",)
+        "food_order",
+        "Food order",
+        render=_render_food_order,
+        approval_key=_food_order_approval_key,
+        companions=("total_food_spend",),
     ),
 )
 
@@ -507,7 +539,9 @@ def losses(db: Session, document: Document | None, fresh: dict) -> list[ContentL
                 current=current,
                 incoming=incoming,
                 approved_note=_approval_note(
-                    approved.get(spec.name, []), current, hand_edited_at=hand_edited_at
+                    approved.get(spec.name, []),
+                    spec.approval_key(current_content.get(spec.name)) if spec.approval_key else current,
+                    hand_edited_at=hand_edited_at,
                 ),
                 cleared_by_a_person=_was_cleared(current_content.get(spec.name), current),
             )

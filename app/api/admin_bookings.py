@@ -1,4 +1,5 @@
 import datetime as dt
+import json
 import uuid
 from decimal import Decimal, InvalidOperation
 
@@ -965,7 +966,7 @@ def edit_document_form(
 _FOOD_CATEGORIES = ("platter", "pizza", "side", "dessert")
 
 
-def _food_order_from_form(descriptions, quantities, unit_prices, categories, *, strict: bool) -> dict:
+def _food_order_from_form(descriptions, quantities, unit_prices, categories, menu_item_ids=(), *, strict: bool) -> dict:
     """The food order this form posted, in the stored shape.
 
     ONE walk for both readers of the form. `strict` is the whole difference:
@@ -987,8 +988,16 @@ def _food_order_from_form(descriptions, quantities, unit_prices, categories, *, 
     the one that has to be accurate about what somebody just typed.
     """
     padded = list(categories) + [""] * (len(descriptions) - len(categories))
+    # A line resolved from the catalogue (the wizard's, or one approved from
+    # an AI proposal) carries its menu_item_id. The form has to hand it back
+    # or the first save strips it -- and then every later save audits as
+    # "changed the food order" because the stored dict no longer matches
+    # what the form posts (review, 2026-09-11).
+    padded_ids = list(menu_item_ids) + [""] * (len(descriptions) - len(menu_item_ids))
     line_items = []
-    for description, quantity, unit_price, category in zip(descriptions, quantities, unit_prices, padded):
+    for description, quantity, unit_price, category, menu_item_id in zip(
+        descriptions, quantities, unit_prices, padded, padded_ids
+    ):
         if not description.strip():
             continue  # a blanked-out row is how the form deletes a line item
         entry = {
@@ -1016,6 +1025,8 @@ def _food_order_from_form(descriptions, quantities, unit_prices, categories, *, 
                 ) from exc
         if category in _FOOD_CATEGORIES:
             entry["category"] = category
+        if (menu_item_id or "").strip():
+            entry["menu_item_id"] = menu_item_id.strip()
         line_items.append(entry)
     return {"line_items": line_items, "note": None if line_items else f"{REVIEW} no food order captured yet"}
 
@@ -1055,6 +1066,7 @@ def save_document_edit(
     item_quantities: list[str] = Form(default=[]),
     item_unit_prices: list[str] = Form(default=[]),
     item_categories: list[str] = Form(default=[]),
+    item_menu_item_ids: list[str] = Form(default=[]),
     content_expect: str = Form(default=""),
     db: Session = Depends(get_db),
     staff: StaffUser = Depends(require_staff),
@@ -1108,7 +1120,7 @@ def save_document_edit(
             # moved, and hands back the stored lines over the ones this staff
             # member just typed.
             "food_order": _food_order_from_form(
-                item_descriptions, item_quantities, item_unit_prices, item_categories, strict=False
+                item_descriptions, item_quantities, item_unit_prices, item_categories, item_menu_item_ids, strict=False
             ),
         }
         if document.type == DocumentType.agreement:
@@ -1192,7 +1204,7 @@ def save_document_edit(
         # price is a 422 that changes nothing rather than a 422 with the
         # timeline already updated.
         food_order = _food_order_from_form(
-            item_descriptions, item_quantities, item_unit_prices, item_categories, strict=True
+            item_descriptions, item_quantities, item_unit_prices, item_categories, item_menu_item_ids, strict=True
         )
 
         # Timeline facts write through to the Booking itself (per-field
@@ -1353,6 +1365,11 @@ def review_beo_proposal(
     value_decorations: str | None = Form(default=None),
     value_special_notes: str | None = Form(default=None),
     value_onsite_contact: str | None = Form(default=None),
+    # The food row: parallel lists, one entry per proposed line. A quantity
+    # of 0 removes that line; the price is never posted -- it is read from
+    # the catalogue at approval.
+    food_item_ids: list[str] = Form(default=[]),
+    food_quantities: list[str] = Form(default=[]),
     db: Session = Depends(get_db),
     staff: StaffUser = Depends(require_staff),
 ):
@@ -1360,6 +1377,18 @@ def review_beo_proposal(
     proposal = db.get(BeoProposal, proposal_id)
     if proposal is None or proposal.booking_id != booking_id:
         raise HTTPException(status_code=404, detail="Proposal not found on this booking")
+    food_value: str | None = None
+    if food_item_ids:
+        if len(food_item_ids) != len(food_quantities):
+            raise HTTPException(status_code=422, detail="The food order rows did not line up; reload and try again")
+        selection = []
+        for item_id, quantity in zip(food_item_ids, food_quantities):
+            try:
+                count = int((quantity or "0").strip() or "0")
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=f"'{quantity}' is not a whole-number quantity") from exc
+            selection.append({"menu_item_id": item_id, "quantity": count})
+        food_value = json.dumps(selection)
 
     submitted = {
         k: v for k, v in {
@@ -1373,6 +1402,7 @@ def review_beo_proposal(
         "decorations": value_decorations,
         "special_notes": value_special_notes,
         "onsite_contact": value_onsite_contact,
+        beo_proposals_service.FOOD_ORDER_FIELD: food_value,
         }.items() if v is not None
     }
 

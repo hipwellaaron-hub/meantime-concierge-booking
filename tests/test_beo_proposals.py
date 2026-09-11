@@ -2377,3 +2377,534 @@ def test_a_failure_after_the_draft_leaves_no_draft_behind(db, loft, monkeypatch)
 
     assert documents_service.get_current(db, booking.id, DocumentType.beo) is None
     assert not [e for e in db.query(BookingEvent).filter_by(booking_id=booking.id).all() if e.event_type == "beo_draft_by_proposal"]
+
+
+# =============================================================================
+# The food order as catalogue items and quantities (Aaron, 2026-09-11)
+#
+# "Let the AI propose the food order as catalogue items and quantities. Not
+# prices, not custom lines. ... The AI never sends a figure, so it cannot get
+# one wrong. It can get an item or a quantity wrong, and that's what approval
+# is for."
+# =============================================================================
+
+import json as _json
+
+
+def _food(menu_items, *pairs):
+    """[(name, qty), ...] -> the selection the AI sends, by id."""
+    return [{"menu_item_id": str(menu_items[name].id), "quantity": qty} for name, qty in pairs]
+
+
+def _food_row(proposal):
+    return next(f for f in proposal.fields if f.field == "food_order")
+
+
+def test_a_food_order_is_priced_from_the_catalogue_and_stored_without_prices(db, loft, menu_items):
+    booking = _confirmed(db, _booking(db, loft))
+
+    proposal, result = beo_proposals.propose(
+        db, booking, fields={}, source="client email 10 Sep",
+        actor="ai:claude", food_order=[{"name": "grazing  platter", "quantity": 2}] + _food(menu_items, ("Pork Belly Bites", 3)),
+    )
+
+    assert not result.blocked, result.codes
+    row = _food_row(proposal)
+    assert row.state == FIELD_PENDING
+    stored = _json.loads(row.proposed_value)
+    assert stored == [
+        {"menu_item_id": str(menu_items["Grazing Platter"].id), "quantity": 2},
+        {"menu_item_id": str(menu_items["Pork Belly Bites"].id), "quantity": 3},
+    ], "catalogue ids and quantities, in the order proposed -- no names (a rename is not an edit), no prices"
+    rows = beo_proposals.review_rows(db, booking.id)
+    food = next(r for r in rows if r["field"] == "food_order")
+    assert food["kind"] == "food" and food["label"] == "Food order"
+    assert [(ln["name"], ln["quantity"], ln["unit_price"], ln["line_total"]) for ln in food["lines"]] == [
+        ("Grazing Platter", 2, "250.00", "500.00"), ("Pork Belly Bites", 3, "100.00", "300.00")
+    ]
+    assert food["total"] == "800.00"
+    assert food["problems"] == []
+
+
+def test_a_food_line_carrying_a_price_is_refused_by_name(db, loft, menu_items):
+    booking = _confirmed(db, _booking(db, loft))
+
+    proposal, result = beo_proposals.propose(
+        db, booking, fields={}, source="email", actor="ai:claude",
+        food_order=[{"name": "Grazing Platter", "quantity": 1, "unit_price": "1.00"}],
+    )
+
+    assert result.blocked and result.codes == ["food_price_sent"]
+    assert "never writes a price" in result.as_note()
+    assert proposal.status == STATUS_RULES_BLOCKED
+    assert documents_service.get_current(db, booking.id, DocumentType.beo) is None, "a blocked proposal makes no draft"
+
+
+def test_an_unknown_or_retired_item_is_refused_with_the_active_items_listed(db, loft, menu_items):
+    booking = _confirmed(db, _booking(db, loft))
+
+    _, retired = beo_proposals.propose(
+        db, booking, fields={}, source="email", actor="ai:claude", food_order=[{"name": "Dessert Platter", "quantity": 1}]
+    )
+    _, bogus = beo_proposals.propose(
+        db, booking, fields={}, source="email", actor="ai:claude", food_order=[{"menu_item_id": str(uuid.uuid4()), "quantity": 1}]
+    )
+
+    assert retired.codes == ["food_unknown_item"], "retired items are not on offer"
+    assert "Grazing Platter (platter)" in retired.as_note(), "the refusal lists what can be ordered"
+    assert bogus.codes == ["food_unknown_item"]
+
+
+@pytest.mark.parametrize("quantity", [0, 501, "2", True, 2.5, None])
+def test_a_quantity_is_a_whole_number_from_one_to_five_hundred(db, loft, menu_items, quantity):
+    booking = _confirmed(db, _booking(db, loft))
+
+    _, result = beo_proposals.propose(
+        db, booking, fields={}, source="email", actor="ai:claude",
+        food_order=[{"name": "Grazing Platter", "quantity": quantity}],
+    )
+
+    assert result.codes == ["food_bad_quantity"], (quantity, result.codes)
+
+
+def test_one_line_per_item(db, loft, menu_items):
+    booking = _confirmed(db, _booking(db, loft))
+
+    _, result = beo_proposals.propose(
+        db, booking, fields={}, source="email", actor="ai:claude",
+        food_order=_food(menu_items, ("Grazing Platter", 1), ("Grazing Platter", 2)),
+    )
+
+    assert result.codes == ["food_duplicate_item"]
+
+
+def test_a_legacy_priced_booking_prices_pizzas_at_the_legacy_price_and_refuses_what_has_none(db, loft, menu_items):
+    """The catalogue's own rule, exactly as the wizard applies it: a booking
+    locked before the pizza cutover pays the legacy price, and an item
+    with no legacy price on record is a refusal, never a guess."""
+    from tests.test_wizard_generation import _make_booking
+
+    booking = _make_booking(db, loft, created_at=dt.datetime(2026, 1, 1, tzinfo=dt.timezone.utc))
+
+    _, priced = beo_proposals.propose(
+        db, booking, fields={}, source="email", actor="ai:claude", food_order=_food(menu_items, ("Margherita Pizza", 4))
+    )
+    rows = beo_proposals.review_rows(db, booking.id)
+    _, refused = beo_proposals.propose(
+        db, booking, fields={}, source="email", actor="ai:claude", food_order=_food(menu_items, ("Vegetarian Pizza", 1))
+    )
+
+    assert not priced.blocked
+    assert next(r for r in rows if r["field"] == "food_order")["lines"][0]["unit_price"] == "26.00"
+    assert refused.codes == ["food_price_unavailable"]
+
+
+def test_approving_the_food_order_writes_the_lines_and_the_total_from_the_catalogue(db, loft, menu_items):
+    booking = _confirmed(db, _booking(db, loft))
+    proposal, _ = beo_proposals.propose(
+        db, booking, fields={}, source="email", actor="ai:claude",
+        food_order=_food(menu_items, ("Grazing Platter", 2), ("Pork Belly Bites", 3), ("Tiramisu Cake", 1)),
+    )
+
+    document = beo_proposals.approve_field(db, _food_row(proposal), actor="staff:aaron")
+
+    lines = document.content["food_order"]["line_items"]
+    assert lines == [
+        {"description": "Grazing Platter", "quantity": 2, "unit_price": "250.00", "category": "platter", "menu_item_id": str(menu_items["Grazing Platter"].id)},
+        {"description": "Pork Belly Bites", "quantity": 3, "unit_price": "100.00", "category": "platter", "menu_item_id": str(menu_items["Pork Belly Bites"].id)},
+        {"description": "Tiramisu Cake", "quantity": 1, "unit_price": "80.00", "category": "dessert", "menu_item_id": str(menu_items["Tiramisu Cake"].id)},
+    ], "the shape every reader of food_order knows, plus the item id; a cake prints under Desserts"
+    assert document.content["food_order"]["note"] is None
+    assert document.content["total_food_spend"]["total"] == "880.00", "the heading is rebuilt with the lines"
+    assert "food_order" in document.content["_authored"], "an approval is a person putting these lines on the document"
+    events = {e.event_type: e for e in db.query(BookingEvent).filter_by(booking_id=booking.id).all() if e.field_name == "food_order"}
+    assert events["beo_proposal_approved"].new_value == "2 x Grazing Platter @ 250.00; 3 x Pork Belly Bites @ 100.00; 1 x Tiramisu Cake @ 80.00 = 880.00"
+    assert "beo_proposal_edited" not in events
+    assert _json.loads(_food_row(proposal).applied_value) == _json.loads(_food_row(proposal).proposed_value)
+
+
+def test_changing_a_quantity_before_approving_is_recorded_and_zero_removes_the_line(db, loft, menu_items):
+    booking = _confirmed(db, _booking(db, loft))
+    proposal, _ = beo_proposals.propose(
+        db, booking, fields={}, source="email", actor="ai:claude",
+        food_order=_food(menu_items, ("Grazing Platter", 2), ("Pork Belly Bites", 3)),
+    )
+    edited = _json.dumps([
+        {"menu_item_id": str(menu_items["Grazing Platter"].id), "quantity": 1},
+        {"menu_item_id": str(menu_items["Pork Belly Bites"].id), "quantity": 0},
+    ])
+
+    document = beo_proposals.approve_field(db, _food_row(proposal), actor="staff:aaron", value=edited)
+
+    assert [(ln["description"], ln["quantity"]) for ln in document.content["food_order"]["line_items"]] == [("Grazing Platter", 1)]
+    assert document.content["total_food_spend"]["total"] == "250.00"
+    row = _food_row(proposal)
+    assert row.edited_before_approval
+    edited_events = [e for e in db.query(BookingEvent).filter_by(booking_id=booking.id, event_type="beo_proposal_edited").all()]
+    assert [e.field_name for e in edited_events] == ["food_order"]
+    # The "before" is what was PROPOSED, read from the stored selection and
+    # priced by nobody -- so a line dropped at approval is visible in it.
+    assert edited_events[0].old_value == "2 x Grazing Platter; 3 x Pork Belly Bites"
+    assert edited_events[0].new_value.endswith("= 250.00")
+
+
+def test_zeroing_every_line_is_refused_rather_than_approving_nothing(db, loft, menu_items):
+    booking = _confirmed(db, _booking(db, loft))
+    proposal, _ = beo_proposals.propose(
+        db, booking, fields={}, source="email", actor="ai:claude", food_order=_food(menu_items, ("Grazing Platter", 2))
+    )
+
+    with pytest.raises(beo_proposals.ProposalError) as exc:
+        beo_proposals.approve_field(
+            db, _food_row(proposal), actor="staff:aaron",
+            value=_json.dumps([{"menu_item_id": str(menu_items["Grazing Platter"].id), "quantity": 0}]),
+        )
+
+    assert "reject the food order" in str(exc.value)
+    assert _food_row(proposal).state == FIELD_PENDING
+
+
+def test_approve_all_covers_the_text_fields_and_the_food_order_together(db, loft, menu_items):
+    booking = _confirmed(db, _booking(db, loft))
+    proposal, _ = beo_proposals.propose(
+        db, booking, fields=CLEAN, source="email", actor="ai:claude", food_order=_food(menu_items, ("Grazing Platter", 2))
+    )
+
+    document = beo_proposals.approve_all(db, proposal, actor="staff:aaron")
+
+    assert document.version == 1
+    assert document.content["dietaries"] == CLEAN["dietaries"]
+    assert document.content["food_order"]["line_items"][0]["description"] == "Grazing Platter"
+    assert proposal.status == STATUS_RESOLVED
+    assert {f.field: f.state for f in proposal.fields} == {
+        "catering_order_and_service_style": FIELD_APPROVED, "dietaries": FIELD_APPROVED, "food_order": FIELD_APPROVED
+    }
+
+
+def test_an_item_retired_after_the_proposal_refuses_the_approval_and_the_panel_says_so(db, loft, menu_items):
+    booking = _confirmed(db, _booking(db, loft))
+    proposal, _ = beo_proposals.propose(
+        db, booking, fields={}, source="email", actor="ai:claude", food_order=_food(menu_items, ("Grazing Platter", 2))
+    )
+    menu_items["Grazing Platter"].is_active = False
+    db.commit()
+
+    rows = beo_proposals.review_rows(db, booking.id)
+    with pytest.raises(beo_proposals.ProposalError) as exc:
+        beo_proposals.approve_field(db, _food_row(proposal), actor="staff:aaron")
+
+    assert next(r for r in rows if r["field"] == "food_order")["problems"], "the reviewer is told before clicking"
+    assert "not an active catalogue item" in str(exc.value)
+
+
+def test_an_approved_food_order_is_protected_from_a_silent_regenerate(db, loft, menu_items):
+    from app.services import document_regeneration
+
+    booking = _confirmed(db, _booking(db, loft))
+    proposal, _ = beo_proposals.propose(
+        db, booking, fields={}, source="email", actor="ai:claude", food_order=_food(menu_items, ("Grazing Platter", 2))
+    )
+    beo_proposals.approve_field(db, _food_row(proposal), actor="staff:aaron")
+    current = documents_service.get_current(db, booking.id, DocumentType.beo)
+
+    losses = document_regeneration.losses(db, current, generate_beo_content(booking))
+
+    assert losses, "a regenerate over an approved food order must stop and ask"
+    assert "Grazing Platter" in str(losses)
+
+
+def test_the_endpoint_accepts_a_food_order_and_reports_it_pending(ai_client, db, loft, menu_items):
+    booking = _confirmed(db, _booking(db, loft))
+
+    resp = ai_client.post(
+        f"/api/ai/bookings/{booking.reference_code}/event-order-proposal",
+        json={"source": "client email 10 Sep, final details", "food_order": [{"name": "Grazing Platter", "quantity": 2}]},
+    )
+
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["awaiting_approval"] == ["food_order"]
+    assert body["event_order"]["created"] is True
+
+
+def test_the_endpoint_refuses_a_priced_line_with_its_code(ai_client, db, loft, menu_items):
+    booking = _confirmed(db, _booking(db, loft))
+
+    resp = ai_client.post(
+        f"/api/ai/bookings/{booking.reference_code}/event-order-proposal",
+        json={"source": "client email", "food_order": [{"name": "Grazing Platter", "quantity": 2, "unit_price": "9.00"}]},
+    )
+
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["rule_codes"] == ["food_price_sent"]
+    assert "food_order" in resp.json()["detail"]
+
+
+def test_a_proposal_with_neither_text_nor_food_is_refused(ai_client, db, loft):
+    booking = _confirmed(db, _booking(db, loft))
+
+    resp = ai_client.post(
+        f"/api/ai/bookings/{booking.reference_code}/event-order-proposal", json={"source": "client email", "fields": {}}
+    )
+
+    assert resp.status_code == 422
+    assert "or a food_order" in resp.json()["detail"], "refused before the rules, with the food shape named"
+    assert beo_proposals.latest_proposal(db, booking.id) is None, "nothing written for calibration -- there was nothing to calibrate"
+
+
+def test_the_panel_shows_the_food_lines_with_catalogue_prices_and_a_total(admin_client, db, loft, menu_items):
+    booking = _confirmed(db, _booking(db, loft))
+    beo_proposals.propose(
+        db, booking, fields={}, source="email", actor="ai:claude",
+        food_order=_food(menu_items, ("Grazing Platter", 2), ("Pork Belly Bites", 3)),
+    )
+    draft = documents_service.get_current(db, booking.id, DocumentType.beo)
+
+    page = admin_client.get(f"/admin/bookings/{booking.id}/documents/{draft.id}/edit").text
+
+    panel = page[page.index("Proposed by Claude"):]
+    assert "Food order" in panel and "Grazing Platter" in panel and "$250.00" in panel and "$800.00" in panel
+    assert 'name="food_quantities"' in panel and 'name="food_item_ids"' in panel
+    assert "never proposable" not in panel, "the copy no longer says the food order cannot be proposed"
+
+
+def test_approving_from_the_panel_with_a_changed_quantity(admin_client, db, loft, menu_items):
+    from tests.test_staff_app import _csrf_of
+
+    booking = _confirmed(db, _booking(db, loft))
+    proposal, _ = beo_proposals.propose(
+        db, booking, fields={"dietaries": "1x GF"}, source="email", actor="ai:claude",
+        food_order=_food(menu_items, ("Grazing Platter", 2), ("Pork Belly Bites", 3)),
+    )
+    draft = documents_service.get_current(db, booking.id, DocumentType.beo)
+    csrf = _csrf_of(admin_client, f"/admin/bookings/{booking.id}/documents/{draft.id}/edit")
+
+    resp = admin_client.post(
+        f"/admin/bookings/{booking.id}/beo-proposals/{proposal.id}/review",
+        data={
+            "csrf_token": csrf, "action": "approve_all", "value_dietaries": "1x GF",
+            "food_item_ids": [str(menu_items["Grazing Platter"].id), str(menu_items["Pork Belly Bites"].id)],
+            "food_quantities": ["1", "0"],
+        },
+        follow_redirects=False,
+    )
+
+    assert resp.status_code == 303, resp.text
+    db.refresh(draft)
+    assert [(ln["description"], ln["quantity"]) for ln in draft.content["food_order"]["line_items"]] == [("Grazing Platter", 1)]
+    assert draft.content["dietaries"] == "1x GF"
+    assert draft.content["total_food_spend"]["total"] == "250.00"
+
+
+# --- the review of the food order (2026-09-11) -------------------------------------
+#
+# Every one of these was reproduced before it was fixed. The first is the
+# one that mattered: the panel said "Cannot be approved as it stands" and
+# approving from it succeeded with a $300 line gone.
+
+
+def test_approving_from_the_panel_cannot_drop_a_line_that_can_no_longer_be_priced(admin_client, db, loft, menu_items):
+    from tests.test_staff_app import _csrf_of
+
+    booking = _confirmed(db, _booking(db, loft))
+    proposal, _ = beo_proposals.propose(
+        db, booking, fields={}, source="email", actor="ai:claude",
+        food_order=_food(menu_items, ("Grazing Platter", 2), ("Pork Belly Bites", 3)),
+    )
+    menu_items["Pork Belly Bites"].is_active = False
+    db.commit()
+    draft = documents_service.get_current(db, booking.id, DocumentType.beo)
+    page = admin_client.get(f"/admin/bookings/{booking.id}/documents/{draft.id}/edit").text
+    panel = page[page.index("Proposed by Claude"):]
+
+    # Every proposed line gets a row, so the form cannot post a subset.
+    assert panel.count('name="food_item_ids"') == 2
+    assert "no longer in the catalogue" in panel
+    assert str(menu_items["Pork Belly Bites"].id) in panel
+
+    csrf = _csrf_of(admin_client, f"/admin/bookings/{booking.id}/documents/{draft.id}/edit")
+    subset = admin_client.post(
+        f"/admin/bookings/{booking.id}/beo-proposals/{proposal.id}/review",
+        data={"csrf_token": csrf, "action": "approve_all",
+              "food_item_ids": [str(menu_items["Grazing Platter"].id)], "food_quantities": ["2"]},
+    )
+
+    assert subset.status_code == 409, "approving a subset of a proposal is a refusal"
+    assert "left out 3 x Pork Belly Bites" in subset.text
+    db.refresh(draft)
+    assert (draft.content.get("food_order") or {}).get("line_items") in (None, []), "nothing was written"
+    assert _food_row(proposal).state == FIELD_PENDING
+
+    # The whole proposal, with the unpriceable line explicitly zeroed.
+    both = admin_client.post(
+        f"/admin/bookings/{booking.id}/beo-proposals/{proposal.id}/review",
+        data={"csrf_token": csrf, "action": "approve_all",
+              "food_item_ids": [str(menu_items["Grazing Platter"].id), str(menu_items["Pork Belly Bites"].id)],
+              "food_quantities": ["2", "0"]},
+        follow_redirects=False,
+    )
+
+    assert both.status_code == 303, both.text
+    db.refresh(draft)
+    assert [(ln["description"], ln["quantity"]) for ln in draft.content["food_order"]["line_items"]] == [("Grazing Platter", 2)]
+
+
+def test_a_retired_line_already_on_the_event_order_can_be_re_proposed_and_kept(db, loft, menu_items):
+    """An approval REPLACES the food order, so a line it cannot name is a
+    line it drops. Retirement means "no longer offered", never "your
+    existing order is now unpriceable" -- the wizard's own rule."""
+    booking = _confirmed(db, _booking(db, loft))
+    content = generate_beo_content(booking)
+    content["food_order"] = {"line_items": [{
+        "description": "Dessert Platter", "quantity": 1, "unit_price": "140.00", "category": "dessert",
+        "menu_item_id": str(menu_items["Dessert Platter"].id),
+    }], "note": None}
+    documents_service.create_new_version(db, booking, DocumentType.beo, content, actor="staff:test")
+    assert menu_items["Dessert Platter"].is_active is False
+
+    proposal, result = beo_proposals.propose(
+        db, booking, fields={}, source="email", actor="ai:claude",
+        food_order=_food(menu_items, ("Dessert Platter", 1), ("Grazing Platter", 2)),
+    )
+
+    assert not result.blocked, result.codes
+    document = beo_proposals.approve_field(db, _food_row(proposal), actor="staff:aaron")
+    assert [(ln["description"], ln["quantity"], ln["unit_price"]) for ln in document.content["food_order"]["line_items"]] == [
+        ("Dessert Platter", 1, "140.00"), ("Grazing Platter", 2, "250.00")
+    ], "the line the client already ordered keeps its name and its quoted price"
+
+
+def test_a_retired_item_not_already_ordered_is_still_refused(db, loft, menu_items):
+    booking = _confirmed(db, _booking(db, loft))
+
+    _, result = beo_proposals.propose(
+        db, booking, fields={}, source="email", actor="ai:claude", food_order=_food(menu_items, ("Dessert Platter", 1))
+    )
+
+    assert result.codes == ["food_unknown_item"], "a NEW selection is active items only"
+
+
+def test_the_deposit_on_the_total_block_is_the_wizards_rule(db, loft, menu_items):
+    """0.00 is a fact. It used to be written as None with a note saying
+    payments are not tracked in Concierge -- over a figure this had just
+    read from the payments."""
+    from tests.test_wizard_generation import _pay_deposit
+
+    booking = _confirmed(db, _booking(db, loft))
+    proposal, _ = beo_proposals.propose(
+        db, booking, fields={}, source="email", actor="ai:claude", food_order=_food(menu_items, ("Grazing Platter", 2))
+    )
+    document = beo_proposals.approve_field(db, _food_row(proposal), actor="staff:aaron")
+
+    assert document.content["total_food_spend"] == {
+        "total": "500.00", "deposit_paid": "0.00", "balance_due": "500.00", "note": None
+    }
+
+    _pay_deposit(db, booking)
+    second, _ = beo_proposals.propose(
+        db, booking, fields={}, source="email 2", actor="ai:claude", food_order=_food(menu_items, ("Grazing Platter", 3))
+    )
+    document = beo_proposals.approve_field(db, _food_row(second), actor="staff:aaron")
+
+    assert document.content["total_food_spend"] == {
+        "total": "750.00", "deposit_paid": "500.00", "balance_due": "250.00", "note": None
+    }
+
+
+def test_a_catalogue_rename_between_propose_and_approve_is_not_an_edit(db, loft, menu_items):
+    booking = _confirmed(db, _booking(db, loft))
+    proposal, _ = beo_proposals.propose(
+        db, booking, fields={}, source="email", actor="ai:claude", food_order=_food(menu_items, ("Grazing Platter", 2))
+    )
+    menu_items["Grazing Platter"].name = "Grazing Platter (large)"
+    db.commit()
+
+    document = beo_proposals.approve_field(db, _food_row(proposal), actor="staff:aaron")
+
+    assert _food_row(proposal).edited_before_approval is False, "nobody edited anything; the catalogue was renamed"
+    assert not [e for e in db.query(BookingEvent).filter_by(booking_id=booking.id, event_type="beo_proposal_edited").all()]
+    assert document.content["food_order"]["line_items"][0]["description"] == "Grazing Platter (large)", "priced and named now"
+
+
+def test_the_edit_form_keeps_the_catalogue_id_and_a_no_op_save_changes_nothing(admin_client, db, loft, menu_items):
+    """The id is what makes a line recognisable as the catalogue's -- the
+    invoice is built from these. It used to be stripped by the first save,
+    which then audited every save as 'changed the food order'."""
+    import re
+
+    from tests.test_staff_app import _csrf_of
+
+    booking = _confirmed(db, _booking(db, loft))
+    proposal, _ = beo_proposals.propose(
+        db, booking, fields={}, source="email", actor="ai:claude", food_order=_food(menu_items, ("Grazing Platter", 2))
+    )
+    draft = beo_proposals.approve_field(db, _food_row(proposal), actor="staff:aaron")
+    page = admin_client.get(f"/admin/bookings/{booking.id}/documents/{draft.id}/edit").text
+    assert f'name="item_menu_item_ids" value="{menu_items["Grazing Platter"].id}"' in page
+
+    data = {
+        "csrf_token": _csrf_of(admin_client, f"/admin/bookings/{booking.id}/documents/{draft.id}/edit"),
+        "content_expect": re.search(r'name="content_expect" value="([^"]+)"', page).group(1),
+        "item_descriptions": "Grazing Platter", "item_categories": "platter",
+        "item_quantities": "2", "item_unit_prices": "250.00",
+        "item_menu_item_ids": str(menu_items["Grazing Platter"].id),
+    }
+    for name in ("catering_order_and_service_style", "bar_structure", "room_layout_notes", "music", "entertainment",
+                 "dietaries", "accessibility", "decorations", "special_notes", "onsite_contact", "internal_notes",
+                 "status_text"):
+        value = draft.content.get(name)
+        data[name] = value if isinstance(value, str) else ""
+
+    resp = admin_client.post(f"/admin/bookings/{booking.id}/documents/{draft.id}/edit", data=data, follow_redirects=False)
+
+    assert resp.status_code == 303, resp.text
+    db.refresh(draft)
+    assert draft.content["food_order"]["line_items"][0]["menu_item_id"] == str(menu_items["Grazing Platter"].id)
+    edits = [e for e in db.query(BookingEvent).filter_by(booking_id=booking.id, event_type="document_edited").all()]
+    assert "food_order" not in (edits[-1].old_value or ""), f"a no-op save said it changed the food order: {edits[-1].old_value}"
+
+
+def test_the_regenerate_screen_says_who_approved_the_food_order(db, loft, menu_items):
+    """The one screen whose job is saying WHO put a value there showed the
+    AI-approved food order as anonymous, while the text fields approved in
+    the same click carried the badge."""
+    from app.services import document_regeneration
+
+    booking = _confirmed(db, _booking(db, loft))
+    proposal, _ = beo_proposals.propose(
+        db, booking, fields={"dietaries": "1x severe nut allergy"}, source="email", actor="ai:claude",
+        food_order=_food(menu_items, ("Grazing Platter", 2)),
+    )
+    beo_proposals.approve_all(db, proposal, actor="staff:aaron")
+    current = documents_service.get_current(db, booking.id, DocumentType.beo)
+
+    losses = document_regeneration.losses(db, current, generate_beo_content(booking))
+
+    by_label = {loss.label: loss for loss in losses}
+    assert "Food order" in by_label, [loss.label for loss in losses]
+    assert by_label["Food order"].approved_note, "the food loss carries no approval badge"
+    assert "staff:aaron" in by_label["Food order"].approved_note
+    assert by_label["Dietaries"].approved_note, "and the text field approved in the same click still does"
+
+
+def test_the_approval_key_is_the_proposals_own_spelling(db, loft, menu_items):
+    """The badge is string equality, so the two spellings must be one
+    definition in two places -- pinned here rather than trusted."""
+    from app.services import document_regeneration
+
+    booking = _confirmed(db, _booking(db, loft))
+    proposal, _ = beo_proposals.propose(
+        db, booking, fields={}, source="email", actor="ai:claude",
+        food_order=_food(menu_items, ("Grazing Platter", 2), ("Pork Belly Bites", 1)),
+    )
+    document = beo_proposals.approve_field(db, _food_row(proposal), actor="staff:aaron")
+
+    assert document_regeneration._food_order_approval_key(document.content["food_order"]) == _food_row(proposal).applied_value
+
+
+def test_a_hand_typed_food_line_has_no_approval_identity(db, loft):
+    from app.services import document_regeneration
+
+    assert document_regeneration._food_order_approval_key(
+        {"line_items": [{"description": "Something typed", "quantity": 1, "unit_price": "10.00"}]}
+    ) == "", "a line with no catalogue id cannot be matched to an approval, and must not be guessed at"

@@ -25,9 +25,10 @@
     {% if beo_proposal.model %}&middot; {{ beo_proposal.model }}{% endif %}
   </p>
   <p class="muted" style="margin:0 0 14px; font-size:0.85rem;">
-    Nothing below has been applied. Approving writes that field to this draft Event Order; the food order,
-    the totals and the status are never proposable. The house rules run again on whatever the box says when
-    you approve, so editing here is checked too.
+    Nothing below has been applied. Approving writes that field to this draft Event Order. A proposed food
+    order names catalogue items and quantities only &mdash; every price shown is the catalogue's for this
+    booking, and the totals and the status are computed. The house rules run again on whatever the boxes say
+    when you approve, so editing here is checked too.
   </p>
   {# Approve all is THE action when every field came from one client email
      (Aaron, 2026-09-11: "ten clicks plus typing the food is more effort
@@ -57,6 +58,38 @@
     <div style="border-top:1px solid var(--border); padding:14px 0;">
       <label style="margin:0 0 6px;"><b>{{ row.label }}</b></label>
 
+      {% if row.kind == "food" %}
+      {# Catalogue items and quantities. The price column is the catalogue's
+         for this booking, read at approval too -- it is never posted back.
+         Quantity 0 drops the line; the total updates as you type. #}
+      <p class="muted" style="margin:0 0 4px; font-size:0.8rem;">
+        {% if row.current_lines %}<b style="color:var(--ember);">Replaces the food order already on the Event Order</b> ({{ row.current_lines | length }} line{{ "" if row.current_lines | length == 1 else "s" }}, ${{ row.current_total }}):
+        {% else %}The Event Order has no food order yet.{% endif %}
+      </p>
+      {% if row.current_lines %}
+      <pre style="margin:0 0 10px; padding:8px 10px; background:var(--bg); border:1px solid var(--border); border-radius:6px; white-space:pre-wrap; font-size:0.85rem; color:var(--muted);">{% for ln in row.current_lines %}{{ ln.quantity }} x {{ ln.name }} @ ${{ ln.unit_price }} = ${{ ln.line_total }}
+{% endfor %}</pre>
+      {% endif %}
+      {% if row.problems %}
+      <p style="margin:0 0 10px; padding:8px 10px; border:1px solid var(--ember); border-radius:6px; font-size:0.85rem;"><b>Cannot be approved as it stands:</b> {{ row.problems | join(" ") }}</p>
+      {% endif %}
+      <label style="margin:0 0 4px; font-size:0.85rem;">Proposed <span class="muted">(change a quantity before approving; 0 removes the line, and a line with no price has to be set to 0)</span></label>
+      <table class="food-proposal" style="width:100%; border-collapse:collapse; font-size:0.9rem;">
+        <thead><tr><th style="text-align:left;">Item</th><th style="text-align:left;">Category</th><th style="text-align:right;">Qty</th><th style="text-align:right;">Unit (catalogue)</th><th style="text-align:right;">Line</th></tr></thead>
+        <tbody>
+        {% for ln in row.lines %}
+        <tr{% if not ln.priceable %} style="color: var(--ember);"{% endif %}>
+          <td>{{ ln.name }}<input type="hidden" name="food_item_ids" value="{{ ln.menu_item_id }}"></td>
+          <td class="muted">{{ ln.category }}</td>
+          <td style="text-align:right;"><input type="number" name="food_quantities" value="{{ ln.quantity }}" min="0" step="1" style="width:5em; text-align:right;" data-unit="{{ ln.unit_price or 0 }}"></td>
+          <td style="text-align:right;" class="unit">{% if ln.priceable %}${{ ln.unit_price }}{% else %}no longer in the catalogue{% endif %}</td>
+          <td style="text-align:right;" class="line">{% if ln.priceable %}${{ ln.line_total }}{% else %}&mdash;{% endif %}</td>
+        </tr>
+        {% endfor %}
+        </tbody>
+        <tfoot><tr><td colspan="4" style="text-align:right;"><b>Food total</b></td><td style="text-align:right;"><b class="food-proposal-total">${{ row.total }}</b></td></tr></tfoot>
+      </table>
+      {% else %}
       <p class="muted" style="margin:0 0 4px; font-size:0.8rem;">
         {% if row.replaces_text %}<b style="color:var(--ember);">Replaces text already on the Event Order:</b>
         {% elif row.current %}Replaces a generation placeholder:
@@ -68,6 +101,7 @@
 
       <label style="margin:0 0 4px; font-size:0.85rem;">Proposed <span class="muted">(edit before approving if it is not quite right)</span></label>
       <textarea name="value_{{ row.field }}" rows="3">{{ row.proposed }}</textarea>
+      {% endif %}
 
       <div style="margin-top:6px;">
         <button class="btn secondary" type="submit" name="action" value="approve:{{ row.id }}">Approve only {{ row.label }}</button>
@@ -225,7 +259,7 @@
     <div id="line-items">
       {% for item in form_content.food_order.line_items %}
       <div class="field-row line-item">
-        <div style="flex:2;"><label>Item</label><input type="text" name="item_descriptions" value="{{ item.description or item.item }}" maxlength="255"></div>
+        <div style="flex:2;"><label>Item</label><input type="text" name="item_descriptions" value="{{ item.description or item.item }}" maxlength="255"><input type="hidden" name="item_menu_item_ids" value="{{ item.get('menu_item_id', '') }}"></div>
         <div>
           <label>Category</label>
           <select name="item_categories">
@@ -323,9 +357,31 @@
 {% endif %}
 {% endfor %}
 
+<script>
+  // The proposed food order's total follows the quantities as they are
+  // typed. Display only: the server re-prices from the catalogue on approval.
+  (function () {
+    var tables = document.querySelectorAll("table.food-proposal");
+    tables.forEach(function (table) {
+      function money(n) { return "$" + n.toFixed(2); }
+      function recalc() {
+        var total = 0;
+        table.querySelectorAll("tbody tr").forEach(function (tr) {
+          var qty = parseInt(tr.querySelector("input[name=food_quantities]").value, 10) || 0;
+          var unit = parseFloat(tr.querySelector("input[name=food_quantities]").dataset.unit) || 0;
+          var line = qty * unit;
+          total += line;
+          tr.querySelector(".line").textContent = money(line);
+        });
+        table.querySelector(".food-proposal-total").textContent = money(total);
+      }
+      table.addEventListener("input", recalc);
+    });
+  })();
+</script>
 <template id="line-item-template">
   <div class="field-row line-item">
-    <div style="flex:2;"><label>Item</label><input type="text" name="item_descriptions" value="" maxlength="255"></div>
+    <div style="flex:2;"><label>Item</label><input type="text" name="item_descriptions" value="" maxlength="255"><input type="hidden" name="item_menu_item_ids" value=""></div>
     <div>
       <label>Category</label>
       <select name="item_categories">

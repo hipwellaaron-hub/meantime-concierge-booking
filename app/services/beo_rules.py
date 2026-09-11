@@ -95,7 +95,26 @@ FIELD_LABELS = {
 # what a human types into the approval box.
 MAX_FIELD_LENGTH = 2000
 
+# The food order is proposed as catalogue items and quantities, never as
+# text and never with a price (Aaron, 2026-09-11: "The AI never sends a
+# figure, so it cannot get one wrong. It can get an item or a quantity
+# wrong, and that's what approval is for."). It is NOT in
+# PROPOSABLE_FIELDS -- those are the free-text fields the text rules judge
+# -- and document_regeneration lists it separately with its companion
+# total, so it must never be added to that tuple.
+FOOD_ORDER_FIELD = "food_order"
+FOOD_ORDER_LABEL = "Food order"
+MAX_FOOD_LINE_QUANTITY = 500
+MAX_FOOD_LINES = 50
+
 # Rule codes, stable for measurement.
+FOOD_EMPTY = "food_empty"
+FOOD_UNKNOWN_ITEM = "food_unknown_item"
+FOOD_AMBIGUOUS_ITEM = "food_ambiguous_item"
+FOOD_BAD_QUANTITY = "food_bad_quantity"
+FOOD_DUPLICATE_ITEM = "food_duplicate_item"
+FOOD_PRICE_SENT = "food_price_sent"
+FOOD_PRICE_UNAVAILABLE = "food_price_unavailable"
 UNKNOWN_FIELD = "unknown_field"
 EMPTY_PROPOSAL = "empty_proposal"
 FIELD_TOO_LONG = "field_too_long"
@@ -408,7 +427,8 @@ def _validate(
             result.violations.append(
                 RuleViolation(
                     UNKNOWN_FIELD, name,
-                    f"'{name}' is not a proposable field. Status, the food order and every total are computed.",
+                    f"'{name}' is not a proposable text field. Status and every total are computed; the "
+                    "food order is proposed separately as catalogue items and quantities (`food_order`).",
                 )
             )
             continue

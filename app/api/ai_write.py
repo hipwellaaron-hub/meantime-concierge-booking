@@ -33,9 +33,21 @@ class EventOrderProposalIn(BaseModel):
     model_config = ConfigDict(protected_namespaces=())
 
     source: str = Field(min_length=3, max_length=500)
-    fields: dict[str, str] = Field(min_length=1)
+    fields: dict[str, str] = Field(default_factory=dict)
+    # Catalogue items and quantities -- never a price. Extra keys are let
+    # through on purpose so a line that sneaks a price in is refused by
+    # name (food_price_sent) rather than silently dropped by pydantic.
+    food_order: list["FoodLineIn"] | None = Field(default=None, max_length=50)
     trigger: str | None = Field(default=None, max_length=30)
     model: str | None = Field(default=None, max_length=80)
+
+
+class FoodLineIn(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    menu_item_id: str | None = Field(default=None, max_length=64)
+    name: str | None = Field(default=None, max_length=255)
+    quantity: int
 
 
 def _booking_by_reference(ctx: AiContext, reference: str) -> Booking:
@@ -60,6 +72,8 @@ def propose_event_order_values(
     the proposed value is shown against the one it would replace.
     """
     booking = _booking_by_reference(ctx, reference)
+    if not payload.fields and payload.food_order is None:
+        raise HTTPException(status_code=422, detail="propose at least one text field, or a food_order, or both")
     try:
         proposal, result = beo_proposals.propose(
             ctx.db,
@@ -69,6 +83,7 @@ def propose_event_order_values(
             actor=ctx.actor,
             trigger=payload.trigger,
             model=payload.model,
+            food_order=[line.model_dump() for line in payload.food_order] if payload.food_order is not None else None,
         )
     except beo_proposals.ProposalError as exc:
         # The booking cannot take a proposal at all (cancelled, or a linked
@@ -80,7 +95,7 @@ def propose_event_order_values(
         kind=AiRequestKind.write,
         endpoint=f"/api/ai/bookings/{reference}/event-order-proposal",
         method="POST",
-        params={"fields": sorted(payload.fields)},
+        params={"fields": sorted(payload.fields), "food_lines": len(payload.food_order or [])},
         status_code=422 if result.blocked else 201,
         booking_id=booking.id,
         trigger=payload.trigger,
@@ -99,6 +114,7 @@ def propose_event_order_values(
                     for v in result.violations
                 ],
                 "proposable_fields": list(beo_rules.PROPOSABLE_FIELDS),
+                "food_order": "proposed separately as [{menu_item_id | name, quantity}] -- catalogue items only, never a price",
                 "note": "Recorded against the booking for calibration and visible in its audit trail, but not "
                         "offered for approval and not applied. Fix and re-propose.",
             },

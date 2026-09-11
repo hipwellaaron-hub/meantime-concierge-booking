@@ -286,7 +286,7 @@ def test_an_unexpected_top_level_argument_is_named(client):
 
     assert body["error"]["code"] == -32602
     assert "unexpected argument 'booking_id'" in body["error"]["message"]
-    assert "valid arguments are: reference, source, fields, trigger, model" in body["error"]["message"]
+    assert "valid arguments are: reference, source, fields, food_order, trigger, model" in body["error"]["message"]
     assert not posted.called
 
 
@@ -630,8 +630,8 @@ def test_the_shape_that_produced_unknown_tool_is_named_twice(client):
     })
 
     assert body["error"]["code"] == -32602
-    assert "missing required argument 'fields'" in body["error"]["message"]
     assert "unexpected argument 'catering_notes'" in body["error"]["message"]
+    assert "valid arguments are: reference, source, fields, food_order" in body["error"]["message"]
     assert "Unknown tool" not in body["error"]["message"]
     assert not posted.called
 
@@ -662,7 +662,6 @@ def test_null_for_a_required_argument_is_still_refused(client):
 @pytest.mark.parametrize(
     ("arguments", "expected"),
     [
-        ({"reference": "HAM-1", "source": "client email", "fields": {}}, "fields must have at least 1 entry"),
         ({"reference": "HAM-1", "source": "client email", "fields": "DJ"}, "fields must be an object"),
         ({"reference": "HAM-1", "source": "client email", "fields": {"music": 5}}, "fields.music must be a string"),
         ({"reference": "HAM-1", "source": "ab", "fields": {"music": "DJ"}}, "source must be at least 3 characters"),
@@ -758,3 +757,76 @@ def test_batch_edge_cases_are_answered_per_json_rpc(client):
     assert (7, None) in codes, "the good request in the batch still gets its result"
     assert (None, -32600) in codes, "the non-object item is answered, not crashed on"
     assert (8, -32602) in codes, "the bad tool name is answered in its own envelope"
+
+
+# --- the food order through the tool -------------------------------------------------
+
+
+def test_a_food_order_goes_through_the_tool_without_text_fields(client):
+    token = _connect(client)
+    body, posted = _propose(client, token, {
+        "reference": "HAM-1", "source": "client email 10 Sep",
+        "food_order": [{"name": "Grazing Platter", "quantity": 2}, {"menu_item_id": "abc", "quantity": 1}],
+    })
+
+    assert "error" not in body, body
+    assert posted.call_args[0][1]["food_order"] == [{"name": "Grazing Platter", "quantity": 2}, {"menu_item_id": "abc", "quantity": 1}]
+    assert posted.call_args[0][1]["fields"] == {}
+
+
+def test_a_food_line_with_a_price_never_leaves_the_tool(client):
+    token = _connect(client)
+    body, posted = _propose(client, token, {
+        "reference": "HAM-1", "source": "client email",
+        "food_order": [{"name": "Grazing Platter", "quantity": 2, "unit_price": "9.00"}],
+    })
+
+    assert body["error"]["code"] == -32602
+    assert "unexpected field 'unit_price' in food_order[0]" in body["error"]["message"]
+    assert not posted.called
+
+
+@pytest.mark.parametrize(
+    ("food_order", "expected"),
+    [
+        ([], "food_order must have at least 1 entry"),
+        ([{"name": "x", "quantity": 0}], "food_order[0].quantity must be at least 1"),
+        ([{"name": "x", "quantity": 501}], "food_order[0].quantity must be at most 500"),
+        ([{"name": "x", "quantity": "2"}], "food_order[0].quantity must be an integer"),
+        ([{"name": "x"}], "missing required argument 'food_order[0].quantity'"),
+        ("Grazing Platter x2", "food_order must be a list"),
+    ],
+)
+def test_food_order_shapes_are_refused_before_sending(client, food_order, expected):
+    token = _connect(client)
+    body, posted = _propose(client, token, {"reference": "HAM-1", "source": "client email", "food_order": food_order})
+
+    assert body["error"]["code"] == -32602
+    assert expected in body["error"]["message"], body["error"]["message"]
+    assert not posted.called
+
+
+def test_the_description_says_how_the_food_order_is_proposed(client):
+    token = _connect(client)
+    tools = {t["name"]: t for t in _rpc(client, token, "tools/list").json()["result"]["tools"]}
+    tool = tools["propose_event_order_values"]
+
+    for phrase in ("food_order", "NEVER a price", "food_price_sent", "food_unknown_item", "`catalogue`"):
+        assert phrase in tool["description"], phrase
+    assert "fields" not in tool["inputSchema"]["required"], "a food-only proposal is a proposal"
+    items = tool["inputSchema"]["properties"]["food_order"]["items"]
+    assert items["additionalProperties"] is False and items["required"] == ["quantity"]
+
+
+def test_an_empty_fields_object_beside_a_food_order_is_a_proposal(client):
+    """The natural food-only call. The MCP refused it while the API
+    accepted that exact body (review, 2026-09-11)."""
+    token = _connect(client)
+    body, posted = _propose(client, token, {
+        "reference": "HAM-1", "source": "client email", "fields": {},
+        "food_order": [{"name": "Grazing Platter", "quantity": 2}],
+    })
+
+    assert "error" not in body, body
+    assert posted.call_args[0][1]["fields"] == {}
+    assert posted.call_args[0][1]["food_order"] == [{"name": "Grazing Platter", "quantity": 2}]
