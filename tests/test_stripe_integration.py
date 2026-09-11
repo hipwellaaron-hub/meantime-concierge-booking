@@ -282,9 +282,10 @@ class _FakeLink:
     id = "plink_fake123"
 
 
-def test_invoice_view_names_the_card_surcharge_when_it_applies(db, booking):
-    from app.services.policy import is_card_surcharge_permitted
-
+def test_invoice_view_offers_a_card_link_and_names_no_surcharge(db, booking):
+    """The card surcharge was removed on 2026-09-11, so the page must offer
+    the link and say nothing about a fee. This used to branch on whether the
+    surcharge still legally applied; there is no longer a branch."""
     invoice = create_invoice(
         db, booking, InvoiceType.deposit, [{"description": "Deposit", "quantity": 1, "unit_price": "500.00"}],
         dt.date(2026, 9, 1), actor="test",
@@ -302,12 +303,10 @@ def test_invoice_view_names_the_card_surcharge_when_it_applies(db, booking):
         # the working card link replaces "contact us", on web and PDF alike
         assert "https://checkout.stripe.com/fake-link" in resp.text
         assert "Card payment is available on request" not in resp.text
-        # the surcharge is named explicitly while it legally applies, and the
-        # line drops cleanly once the surcharge ban date passes
-        if is_card_surcharge_permitted(dt.date.today()):
-            assert "includes 1.8% card surcharge" in resp.text
-        else:
-            assert "card surcharge" not in resp.text
+        # No fee is charged, so none may be disclosed, and no wording about
+        # one may survive anywhere on the page.
+        assert "surcharge" not in resp.text.lower()
+        assert "1.8" not in resp.text
     finally:
         app.dependency_overrides.clear()
 

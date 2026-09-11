@@ -49,11 +49,12 @@ _DECORATIONS_CLAUSE = (
     "damage or replacement of equipment caused by negligence of the hirer or the hirer's representatives."
 )
 
-_CREDIT_CARD_SURCHARGE_CLAUSE = (
-    f"Credit card surcharges are applicable to all credit card payments. Surcharge rates are standard "
-    f"{policy.CARD_SURCHARGE_RATE * 100:.1f}% across Mastercard, Visa, AMEX and Diners Club."
-)
-
+# The Credit Card Surcharges clause was removed on 2026-09-11 with the
+# surcharge itself. It is not replaced by a clause saying there is no
+# surcharge: an agreement lists what the client is agreeing to, and a
+# charge that does not exist is not a term. Agreements already generated
+# keep their frozen copy of it -- whether any of those need reissuing is
+# Aaron's call, not this module's.
 _CANCELLATION_POLICY_CLAUSE = (
     "Cancellation of your event must be notified in writing to the venue. If your event is cancelled 1 month "
     "or less prior to your event, the deposit is retained and you will be charged a "
@@ -62,11 +63,12 @@ _CANCELLATION_POLICY_CLAUSE = (
     "forfeited."
 )
 
-_PUBLIC_HOLIDAYS_CLAUSE = (
-    f"All events booked on a public holiday will incur a {policy.PUBLIC_HOLIDAY_SURCHARGE_RATE * 100:.0f}% "
-    "surcharge to cover penalty rates of our staff."
-)
-
+# The Public Holidays clause went with the surcharge on 2026-09-11. Every
+# event a NEW agreement can be written for falls after the end date -- no
+# public holiday sits between that change and 1 October 2026 -- so no
+# agreement generated from here can describe an event that would attract
+# it. See policy.SURCHARGE_END_DATE for why the calculation is sunset
+# rather than deleted even though this clause is gone.
 _TRADING_HOURS_CLAUSE = (
     "Your function is licensed to run until midnight, any night of the week, with music off by 11:30pm."
 )
@@ -183,9 +185,7 @@ def _terms_sections(booking: Booking) -> list[dict]:
     sections += [
         {"heading": "Booking Agreement", "body": _BOOKING_AGREEMENT_CLAUSE},
         {"heading": "Decorations", "body": _DECORATIONS_CLAUSE},
-        {"heading": "Credit Card Surcharges", "body": _CREDIT_CARD_SURCHARGE_CLAUSE},
         {"heading": "Cancellation Policy", "body": _CANCELLATION_POLICY_CLAUSE},
-        {"heading": "Public Holidays", "body": _PUBLIC_HOLIDAYS_CLAUSE},
         {"heading": "Trading Hours", "body": _TRADING_HOURS_CLAUSE},
     ]
 

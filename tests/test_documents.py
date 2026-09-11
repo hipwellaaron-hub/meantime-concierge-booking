@@ -751,11 +751,19 @@ def _agreement_pdf_pages(db, booking) -> int:
 
 def test_agreement_pdf_fits_one_page_worst_case(db, loft):
     """An 18th at the Loft is the longest agreement this system produces:
-    all ten standard clauses plus the conditions appendix. If that fits on
-    one page, everything shorter does."""
+    every standard clause plus the conditions appendix. If that fits on
+    one page, everything shorter does.
+
+    Eight standard clauses, not the ten there used to be: the Credit Card
+    Surcharges and Public Holidays clauses were removed on 2026-09-11 with
+    the surcharges themselves.
+    """
     booking = _booking_in(db, loft, event_type="18th Birthday", adult_count=60)
     content = generate_agreement_content(booking)
-    assert len(content["terms_sections"]) == 11  # 10 standard + the 18th appendix
+    headings = [s["heading"] for s in content["terms_sections"]]
+    assert len(headings) == 9, headings  # 8 standard + the 18th appendix
+    assert "Credit Card Surcharges" not in headings
+    assert "Public Holidays" not in headings
     assert _agreement_pdf_pages(db, booking) == 1
 
 

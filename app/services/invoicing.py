@@ -17,11 +17,9 @@ from app.models.invoice import InvoiceStatus, InvoiceType
 from app.models.payment import PaymentMethod
 from app.services import stripe_integration
 from app.services.policy import (
-    CARD_SURCHARGE_RATE,
-    DEFAULT_CARD_NETWORK,
     PUBLIC_HOLIDAY_SURCHARGE_RATE,
     STANDARD_DEPOSIT,
-    is_card_surcharge_permitted,
+    public_holiday_surcharge_applies,
 )
 from app.utils import is_valid_email
 
@@ -89,19 +87,12 @@ def compute_totals(db: Session, event_date: dt.date, line_items: list[dict]) -> 
     except (KeyError, InvalidOperation, TypeError) as exc:
         raise ValueError(f"malformed line item: {exc}") from exc
 
-    surcharge = _round_money(subtotal * PUBLIC_HOLIDAY_SURCHARGE_RATE) if is_public_holiday(db, event_date) else Decimal("0.00")
+    # is_public_holiday answers False for a dateless booking, so it also
+    # guards the date comparison that follows it. Order matters here.
+    surcharge = Decimal("0.00")
+    if is_public_holiday(db, event_date) and public_holiday_surcharge_applies(event_date):
+        surcharge = _round_money(subtotal * PUBLIC_HOLIDAY_SURCHARGE_RATE)
     return subtotal, surcharge, subtotal + surcharge
-
-
-def calculate_card_payment_amount(
-    balance: Decimal, payment_date: dt.date, card_network: str = DEFAULT_CARD_NETWORK
-) -> Decimal:
-    """How much to actually charge a card for this balance, factoring in
-    whether a surcharge may legally be applied on this date/network. Not
-    baked into any stored invoice total -- see app/models/invoice.py."""
-    if not is_card_surcharge_permitted(payment_date, card_network):
-        return _round_money(balance)
-    return _round_money(balance * (1 + CARD_SURCHARGE_RATE))
 
 
 def create_invoice(

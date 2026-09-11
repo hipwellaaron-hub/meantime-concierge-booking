@@ -9,7 +9,6 @@ from app.main import app
 from app.models.invoice import InvoiceStatus, InvoiceType
 from app.models.payment import PaymentMethod
 from app.services.invoicing import (
-    calculate_card_payment_amount,
     cancel_invoice,
     create_deposit_invoice,
     create_final_invoice,
@@ -25,7 +24,7 @@ from app.services.invoicing import (
     record_payment,
 )
 from app.services.invoicing import compute_totals
-from app.services.policy import CARD_SURCHARGE_BAN_DATE
+from app.services.policy import SURCHARGE_END_DATE
 
 CATERING_ITEMS = [
     {"description": "Antipasto platter", "quantity": 4, "unit_price": "65.00"},
@@ -89,26 +88,69 @@ def test_no_surcharge_on_non_holiday_date(db, booking, public_holidays):
     assert invoice.total == Decimal("440.00")
 
 
-def test_surcharge_applied_on_public_holiday(db, hamilton, loft, public_holidays):
+def _holiday_booking(db, loft, event_date, name):
     from app.services.booking import create_booking
 
-    christmas_booking = create_booking(
+    return create_booking(
         db,
         space_id=loft.id,
         contact_id=None,
-        event_date=dt.date(2026, 12, 25),
+        event_date=event_date,
         start_time=dt.time(12, 0),
         end_time=dt.time(17, 0),
-        event_name="Christmas Party",
+        event_name=name,
         event_type="corporate",
         adult_count=50,
         child_count=0,
         notes=None,
         actor="test",
     )
-    invoice = create_invoice(db, christmas_booking, InvoiceType.final, CATERING_ITEMS, dt.date(2026, 12, 20), actor="test")
+
+
+def test_surcharge_applied_on_a_public_holiday_before_the_end_date(db, hamilton, loft, public_holidays):
+    """The surcharge ended on 1 October 2026, but it is sunset by EVENT
+    date rather than deleted, so an event that already happened on a
+    public holiday still prices the way it was actually sold. A draft
+    invoice for one must not lose the charge next time it is saved."""
+    booking = _holiday_booking(db, loft, dt.date(2026, 6, 8), "King's Birthday Party")
+    invoice = create_invoice(db, booking, InvoiceType.final, CATERING_ITEMS, dt.date(2026, 6, 1), actor="test")
     assert invoice.surcharge == Decimal("44.00")  # 10% of 440.00
     assert invoice.total == Decimal("484.00")
+
+
+def test_no_surcharge_on_an_ordinary_day_before_the_end_date(db, hamilton, loft, public_holidays):
+    """The companion to the test above, and it exists because a mutation
+    survived without it: with the date gate in place, the is_public_holiday
+    check is only load-bearing for events BEFORE the end date. The original
+    non-holiday test uses 2026-10-03, which is past the end date, so it
+    passed even with the holiday check deleted."""
+    booking = _holiday_booking(db, loft, dt.date(2026, 6, 6), "Ordinary Saturday")
+    assert is_public_holiday(db, dt.date(2026, 6, 6)) is False, "the date must not be a holiday"
+    invoice = create_invoice(db, booking, InvoiceType.final, CATERING_ITEMS, dt.date(2026, 6, 1), actor="test")
+    assert invoice.surcharge == Decimal("0.00")
+    assert invoice.total == Decimal("440.00")
+
+
+def test_no_surcharge_on_a_public_holiday_after_the_end_date(db, hamilton, loft, public_holidays):
+    """Christmas 2026 is still a public holiday and falls after the end
+    date, so it attracts nothing. This is the case the change exists for."""
+    booking = _holiday_booking(db, loft, dt.date(2026, 12, 25), "Christmas Party")
+    invoice = create_invoice(db, booking, InvoiceType.final, CATERING_ITEMS, dt.date(2026, 12, 20), actor="test")
+    assert is_public_holiday(db, dt.date(2026, 12, 25)) is True, "the date is still a public holiday"
+    assert invoice.surcharge == Decimal("0.00")
+    assert invoice.total == Decimal("440.00")
+
+
+def test_the_end_date_itself_is_already_past_the_surcharge(db, hamilton, loft, public_holidays):
+    """Inclusive, the same way the old card-surcharge gate was: the end
+    date is the first day with no surcharge, not the last day with one."""
+    from app.models.public_holiday import PublicHoliday
+
+    db.add(PublicHoliday(holiday_date=SURCHARGE_END_DATE, name="Probe Holiday", region="NSW", applies_to_surcharge=True))
+    db.flush()
+    booking = _holiday_booking(db, loft, SURCHARGE_END_DATE, "Edge Case Party")
+    invoice = create_invoice(db, booking, InvoiceType.final, CATERING_ITEMS, SURCHARGE_END_DATE, actor="test")
+    assert invoice.surcharge == Decimal("0.00")
 
 
 def test_bank_holiday_does_not_trigger_surcharge(db, public_holidays):
@@ -120,19 +162,20 @@ def test_christmas_is_flagged_as_public_holiday(db, public_holidays):
     assert is_public_holiday(db, dt.date(2026, 12, 25)) is True
 
 
-def test_card_surcharge_applied_before_ban_date():
-    amount = calculate_card_payment_amount(Decimal("100.00"), dt.date(2026, 9, 1))
-    assert amount == Decimal("101.80")  # 1.8% surcharge
+def test_the_card_surcharge_no_longer_exists_anywhere():
+    """Removed on 2026-09-11 (Aaron). The old implementation was gated on
+    a date, and the gate read the container's local clock while this repo
+    pins no timezone -- so on a UTC host it would not have taken effect
+    until mid-morning Sydney time on 1 October. Deleting the charge
+    removes the gate and that bug together, which is why this asserts
+    ABSENCE rather than a zero rate: a rate of zero still has a gate."""
+    from app.services import invoicing as invoicing_module
+    from app.services import policy as policy_module
 
-
-def test_card_surcharge_blocked_after_rba_ban_date():
-    amount = calculate_card_payment_amount(Decimal("100.00"), CARD_SURCHARGE_BAN_DATE)
-    assert amount == Decimal("100.00")
-
-
-def test_amex_still_surchargeable_after_ban_date():
-    amount = calculate_card_payment_amount(Decimal("100.00"), CARD_SURCHARGE_BAN_DATE, card_network="amex")
-    assert amount == Decimal("101.80")
+    for gone in ("CARD_SURCHARGE_RATE", "CARD_SURCHARGE_BAN_DATE", "SURCHARGE_EXEMPT_NETWORKS",
+                 "DEFAULT_CARD_NETWORK", "is_card_surcharge_permitted"):
+        assert not hasattr(policy_module, gone), f"policy.{gone} survived the removal"
+    assert not hasattr(invoicing_module, "calculate_card_payment_amount")
 
 
 def test_single_full_payment_marks_invoice_paid(db, booking):
@@ -232,20 +275,35 @@ def test_draft_invoice_not_publicly_viewable(db, booking):
 # --- Hardening regression tests (pre-deployment cycle) -----------------
 
 
-def test_card_surcharge_permitted_day_before_ban():
-    amount = calculate_card_payment_amount(Decimal("100.00"), dt.date(2026, 9, 30))
-    assert amount == Decimal("101.80")
+def test_a_card_payment_costs_exactly_the_balance(db, booking):
+    """The figure on the invoice page and the figure the client is asked
+    for on the card must be the same number. This is the assertion that
+    actually protects a client, rather than one about a removed constant."""
+    from app.api.invoices import _build_invoice_context
 
+    from unittest.mock import patch
 
-def test_card_surcharge_blocked_day_after_ban():
-    amount = calculate_card_payment_amount(Decimal("100.00"), dt.date(2026, 10, 2))
-    assert amount == Decimal("100.00")
+    from app.services import stripe_integration
 
+    invoice = create_final_invoice(
+        db, booking, line_items=CATERING_ITEMS, due_date=dt.date(2026, 10, 1), actor="test"
+    )
 
-def test_card_surcharge_blocked_exact_midnight_of_ban_date():
-    # CARD_SURCHARGE_BAN_DATE itself must already be banned (inclusive) --
-    # "from 1 October 2026" means the ban applies starting that day.
-    assert calculate_card_payment_amount(Decimal("100.00"), CARD_SURCHARGE_BAN_DATE) == Decimal("100.00")
+    class FakeLink:
+        url = "https://checkout.stripe.com/fake-link"
+        id = "plink_fake123"
+
+    # Stripe is not configured in the test environment, and a skipped test
+    # proves nothing about money -- stub it so this actually runs.
+    with patch.object(stripe_integration, "STRIPE_SECRET_KEY", "sk_test_fake"):
+        with patch.object(stripe_integration.stripe.PaymentLink, "create", return_value=FakeLink()) as mock_create:
+            context = _build_invoice_context(db, invoice, include_card_payment=True)
+
+    balance = context["summary"]["balance_due"]
+    assert context["card_payment_amount"] == balance
+    assert "card_surcharge_pct" not in context, "the surcharge disclosure outlived the surcharge"
+    # And the figure actually sent to Stripe, in cents, not just the one shown.
+    assert mock_create.call_args.kwargs["line_items"][0]["price_data"]["unit_amount"] == int(balance * 100)
 
 
 def test_cannot_cancel_an_already_cancelled_invoice(db, booking):

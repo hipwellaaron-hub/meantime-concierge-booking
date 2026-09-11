@@ -29,37 +29,52 @@ HOLD_EXPIRY_DAYS = 7
 # draft gate consults this before offering a room it should not offer.
 RESTAURANT_HELD_SATURDAY_EVENING = ("The Lounge",)
 
-# From the build prompt: "Credit card surcharge 1.8%." See
-# CARD_SURCHARGE_BAN_DATE below -- this rate is going away for most cards.
-CARD_SURCHARGE_RATE = Decimal("0.018")
-
-# From the build prompt: "Public holiday surcharge 10%."
+# BOTH SURCHARGES COME OFF (Aaron, 2026-09-11; deadline 1 October 2026).
+# They are removed differently, on purpose.
+#
+# THE CARD SURCHARGE IS DELETED OUTRIGHT, not sunset. It was never stored
+# on an invoice (see app/models/invoice.py) -- it existed only as an
+# addition made when a payment link was built -- so removing it changes no
+# historical record and nothing becomes unreproducible. Dropping it before
+# the deadline rather than on it costs nothing and closes the window where
+# a client could be charged a fee the agreement no longer discloses. The
+# previous implementation kept surcharging Amex, Diners, PayPal and BNPL,
+# which the RBA ban does not cover; Aaron's instruction is that the 1.8%
+# comes off, so the exempt-network branch goes with it.
+#
+# It also removed a latent bug worth recording: the old date gate was fed
+# dt.date.today(), the container's local date, and no timezone is pinned
+# anywhere in this repo. On a UTC host the ban would not have taken effect
+# until mid-morning Sydney time on 1 October, so a client opening their
+# invoice that morning would still have been given a surcharged payment
+# link. Deleting the charge removes the gate and the bug together.
+#
+# THE PUBLIC-HOLIDAY SURCHARGE IS SUNSET BY EVENT DATE, not deleted,
+# because it IS stored on the invoice and folded into the total. A draft
+# invoice for a public holiday that has already happened must not silently
+# lose the amount that event was actually surcharged the next time
+# somebody saves it. No public holiday falls between this change and the
+# end date -- the next one is Labour Day, 5 October 2026 -- so no event
+# still to come is charged differently either way. The gate exists only so
+# that a past event's figures stay reproducible.
 PUBLIC_HOLIDAY_SURCHARGE_RATE = Decimal("0.10")
-
-# The RBA is banning surcharges on Visa, Mastercard and EFTPOS transactions
-# Australia-wide from this date -- a real regulatory deadline confirmed via
-# live research during this build (ANZ, Tyro, and the Australian Banking
-# Association all corroborate 1 October 2026), not a guess. The ban does
-# NOT cover Amex, Diners, PayPal, or BNPL -- those remain surchargeable.
-# On/after this date, CARD_SURCHARGE_RATE must not be applied to a
-# Visa/Mastercard/EFTPOS transaction. See is_card_surcharge_permitted().
-CARD_SURCHARGE_BAN_DATE = dt.date(2026, 10, 1)
-SURCHARGE_EXEMPT_NETWORKS = {"amex", "diners", "paypal", "bnpl"}
-DEFAULT_CARD_NETWORK = "visa_mastercard_eftpos"
+SURCHARGE_END_DATE = dt.date(2026, 10, 1)
 
 
-def is_card_surcharge_permitted(payment_date: dt.date, card_network: str = DEFAULT_CARD_NETWORK) -> bool:
-    """Whether a card surcharge may legally be applied to a payment made on
-    this date, on this card network."""
-    if card_network in SURCHARGE_EXEMPT_NETWORKS:
-        return True
-    return payment_date < CARD_SURCHARGE_BAN_DATE
+def public_holiday_surcharge_applies(event_date: dt.date) -> bool:
+    """Whether an event on this date still attracts the public-holiday
+    surcharge. WHETHER the date is a public holiday is a separate question
+    and the caller's -- see invoicing.is_public_holiday."""
+    return event_date < SURCHARGE_END_DATE
 
 
 # --- Everything below is sourced from the Meantime Hamilton Master Policy
 # v1.3 doc (locked, August 2026) -- read in full and cross-checked against
-# this module; STANDARD_DEPOSIT/CARD_SURCHARGE_RATE/PUBLIC_HOLIDAY_SURCHARGE_RATE
-# above already matched it exactly, no drift found there.
+# this module; STANDARD_DEPOSIT and the two surcharge rates above already
+# matched it exactly, no drift found there. The Master Policy is now OUT OF
+# DATE on both surcharges: Aaron ended them on 2026-09-11 and the card one
+# no longer exists in this module at all. The doc is still the source for
+# everything else below.
 
 # Master Policy v1.3 §1.4 (Platters): "1 platter per 5 guests." Genuinely
 # unresolved: live staff correspondence has used 1-per-4 (reasoning a

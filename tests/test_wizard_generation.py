@@ -77,8 +77,13 @@ def _complete_all_steps(db, session, menu_items, *, accessibility_needs=None):
 
 
 def test_surcharge_applied_to_gross_subtotal_not_net_of_deposit(db, loft, menu_items, public_holidays):
-    # Australia Day 2027-01-26 is a real seeded public holiday (10% surcharge).
-    booking = _make_booking(db, loft, event_date=dt.date(2027, 1, 26))
+    # King's Birthday 2026-06-08 is a real seeded public holiday. It has to
+    # be one BEFORE policy.SURCHARGE_END_DATE: the surcharge ended on
+    # 2026-10-01 and is sunset by event date, so Australia Day 2027 (which
+    # this used to use) now correctly attracts nothing. The invariant under
+    # test is unchanged -- the surcharge base is the GROSS subtotal, never
+    # net of the deposit credit.
+    booking = _make_booking(db, loft, event_date=dt.date(2026, 6, 8))
     change_status(db, booking, BookingStatus.confirmed, actor="test")
     _pay_deposit(db, booking, amount=Decimal("500.00"))
 

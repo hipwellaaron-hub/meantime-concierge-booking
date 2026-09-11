@@ -63,7 +63,10 @@ def _build_invoice_context(db: Session, invoice, *, include_card_payment: bool) 
     card_payment_url = None
     card_payment_amount = None
     if include_card_payment and stripe_integration.is_configured() and not summary["is_fully_paid"]:
-        card_payment_amount = invoicing.calculate_card_payment_amount(summary["balance_due"], dt.date.today())
+        # The balance itself, with nothing added. The 1.8% card surcharge
+        # was removed on 2026-09-11 (see policy.py); a card payment now
+        # costs exactly what the invoice says.
+        card_payment_amount = summary["balance_due"]
         try:
             card_payment_url, link_id = stripe_integration.create_payment_link(invoice, card_payment_amount)
             invoicing.record_payment_link(db, invoice, link_id)
@@ -86,13 +89,6 @@ def _build_invoice_context(db: Session, invoice, *, include_card_payment: bool) 
         if inv.id != invoice.id and inv.status != InvoiceStatus.draft
     ]
 
-    # Only name the surcharge when one is actually built into the card figure
-    # -- a card payment past the legislated surcharge sunset (policy.py) costs
-    # the same as the balance, so there is nothing to disclose.
-    card_surcharge_pct = None
-    if card_payment_amount is not None and card_payment_amount > summary["balance_due"]:
-        card_surcharge_pct = f"{policy.CARD_SURCHARGE_RATE * 100:.1f}"
-
     return {
         "invoice": invoice,
         "booking": invoice.booking,
@@ -103,7 +99,6 @@ def _build_invoice_context(db: Session, invoice, *, include_card_payment: bool) 
         "stripe_configured": card_payment_url is not None,
         "card_payment_url": card_payment_url,
         "card_payment_amount": card_payment_amount,
-        "card_surcharge_pct": card_surcharge_pct,
     }
 
 
