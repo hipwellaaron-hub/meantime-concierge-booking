@@ -50,45 +50,6 @@ def lock_booking_row(db: Session, booking_id: uuid.UUID) -> None:
     db.execute(select(Booking.id).where(Booking.id == booking_id).with_for_update())
 
 
-def lock_booking_row(db: Session, booking_id: uuid.UUID) -> None:
-    """Serialise "make the FIRST version" on a row that always exists.
-
-    lock_current_for_update locks the current document row -- and with no
-    Event Order there is no row, so it locks nothing (SELECT ... FOR UPDATE
-    over zero rows is a no-op). A staff Generate and an AI proposal racing
-    to create v1 then both saw None; the loser hit the unique index and
-    the caller got a 500 (proved 2026-09-11). Every path that may create a
-    first version takes this lock BEFORE its locked read of the current
-    row, so the second arrival sees the first one's draft."""
-    db.execute(select(Booking.id).where(Booking.id == booking_id).with_for_update())
-
-
-def lock_booking_row(db: Session, booking_id: uuid.UUID) -> None:
-    """Serialise "make the FIRST version" on a row that always exists.
-
-    lock_current_for_update locks the current document row -- and with no
-    Event Order there is no row, so it locks nothing (SELECT ... FOR UPDATE
-    over zero rows is a no-op). A staff Generate and an AI proposal racing
-    to create v1 then both saw None; the loser hit the unique index and
-    the caller got a 500 (proved 2026-09-11). Every path that may create a
-    first version takes this lock BEFORE its locked read of the current
-    row, so the second arrival sees the first one's draft."""
-    db.execute(select(Booking.id).where(Booking.id == booking_id).with_for_update())
-
-
-def lock_booking_row(db: Session, booking_id: uuid.UUID) -> None:
-    """Serialise "make the FIRST version" on a row that always exists.
-
-    lock_current_for_update locks the current document row -- and with no
-    Event Order there is no row, so it locks nothing (SELECT ... FOR UPDATE
-    over zero rows is a no-op). A staff Generate and an AI proposal racing
-    to create v1 then both saw None; the loser hit the unique index and
-    the caller got a 500 (proved 2026-09-11). Every path that may create a
-    first version takes this lock BEFORE its locked read of the current
-    row, so the second arrival sees the first one's draft."""
-    db.execute(select(Booking.id).where(Booking.id == booking_id).with_for_update())
-
-
 def get_current(db: Session, booking_id: uuid.UUID, doc_type: DocumentType) -> Document | None:
     return db.execute(
         select(Document).where(
@@ -806,11 +767,52 @@ def delete_draft(db: Session, document: Document, *, actor: str) -> None:
     there's nothing to preserve. Anything sent/viewed/signed must go
     through create_new_version() instead (superseded, never deleted), so a
     link that was already given to a client can never stop resolving to
-    something."""
+    something.
+
+    That promise was only half true until 2026-09-11: deleting a draft
+    that had SUPERSEDED a sent version left no current version, and the
+    already-issued link stopped resolving. Abandoning a REVISE now restores
+    the version it superseded. Abandoning a REGENERATE does not, and must
+    not -- see the comment on the restore below for why those two differ
+    and what the Regenerate case still costs."""
     if document.status != DocumentStatus.draft:
         raise ValueError(
             f"cannot delete a document that is already {document.status.value} -- only a draft can be deleted"
         )
+    # Deleting a draft that a REVISE created is an undo of that Revise, so
+    # the version it superseded becomes current again. A Regenerate draft
+    # is not an undo and is handled differently below.
+    #
+    # Without this the booking is left with NO current version at all, and
+    # because every public link gates on is_current (_is_live in
+    # app/api/documents.py), the link the client is ALREADY HOLDING stops
+    # resolving -- permanently, and with the wrong sentence. Proved over
+    # HTTP before this existed: send an agreement, press Revise, delete
+    # the draft, and the client's link answers "This link is no longer
+    # active. Get in touch and we'll help directly" on a document that was
+    # genuinely sent and is still the latest thing they were given.
+    # Nobody is told, and there is no way back through the UI.
+    #
+    # The floor app already carries a fallback for exactly this state (see
+    # app/api/staff_app.py, "a draft deleted so that no version is
+    # current"). That stays as defence in depth, but the invariant belongs
+    # here, where it is broken, rather than in each reader that trips over
+    # it -- the floor was only ever one of the readers.
+    # NO extra lock is taken here, deliberately. An earlier draft of this
+    # fix called lock_booking_row first, which took the booking row FOR
+    # UPDATE before touching the document row -- the OPPOSITE order to
+    # update_content, mark_sent and the wizard's create_new_version, all of
+    # which take the document row first and then need FOR KEY SHARE on the
+    # booking via the booking_events foreign key. That is a real ABBA cycle
+    # and it deadlocked on Postgres in review, with the victim getting a
+    # bare 500. Reversing it is not the answer either: taking the document
+    # row first deadlocks against Regenerate, which IS booking-row-first
+    # (admin_bookings.py:608). The module has a pre-existing lock-ordering
+    # disagreement and settling it is its own change; until then this stays
+    # exactly where it was, which is proven not to deadlock.
+    booking_id, doc_type = document.booking_id, document.type
+    deleted_version = document.version
+
     db.add(
         BookingEvent(
             booking_id=document.booking_id,
@@ -821,6 +823,76 @@ def delete_draft(db: Session, document: Document, *, actor: str) -> None:
         )
     )
     db.delete(document)
+    # Free the partial-unique-index slot before the restored row claims it,
+    # the mirror of the flush create_new_version does when it supersedes.
+    db.flush()
+
+    # Two conditions, and the second one is the whole finding.
+    #
+    # The slot must actually be EMPTY: a draft that was already superseded
+    # never held it, so nothing moves.
+    #
+    # And the deleted draft must have come from REVISE, not Regenerate.
+    # Both produce a draft, and only one is an undo. revise() copies the
+    # current content forward verbatim, so abandoning it genuinely restores
+    # what the client is already holding. Regenerate REBUILDS from the
+    # booking, which is why staff reached for it -- the booking changed --
+    # so the version underneath is stale by definition. Restoring after an
+    # abandoned Regenerate let a client open and SIGN a superseded
+    # agreement printing the old date and headcount while the booking said
+    # otherwise, and has_signed_agreement then asserted the deal was
+    # papered. Proved end to end through the admin UI in review, against a
+    # control, and shown to be newly reachable: before this restore existed
+    # that link answered 410 and the signature was refused.
+    #
+    # The discriminator is the document_revised trail row, which revise()
+    # always writes (REVISED_NOTE) in the same transaction as the version.
+    # NOT the absence of document_regenerated: the straight-through
+    # Regenerate path writes no note at all, so that test would miss
+    # exactly the case above.
+    #
+    # Abandoning a Regenerate therefore leaves the slot empty and the
+    # client's link dead, which is what HEAD already did -- no better, and
+    # deliberately not worse. It is written up as its own item rather than
+    # guessed at here, because the honest answer for that case is to let
+    # the link resolve while refusing the signature, and that needs the
+    # drift comparison this module does not yet have for generated
+    # documents.
+    came_from_revise = db.execute(
+        select(BookingEvent.id)
+        .where(
+            BookingEvent.booking_id == booking_id,
+            BookingEvent.event_type == "document_revised",
+            BookingEvent.field_name == f"{doc_type.value}_version",
+            BookingEvent.new_value.startswith(f"v{deleted_version}: "),
+        )
+        .limit(1)
+    ).first() is not None
+
+    if came_from_revise and get_current(db, booking_id, doc_type) is None:
+        restored = db.execute(
+            select(Document)
+            .where(Document.booking_id == booking_id, Document.type == doc_type)
+            .order_by(Document.version.desc())
+            .limit(1)
+        ).scalars().first()
+        # Unreachable by construction, and stated rather than mutation-
+        # tested because there is no way to reach it: came_from_revise is
+        # only true when revise() built this draft FROM a previous version,
+        # and revise never deletes that version, so a row always remains.
+        # It stands as the answer to "what if the impossible happens" --
+        # skip quietly rather than raise AttributeError inside a delete.
+        if restored is not None:
+            restored.is_current = True
+            db.add(
+                BookingEvent(
+                    booking_id=booking_id,
+                    event_type="document_current_restored",
+                    field_name=f"{doc_type.value}_version",
+                    new_value=str(restored.version),
+                    actor=actor,
+                )
+            )
     db.commit()
 
 

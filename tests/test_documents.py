@@ -19,6 +19,7 @@ from app.services.documents import (
     get_current,
     mark_sent,
     record_view,
+    revise,
     sign,
     update_content,
 )
@@ -597,6 +598,189 @@ def test_delete_draft_document_succeeds(db, booking):
     document_id = document.id
     delete_draft(db, document, actor="test")
     assert db.get(type(document), document_id) is None
+
+
+def test_deleting_a_revise_draft_gives_the_client_their_link_back(db, booking):
+    """THE load-bearing one, and it asserts what the CLIENT gets, not what
+    a column says. Before 2026-09-11: send, press Revise, delete the draft,
+    and the link already in the client's hands answered "This link is no
+    longer active. Get in touch and we'll help directly" -- permanently, on
+    a document that was genuinely sent and was still the latest thing they
+    had been given. Nobody was told and there was no way back through the
+    UI. Deleting a Revise draft is an undo of the Revise."""
+    v1 = create_new_version(db, booking, DocumentType.agreement, generate_agreement_content(booking), actor="test")
+    v1 = mark_sent(db, v1, actor="test")
+    token = v1.access_token
+
+    v2 = revise(db, v1, actor="staff:aaron")
+
+    app.dependency_overrides[get_db] = lambda: db
+    try:
+        client = TestClient(app)
+        assert client.get(f"/d/{token}").status_code == 410, "a Revise in flight correctly holds the link"
+
+        delete_draft(db, v2, actor="test")
+
+        response = client.get(f"/d/{token}")
+        assert response.status_code == 200, "the client's link must resolve again once the Revise is abandoned"
+        assert "no longer active" not in response.text
+    finally:
+        app.dependency_overrides.clear()
+
+    current = get_current(db, booking.id, DocumentType.agreement)
+    assert current is not None and current.id == v1.id
+    # "viewed", not "sent", because the client's own GET above records the
+    # view -- that is the ordinary path working, not the restore altering
+    # anything. What matters is that it never reverts to a draft.
+    assert current.status == DocumentStatus.viewed, "restoring must not change what the version IS"
+
+
+def test_an_approved_event_order_comes_back_when_its_revision_is_abandoned(db, booking):
+    """An APPROVED Event Order can be revised (unlike a signed agreement,
+    which revise refuses outright), so this is the version of the bug that
+    can actually happen to an approved document. Restoring must not
+    disturb the approval."""
+    v1 = create_new_version(db, booking, DocumentType.beo, {"n": 1}, actor="test")
+    v1 = mark_sent(db, v1, actor="test")
+    v1 = sign(db, v1, signer_name="Pat Wilson", signer_ip="203.0.113.9")
+    signed_at = v1.signed_at
+
+    v2 = revise(db, v1, actor="staff:aaron")
+    delete_draft(db, v2, actor="test")
+
+    current = get_current(db, booking.id, DocumentType.beo)
+    assert current is not None and current.id == v1.id
+    assert current.status == DocumentStatus.signed
+    assert current.signer_name == "Pat Wilson"
+    assert current.signed_at == signed_at
+
+
+def test_abandoning_a_REGENERATE_does_not_re_arm_the_superseded_version(db, booking):
+    """THE review's high finding, and it is the reason the restore is not
+    unconditional. Revise and Regenerate both leave a draft, and only one
+    is an undo. Regenerate REBUILDS from the booking, which is why staff
+    reached for it -- the booking changed -- so the version underneath is
+    stale. Restoring it let a client open and SIGN a superseded agreement
+    printing the old date and headcount while the booking said otherwise.
+
+    Abandoning a Regenerate therefore leaves no current version and the
+    client's link dead. That is what the code did before any of this, so
+    it is no worse; it is recorded as its own open item rather than
+    guessed at here."""
+    v1 = create_new_version(db, booking, DocumentType.agreement, generate_agreement_content(booking), actor="test")
+    v1 = mark_sent(db, v1, actor="test")
+    token = v1.access_token
+
+    # A straight-through Regenerate writes NO note at all, which is why the
+    # discriminator is the PRESENCE of a document_revised row rather than
+    # the absence of a document_regenerated one.
+    v2 = create_new_version(db, booking, DocumentType.agreement, generate_agreement_content(booking), actor="staff:aaron")
+    delete_draft(db, v2, actor="staff:aaron")
+
+    assert get_current(db, booking.id, DocumentType.agreement) is None, (
+        "a Regenerate is not an undo -- the superseded version must not come back"
+    )
+
+    app.dependency_overrides[get_db] = lambda: db
+    try:
+        client = TestClient(app)
+        assert client.get(f"/d/{token}").status_code == 410
+        signed = client.post(f"/d/{token}/sign", data={"signer_name": "Pat Wilson", "accept_lock": "yes"})
+        assert signed.status_code == 410, "a superseded version must never become signable again"
+    finally:
+        app.dependency_overrides.clear()
+
+    db.refresh(v1)
+    assert v1.signed_at is None and v1.status == DocumentStatus.sent
+
+
+def test_an_earlier_revise_in_the_chain_does_not_excuse_a_later_regenerate(db, booking):
+    """The sharp one. A Revise earlier in the version chain leaves a
+    document_revised row on the booking forever. If the check asked only
+    "has this booking ever been revised" rather than "was THIS draft a
+    Revise", a later abandoned Regenerate would restore a stale version on
+    the strength of an unrelated Revise from weeks before."""
+    v1 = create_new_version(db, booking, DocumentType.agreement, generate_agreement_content(booking), actor="test")
+    mark_sent(db, v1, actor="test")
+    v2 = revise(db, v1, actor="staff:aaron")        # writes document_revised for v2
+    mark_sent(db, v2, actor="test")
+    v3 = create_new_version(db, booking, DocumentType.agreement,   # a Regenerate: no note
+                            generate_agreement_content(booking), actor="staff:aaron")
+
+    delete_draft(db, v3, actor="staff:aaron")
+
+    assert get_current(db, booking.id, DocumentType.agreement) is None, (
+        "v2's Revise row must not license restoring after v3's Regenerate"
+    )
+
+
+def test_deleting_a_first_draft_restores_nothing(db, booking):
+    """There is no earlier version to come back to, and that is fine --
+    the booking simply has no Event Order again. The guard must not invent
+    one or fall over looking."""
+    v1 = create_new_version(db, booking, DocumentType.beo, {"n": 1}, actor="test")
+    delete_draft(db, v1, actor="test")
+    assert get_current(db, booking.id, DocumentType.beo) is None
+
+
+def test_the_version_restored_is_the_latest_one_the_client_received(db, booking):
+    """After two sends and a Revise, abandoning the Revise must bring back
+    v2 -- the last thing the client was actually given -- and never v1.
+    Restoring the wrong one would quietly re-issue superseded terms under
+    a link the client already holds."""
+    v1 = create_new_version(db, booking, DocumentType.agreement, generate_agreement_content(booking), actor="test")
+    mark_sent(db, v1, actor="test")
+    v2 = revise(db, v1, actor="staff:aaron")
+    mark_sent(db, v2, actor="test")
+    v3 = revise(db, v2, actor="staff:aaron")
+
+    delete_draft(db, v3, actor="test")
+
+    current = get_current(db, booking.id, DocumentType.agreement)
+    assert current is not None and current.id == v2.id, "the latest SENT version, not the oldest"
+    assert current.version == 2
+
+
+def test_deleting_a_draft_that_is_not_current_restores_nothing(db, booking):
+    """A draft superseded by a later version never held the current slot,
+    so deleting it must leave that slot alone and say nothing on the
+    trail. This is what stops the guard being decorative."""
+    from app.models.booking_event import BookingEvent
+
+    # The deleted draft must genuinely BE a Revise, or this proves nothing:
+    # with a Regenerate draft the provenance check short-circuits and the
+    # empty-slot check is never reached.
+    v1 = create_new_version(db, booking, DocumentType.beo, {"n": 1}, actor="test")
+    mark_sent(db, v1, actor="test")
+    v2 = revise(db, v1, actor="staff:aaron")
+    v3 = create_new_version(db, booking, DocumentType.beo, {"n": 3}, actor="test")
+    db.refresh(v2)
+    assert v2.is_current is False and v3.is_current is True
+
+    delete_draft(db, v2, actor="test")
+
+    current = get_current(db, booking.id, DocumentType.beo)
+    assert current is not None and current.id == v3.id, "the live version must stay live"
+    restores = [e for e in db.query(BookingEvent).filter_by(booking_id=booking.id).all()
+                if e.event_type == "document_current_restored"]
+    assert restores == [], "nothing was restored, so nothing may claim to have been"
+
+
+def test_the_restore_says_so_on_the_trail(db, booking):
+    """An undo that money and contracts depend on is not allowed to be
+    invisible -- the same rule as every other write in this module."""
+    from app.models.booking_event import BookingEvent
+
+    v1 = create_new_version(db, booking, DocumentType.agreement, generate_agreement_content(booking), actor="test")
+    mark_sent(db, v1, actor="test")
+    v2 = revise(db, v1, actor="staff:aaron")
+    delete_draft(db, v2, actor="staff:aaron")
+
+    events = [e for e in db.query(BookingEvent).filter_by(booking_id=booking.id).all()
+              if e.event_type == "document_current_restored"]
+    assert len(events) == 1, [e.event_type for e in db.query(BookingEvent).all()]
+    assert events[0].new_value == str(v1.version)
+    assert events[0].actor == "staff:aaron"
 
 
 def test_delete_sent_document_is_rejected(db, booking):

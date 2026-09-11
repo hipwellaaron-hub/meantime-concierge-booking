@@ -354,9 +354,16 @@ def test_no_rsa_line_when_the_version_already_carries_it(client, db, loft, conta
 
 
 def test_a_deleted_draft_does_not_blank_the_floor(client, db, loft, contact):
-    """Revise, then delete the draft: no version is current at all. The
-    last one sent stays on the floor (the client's link is a separate,
-    pre-existing question)."""
+    """Revise, then delete the draft. This test used to record the broken
+    state as pre-existing ("the deleted draft did not hand currency back")
+    and proved only that the floor's own fallback covered for it. Since
+    2026-09-11 deleting a Revise draft hands currency back, so the floor
+    reaches the run sheet by the ordinary path and the client's link works
+    again too -- which was the half nobody was covering.
+
+    The floor's fallback stays in place as defence: a booking left with no
+    current version by a delete from BEFORE that fix still needs it, until
+    a stale draft is cleared off it."""
     headers = _login(client)
     booking = _confirmed_booking(db, loft, contact)
     v1 = documents_service.create_new_version(db, booking, DocumentType.beo, _beo_content(booking), actor="test")
@@ -364,13 +371,15 @@ def test_a_deleted_draft_does_not_blank_the_floor(client, db, loft, contact):
     v2 = documents_service.revise(db, v1, actor="staff:aaron")
     documents_service.delete_draft(db, v2, actor="staff:aaron")
     db.refresh(v1)
-    assert v1.is_current is False, "the deleted draft did not hand currency back (pre-existing)"
+    assert v1.is_current is True, "abandoning a Revise must hand currency back to the sent version"
 
     detail = _detail(client, headers, booking)
 
     assert detail["beo_ready"] is True
     assert detail["beo_newer_unapproved"] is None
     assert client.get(f"/api/staff/bookings/{booking.id}/beo", headers=headers).status_code == 200
+    # And the thing the old behaviour broke: the client's own link.
+    assert client.get(f"/d/{v1.access_token}").status_code == 200
 
 
 def test_a_viewed_run_sheet_stays_during_a_revise(client, db, loft, contact):
