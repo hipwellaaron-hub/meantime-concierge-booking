@@ -69,6 +69,40 @@ def upgrade() -> None:
     )
     op.create_index('ix_bookings_venue_id', 'bookings', ['venue_id'])
 
+    # ROLLBACK SAFETY. venue_id is NOT NULL with no default, and a default
+    # cannot be a constant because the right value depends on the space. So
+    # if this ships and the previous build is then redeployed, the OLD code
+    # inserts a booking without venue_id and every insert fails -- including
+    # the public enquiry form. "Roll back by redeploying the last build",
+    # which is how every migration before this one was safe, would take the
+    # enquiry path down.
+    #
+    # This trigger fills venue_id from the space when an INSERT omits it, so
+    # the old code keeps working against the new schema. It does not weaken
+    # the explicit-venue rule: the app always sets it (see
+    # booking.create_booking), a test pins that, and the composite FK above
+    # still refuses anything that disagrees with the space. It is a net for
+    # the rollback window, not a second way of doing it.
+    op.execute(
+        """
+        CREATE FUNCTION fill_booking_venue_from_space() RETURNS trigger AS $$
+        BEGIN
+            IF NEW.venue_id IS NULL THEN
+                SELECT venue_id INTO NEW.venue_id FROM spaces WHERE id = NEW.space_id;
+            END IF;
+            RETURN NEW;
+        END;
+        $$ LANGUAGE plpgsql
+        """
+    )
+    op.execute(
+        """
+        CREATE TRIGGER trg_bookings_venue_defaults_from_space
+        BEFORE INSERT ON bookings
+        FOR EACH ROW EXECUTE FUNCTION fill_booking_venue_from_space()
+        """
+    )
+
     # A booking can NEVER move between venues. The three service paths that
     # assign a space already refuse it; this makes it impossible rather than
     # merely refused, including for a hand-written UPDATE.
@@ -98,6 +132,8 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.execute("DROP TRIGGER IF EXISTS trg_bookings_venue_is_immutable ON bookings")
     op.execute("DROP FUNCTION IF EXISTS prevent_booking_venue_change()")
+    op.execute("DROP TRIGGER IF EXISTS trg_bookings_venue_defaults_from_space ON bookings")
+    op.execute("DROP FUNCTION IF EXISTS fill_booking_venue_from_space()")
     op.drop_index('ix_bookings_venue_id', table_name='bookings')
     op.drop_constraint('fk_bookings_space_venue', 'bookings', type_='foreignkey')
     op.drop_column('bookings', 'venue_id')

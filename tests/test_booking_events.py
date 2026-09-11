@@ -152,3 +152,38 @@ def test_an_ordinary_update_still_works(db, loft, hamilton):
     db.flush()
     db.refresh(booking)
     assert booking.event_name == "Renamed Party"
+
+
+def test_an_insert_that_omits_the_venue_is_filled_from_the_space(db, loft, hamilton):
+    """The rollback net. venue_id is NOT NULL with no constant default, so
+    redeploying the PREVIOUS build -- whose code does not set it -- would
+    otherwise fail every insert, including the public enquiry form. Rolling
+    back by redeploying the last build is how every earlier migration here
+    was safe, and this keeps that true.
+
+    It does not weaken the explicit-venue rule: create_booking always sets
+    it (pinned above), and the composite FK still refuses anything that
+    disagrees with the space."""
+    import datetime as dt
+    import uuid
+
+    from sqlalchemy import text
+
+    reference = f"PRB-{uuid.uuid4().hex[:8].upper()}"
+    db.execute(
+        text(
+            """
+            INSERT INTO bookings (id, space_id, event_date, event_name, adult_count, child_count,
+                                  status, reference_code, agreed_min_adults, agreed_min_food_spend,
+                                  pricing_locked_at, created_at, updated_at)
+            VALUES (:b, :s, :d, 'Old Build Insert', 10, 0, 'tentative', :r, 0, 0, now(), now(), now())
+            """
+        ),
+        {"b": uuid.uuid4(), "s": loft.id, "d": dt.date(2027, 7, 7), "r": reference},
+    )
+
+    got = db.execute(
+        text("SELECT venue_id FROM bookings WHERE reference_code = :r"), {"r": reference}
+    ).scalar()
+    assert got is not None, "an insert without a venue must not fail"
+    assert str(got) == str(hamilton.id), "and it must be filled from the space, not guessed"
