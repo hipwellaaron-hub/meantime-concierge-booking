@@ -583,6 +583,16 @@ def test_health_reports_configuration_without_leaking_it(client):
     assert body["tools"] == 9  # seven reads, the proposal read, and the one write
 
 
+def test_health_reports_the_version_so_a_redeploy_can_be_verified(client):
+    """The MCP service is deployed separately from the web app, and the
+    written procedure for confirming one landed is to read /health. It
+    reported the tool count but never the version, so the check could not
+    actually distinguish one build from another."""
+    from mcp_server.app import SERVER_VERSION
+
+    assert client.get("/health").json()["version"] == SERVER_VERSION
+
+
 def test_refresh_tokens_outlive_access_tokens_and_a_late_refresh_still_works():
     """An hour-long access token cost a day of 401s when a client that
     never calls /token kept presenting it (2026-09-09/10). Access tokens

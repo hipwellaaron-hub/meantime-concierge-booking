@@ -42,7 +42,17 @@ app = FastAPI(title="Meantime Concierge MCP", docs_url=None, redoc_url=None, ope
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "configured": is_configured(), "tools": len(public_tools())}
+    # The version belongs here as well as in `initialize`. The comment above
+    # has claimed since 1.1.0 that /health reports it; it did not, so the
+    # documented way to verify an MCP redeploy ("check /health says 1.1.0")
+    # could never have worked, and every check of it fell back to guessing
+    # from the build log. Proved against the live service, 2026-09-11.
+    return {
+        "status": "ok",
+        "version": SERVER_VERSION,
+        "configured": is_configured(),
+        "tools": len(public_tools()),
+    }
 
 
 # --- OAuth discovery ----------------------------------------------------
