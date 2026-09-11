@@ -50,9 +50,17 @@ class Invoice(Base):
     type: Mapped[InvoiceType] = mapped_column(invoice_type_enum, nullable=False)
     line_items: Mapped[list] = mapped_column(JSONB, nullable=False)
     subtotal: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
-    # Public-holiday surcharge only. A card surcharge, where still legal,
-    # is calculated per-payment (see app.services.policy) rather than
-    # baked into this stored total -- see the Phase 3 build notes for why.
+    # Public-holiday surcharge only, and only for events BEFORE
+    # policy.SURCHARGE_END_DATE -- the charge ended on 2026-10-01 and is
+    # sunset by event date so a past event's figures stay reproducible.
+    # Stored, not recomputed at render, which is why a sent invoice keeps
+    # what it was sent with.
+    #
+    # This used to add "a card surcharge, where still legal, is calculated
+    # per-payment (see app.services.policy)". That pointer went nowhere the
+    # moment the card surcharge was deleted on 2026-09-11: policy.py has no
+    # card surcharge left at all, so the sentence described a charge that no
+    # longer exists and sent the reader to a module that never mentions it.
     surcharge: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False, default=Decimal("0.00"))
     total: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
     status: Mapped[InvoiceStatus] = mapped_column(invoice_status_enum, nullable=False, default=InvoiceStatus.draft)
