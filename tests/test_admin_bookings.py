@@ -1480,7 +1480,7 @@ def test_this_venues_booking_still_opens(admin_client, db, loft, contact):
 
 def test_a_write_route_also_refuses_another_venues_booking(admin_client, db):
     """A read that 404s while a POST still writes is the worse half of the
-    same bug, so prove one of the 43 write routes goes through the helper
+    same bug, so prove one of the router's write routes goes through the helper
     too."""
     import re
 
