@@ -1,6 +1,7 @@
 {% extends "admin/_base.html" %}
 {% block title %}{{ booking.event_name }}{% endblock %}
 {% block content %}
+{% set current_beo = (booking.documents | selectattr('type.value', 'equalto', 'beo') | selectattr('is_current') | list | first) %}
 {% if beo_proposal_waiting %}
 {# Deliberately at the top of the page and outside every <details>: this is
    the only place staff learn a proposal exists, and it was previously
@@ -11,12 +12,13 @@
     <span style="font-size:0.9rem;">
       {{ beo_proposal_waiting }} field{{ "" if beo_proposal_waiting == 1 else "s" }} proposed by Claude, not applied.
       {% if beo_proposal_document_id %}<a href="/admin/bookings/{{ booking.id }}/documents/{{ beo_proposal_document_id }}/edit">Review on the Event Order &rarr;</a>
-      {% else %}Generate the Event Order to review them.{% endif %}
+      {% elif not current_beo %}Generate the Event Order to review them (a proposal creates one itself once the booking is tentative or confirmed).
+      {% elif current_beo.is_legacy %}The current Event Order is a legacy record and cannot be revised or regenerated.
+      {% else %}The current Event Order (v{{ current_beo.version }}, {{ "approved" if current_beo.status.value == "signed" else current_beo.status.value }}) has already gone out &mdash; Revise it to review them against the new draft.{% endif %}
     </span></p>
 </div>
 {% endif %}
 {% set current_agreement = (booking.documents | selectattr('type.value', 'equalto', 'agreement') | selectattr('is_current') | list | first) %}
-{% set current_beo = (booking.documents | selectattr('type.value', 'equalto', 'beo') | selectattr('is_current') | list | first) %}
 {% set deposit_invoices = booking.invoices | selectattr('type.value', 'equalto', 'deposit') | list %}
 {% set active_final_invoices = booking.invoices | selectattr('type.value', 'equalto', 'final') | rejectattr('status.value', 'equalto', 'cancelled') | list %}
 

@@ -29,6 +29,10 @@
     the totals and the status are never proposable. The house rules run again on whatever the box says when
     you approve, so editing here is checked too.
   </p>
+  {# Approve all is THE action when every field came from one client email
+     (Aaron, 2026-09-11: "ten clicks plus typing the food is more effort
+     than pasting the text"). Edit any box first; per-field buttons stay
+     for the cases where one field is wrong. Rendered inside the form. #}
   {% if beo_proposal_stale %}
   <p style="margin:0 0 14px; padding:8px 10px; border:1px solid var(--ember); border-radius:6px; font-size:0.85rem;">
     <b>Proposed against an earlier version of this Event Order.</b> It has been regenerated since, so read each
@@ -43,6 +47,11 @@
 
   <form method="post" action="/admin/bookings/{{ booking.id }}/beo-proposals/{{ beo_proposal.id }}/review">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+    <div style="margin:0 0 14px; padding:10px 12px; background:var(--bg); border:1px solid var(--border); border-radius:6px;">
+      <button class="btn" type="submit" name="action" value="approve_all">Approve all {{ beo_review_rows | length }}</button>
+      <span class="muted" style="font-size:0.85rem;">Writes every field below as its box says. Change any box first if it is not quite right; or use the per-field buttons.</span>
+    </div>
 
     {% for row in beo_review_rows %}
     <div style="border-top:1px solid var(--border); padding:14px 0;">
@@ -61,7 +70,7 @@
       <textarea name="value_{{ row.field }}" rows="3">{{ row.proposed }}</textarea>
 
       <div style="margin-top:6px;">
-        <button class="btn" type="submit" name="action" value="approve:{{ row.id }}">Approve {{ row.label }}</button>
+        <button class="btn secondary" type="submit" name="action" value="approve:{{ row.id }}">Approve only {{ row.label }}</button>
         <button class="btn danger" type="submit" name="action" value="reject:{{ row.id }}">Reject</button>
       </div>
     </div>

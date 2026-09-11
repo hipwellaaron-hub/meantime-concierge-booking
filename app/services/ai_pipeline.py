@@ -205,7 +205,13 @@ def compute_awaiting(booking: Booking) -> tuple[str, dt.datetime | None, str | N
 
 
 def compute_stage_since(booking: Booking) -> dt.datetime | None:
-    advancing = [e for e in booking.events if e.event_type in ADVANCING_EVENTS]
+    # An AI-made draft (a proposal creating the first Event Order) is not
+    # the booking moving: the clock on "this has sat untouched" measures
+    # people, so events an `ai:` actor wrote do not reset it.
+    advancing = [
+        e for e in booking.events
+        if e.event_type in ADVANCING_EVENTS and not (e.actor or "").startswith("ai:")
+    ]
     if advancing:
         return advancing[-1].created_at  # ordered; see compute_awaiting on ties
     return booking.created_at

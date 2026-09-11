@@ -19,7 +19,9 @@ from sqlalchemy import select
 
 from app.api.ai_auth import AiContext, require_ai, require_ai_write
 from app.models import AiRequestKind, Booking, Space
+from app.models.document import DocumentStatus, DocumentType
 from app.services import ai_access, beo_proposals, beo_rules
+from app.services import documents as documents_service
 
 router = APIRouter(prefix="/api/ai", tags=["ai-write"])
 
@@ -102,15 +104,41 @@ def propose_event_order_values(
             },
         )
 
+    current = documents_service.get_current(ctx.db, booking.id, DocumentType.beo)
+    created = bool(getattr(proposal, "draft_created", False))
+    waiting_on = ""
+    if current is None:
+        waiting_on = (
+            " The booking has no Event Order and is still an enquiry, so a staff member generates one "
+            "before this can be reviewed."
+        )
+    elif current.status != DocumentStatus.draft:
+        shown = "approved" if current.status == DocumentStatus.signed else current.status.value
+        waiting_on = (
+            f" The current Event Order (v{current.version}, {shown}) has already gone out, so a staff "
+            "member must Revise it before this proposal can be reviewed."
+        )
+    elif created:
+        waiting_on = " The booking had no Event Order, so this proposal created the first draft for review."
     return {
         "proposal_id": str(proposal.id),
         "reference": booking.reference_code,
         "status": proposal.status,
         "awaiting_approval": [f.field for f in proposal.pending_fields],
         "warnings": [{"code": w.code, "field": w.field, "message": w.message} for w in result.warnings],
+        # What the proposal is waiting on. `created` is true when the
+        # booking had no Event Order and this proposal made the first
+        # draft (nothing is sent; a draft is invisible to the client).
+        "event_order": (
+            {"version": current.version, "status": current.status.value, "created": created}
+            if current is not None
+            else None
+        ),
         "as_of": ctx.as_of_iso,
-        "note": "Stored as a pending proposal. Nothing is applied until a staff member approves it on the "
-                "Event Order form.",
+        "note": (
+            "Stored as a pending proposal. Nothing is applied until a staff member approves it on the "
+            "Event Order form." + waiting_on
+        ),
     }
 
 

@@ -572,15 +572,10 @@ def add_linked_space(
 def _fresh_document_content(db: Session, booking: Booking, doc_type: DocumentType) -> dict:
     if doc_type == DocumentType.agreement:
         return generate_agreement_content(booking)
-    session = booking.wizard_session
-    if session is not None and session.status == WizardSessionStatus.submitted:
-        # A completed wizard already has the client's real food/
-        # beverage/music/extras answers -- generating blind [REVIEW]
-        # placeholders instead would silently throw that away just
-        # because staff triggered this by hand rather than the client
-        # submitting (see app.services.wizard_generation).
-        return wizard_generation.build_beo_content_for_session(db, session)
-    return generate_beo_content(booking)
+    # One definition, shared with a proposal creating the first draft
+    # (beo_proposals.fresh_beo_content): wizard answers when submitted,
+    # else the booking's facts with [REVIEW] prompts.
+    return beo_proposals_service.fresh_beo_content(db, booking)
 
 
 @router.post("/{booking_id}/documents/{doc_type}/generate", dependencies=[Depends(require_csrf)])
@@ -604,7 +599,11 @@ def generate_document(
     # then WRITES on that decision, so it needs the same window closed as
     # the confirm path below. An approval landing between the two used to
     # be destroyed with no confirmation shown and the approver told it had
-    # succeeded (proved live, 2026-09-06 re-review).
+    # succeeded (proved live, 2026-09-06 re-review). The booking-row lock
+    # first: with no Event Order there is no document row to lock, and an
+    # AI proposal can be creating the first draft at this same instant
+    # (see documents.lock_booking_row).
+    documents_service.lock_booking_row(db, booking.id)
     current = documents_service.lock_current_for_update(db, booking.id, doc_type)
     losses = document_regeneration.losses(db, current, content)
     pending = _pending_proposal_rows(db, booking, doc_type, current)
@@ -670,6 +669,7 @@ def generate_document_confirmed(
     # written: an approval landing in that window used to be silently
     # reverted, with the audit line still claiming the value was kept
     # (proved live with two sessions, 2026-09-06 review).
+    documents_service.lock_booking_row(db, booking.id)
     current = documents_service.lock_current_for_update(db, booking.id, doc_type)
     losses = document_regeneration.losses(db, current, content)
     # Read here, above the straight-through write, and not only inside the

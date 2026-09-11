@@ -60,6 +60,16 @@ def _booking(db, space, *, name="Proposal Test", event_type="birthday", adults=4
     )
 
 
+def _confirmed(db, booking):
+    """A proposal creates the first draft only on a tentative, confirmed or
+    completed booking; the tests that expect a draft say so."""
+    from app.models.booking import BookingStatus
+    from app.services.booking import change_status
+
+    change_status(db, booking, BookingStatus.confirmed, actor="test")
+    return booking
+
+
 def _beo(db, booking, **content_overrides):
     content = generate_beo_content(booking)
     content.update(content_overrides)
@@ -497,14 +507,147 @@ def test_an_event_order_that_has_been_sent_cannot_be_touched(db, loft):
     assert proposal.fields[0].state == FIELD_PENDING
 
 
-def test_with_no_event_order_draft_there_is_nothing_to_approve_onto(db, loft):
-    booking = _booking(db, loft)  # no BEO generated
+def test_a_proposal_with_no_event_order_creates_the_first_draft(db, loft):
+    """REVERSED 2026-09-11. It used to refuse at approval ("generate one
+    first"); Aaron: "The proposal should be able to create the Event Order
+    draft if none exists, rather than refusing until I've generated one
+    by hand." The draft is what the staff Generate click would build."""
+    booking = _confirmed(db, _booking(db, loft))
+    assert documents_service.get_current(db, booking.id, DocumentType.beo) is None
+
     proposal, result = beo_proposals.propose(
         db, booking, fields={"dietaries": "1x GF"}, source="email", actor="ai:claude"
     )
+
     assert not result.blocked
+    draft = documents_service.get_current(db, booking.id, DocumentType.beo)
+    assert draft is not None and draft.version == 1 and draft.status == DocumentStatus.draft
+    assert proposal.document_id == draft.id, "the proposal is attached to the draft it made"
+    assert draft.content["dietaries"] == "No dietary requirements declared", "created, not applied"
+    kinds = [(e.event_type, e.actor) for e in db.query(BookingEvent).filter_by(booking_id=booking.id).all()]
+    assert ("document_created", "ai:claude") in kinds
+    assert ("beo_draft_by_proposal", "ai:claude") in kinds
+    assert ("beo_proposal_created", "ai:claude") in kinds
+
+    approved = beo_proposals.approve_field(db, proposal.fields[0], actor="staff:test")
+
+    assert approved.id == draft.id and approved.content["dietaries"] == "1x GF"
+
+
+def test_a_blocked_proposal_creates_no_draft(db, loft):
+    """A blocked proposal is never offered for review, so there is nothing
+    a draft would be for."""
+    booking = _confirmed(db, _booking(db, loft))  # a booking that WOULD get a draft
+    proposal, result = beo_proposals.propose(
+        db, booking, fields={"dietaries": "balloons and streamers on every table"}, source="email", actor="ai:claude"
+    )
+
+    assert result.blocked, result.codes
+    assert documents_service.get_current(db, booking.id, DocumentType.beo) is None
+    assert proposal.document_id is None
+
+
+def test_a_sent_event_order_is_never_superseded_by_a_proposal(db, loft):
+    """Only when there is NO Event Order. A version that has gone out is
+    a Revise, which stays a staff decision."""
+    booking = _booking(db, loft)
+    sent = documents_service.mark_sent(db, _beo(db, booking), actor="staff:test")
+
+    proposal, result = beo_proposals.propose(
+        db, booking, fields={"dietaries": "1x GF"}, source="email", actor="ai:claude"
+    )
+
+    assert not result.blocked
+    current = documents_service.get_current(db, booking.id, DocumentType.beo)
+    assert current.id == sent.id and current.version == 1 and current.status == DocumentStatus.sent
+    assert proposal.document_id is None
     with pytest.raises(beo_proposals.ProposalError):
         beo_proposals.approve_field(db, proposal.fields[0], actor="staff:test")
+
+
+def test_the_created_draft_is_what_generate_would_build(db, loft, menu_items):
+    """One builder for the staff click and the proposal path. With a
+    submitted wizard that means the client's own food answers, not blank
+    placeholders."""
+    from tests.test_wizard_generation import _complete_all_steps, _make_booking, _pay_deposit
+    from app.models.wizard_session import WizardSessionStatus
+    from app.services import wizard as wizard_service
+
+    booking = _confirmed(db, _make_booking(db, loft))
+    _pay_deposit(db, booking)
+    session = wizard_service.get_or_create_session(db, booking, actor="staff:test")
+    _complete_all_steps(db, session, menu_items)
+    # The wizard is submitted but its documents never got built -- the
+    # state wizard.submit_review leaves behind when generation raises
+    # (GenerationFailed): status submitted, no Event Order. Set directly;
+    # fresh_beo_content reads only the status and the step answers.
+    session.status = WizardSessionStatus.submitted
+    db.commit()
+    assert documents_service.get_current(db, booking.id, DocumentType.beo) is None
+
+    proposal, result = beo_proposals.propose(
+        db, booking, fields={"dietaries": "1x GF"}, source="email", actor="ai:claude"
+    )
+
+    draft = documents_service.get_current(db, booking.id, DocumentType.beo)
+    assert draft is not None and not result.blocked
+    lines = draft.content["food_order"]["line_items"]
+    assert [ln["description"] for ln in lines] == ["Grazing Platter"], "the wizard's food, not a placeholder"
+    assert draft.content["food_order"]["note"] is None
+
+
+def test_a_second_proposal_reuses_the_draft_the_first_one_made(db, loft):
+    booking = _confirmed(db, _booking(db, loft))
+    beo_proposals.propose(db, booking, fields={"dietaries": "1x GF"}, source="email", actor="ai:claude")
+    first = documents_service.get_current(db, booking.id, DocumentType.beo)
+
+    proposal, _ = beo_proposals.propose(db, booking, fields={"music": "DJ from 8pm"}, source="email 2", actor="ai:claude")
+
+    again = documents_service.get_current(db, booking.id, DocumentType.beo)
+    assert again.id == first.id and again.version == 1, "no second version"
+    assert proposal.document_id == first.id
+
+
+def test_the_endpoint_says_it_created_the_draft(ai_client, db, loft):
+    booking = _confirmed(db, _booking(db, loft))
+
+    first = _propose(ai_client, booking, CLEAN)
+    second = _propose(ai_client, booking, {"music": "DJ from 8pm"})
+
+    assert first.status_code == 201, first.text
+    assert first.json()["event_order"] == {"version": 1, "status": "draft", "created": True}
+    assert "created the first draft" in first.json()["note"]
+    assert second.status_code == 201
+    assert second.json()["event_order"] == {"version": 1, "status": "draft", "created": False}
+
+
+def test_the_booking_page_links_to_the_draft_the_proposal_made(admin_client, db, loft):
+    booking = _confirmed(db, _booking(db, loft))
+    beo_proposals.propose(db, booking, fields={"dietaries": "1x GF"}, source="email", actor="ai:claude")
+    draft = documents_service.get_current(db, booking.id, DocumentType.beo)
+
+    page = admin_client.get(f"/admin/bookings/{booking.id}").text
+
+    assert "Event Order proposal waiting" in page
+    assert f"/documents/{draft.id}/edit" in page, "the review link points at the draft"
+    assert "Generate the Event Order to review them" not in page
+
+
+def test_approve_all_is_the_first_thing_on_the_panel(admin_client, db, loft):
+    """Aaron, 2026-09-11: ten per-field clicks when one email produced
+    all ten fields. Approve all existed but sat at the bottom under ten
+    primary Approve buttons; it is now the first control, and the
+    per-field buttons read as the exception."""
+    booking = _confirmed(db, _booking(db, loft))
+    beo_proposals.propose(db, booking, fields=CLEAN, source="email", actor="ai:claude")
+    draft = documents_service.get_current(db, booking.id, DocumentType.beo)
+
+    page = admin_client.get(f"/admin/bookings/{booking.id}/documents/{draft.id}/edit").text
+
+    panel = page[page.index("Proposed by Claude"):]
+    assert panel.index('value="approve_all"') < panel.index('value="approve:'), "Approve all comes first"
+    assert "Approve only Dietaries" in panel
+    assert panel.count('value="approve_all"') == 2, "and it is still there at the foot of the list"
 
 
 def test_a_new_proposal_supersedes_what_was_still_pending(db, loft):
@@ -1989,3 +2132,248 @@ def test_a_proposal_resolved_by_an_approval_is_not_relabelled_superseded(db, lof
     assert first.fields[0].state == FIELD_APPROVED
     assert second.status == STATUS_PENDING
     assert db.query(BookingEvent).filter_by(booking_id=booking.id, event_type="beo_proposal_superseded").count() == 0
+
+
+# --- the review of "a proposal creates the draft" (2026-09-11) ---------------------
+
+
+def test_an_enquirys_proposal_is_stored_but_makes_no_draft(ai_client, db, loft):
+    """An enquiry's Event Order is a staff decision, as it is for a client
+    who has not signed or paid. The proposal waits, and the answer says so."""
+    booking = _booking(db, loft)  # status: enquiry
+
+    resp = _propose(ai_client, booking, CLEAN)
+
+    assert resp.status_code == 201
+    assert resp.json()["event_order"] is None
+    assert "still an enquiry" in resp.json()["note"]
+    assert documents_service.get_current(db, booking.id, DocumentType.beo) is None
+
+
+def test_a_proposal_the_drafts_own_content_would_block_creates_nothing(db, loft, menu_items):
+    """Judged BEFORE the draft exists, against what it would hold. A
+    submitted wizard's dietaries carry the client's allergy; a proposal
+    that drops it is blocked -- and no draft is left behind."""
+    from tests.test_wizard_generation import _complete_all_steps, _make_booking, _pay_deposit
+    from app.models.wizard_session import WizardSessionStatus
+    from app.services import wizard as wizard_service
+
+    booking = _confirmed(db, _make_booking(db, loft))
+    _pay_deposit(db, booking)
+    session = wizard_service.get_or_create_session(db, booking, actor="staff:test")
+    _complete_all_steps(db, session, menu_items)
+    session.extras_response = {**(session.extras_response or {}), "dietary_requirements": "1x severe nut allergy"}
+    session.status = WizardSessionStatus.submitted
+    db.commit()
+    assert "nut allergy" in beo_proposals.fresh_beo_content(db, booking)["dietaries"]
+
+    proposal, result = beo_proposals.propose(
+        db, booking, fields={"dietaries": "No dietary requirements"}, source="email", actor="ai:claude"
+    )
+
+    assert result.blocked and "drops_dietary" in result.codes, result.codes
+    assert documents_service.get_current(db, booking.id, DocumentType.beo) is None, "a blocked proposal creates nothing"
+    assert proposal.document_id is None
+
+
+def test_a_proposal_on_a_sent_event_order_is_judged_against_it_and_waits_for_a_revise(ai_client, db, loft):
+    """Not against blank values: a Revise copies the sent version forward,
+    and approval will judge against that. So a proposal that would drop
+    the sent version's allergy is refused NOW, and a clean one is told a
+    Revise is needed."""
+    booking = _booking(db, loft)
+    sent = documents_service.mark_sent(db, _beo(db, booking, dietaries="1x severe nut allergy"), actor="staff:test")
+
+    dropped = _propose(ai_client, booking, {"dietaries": "No dietary requirements"})
+    clean = _propose(ai_client, booking, {"music": "DJ from 8pm"})
+
+    assert dropped.status_code == 422 and "drops_dietary" in dropped.json()["detail"]["rule_codes"]
+    assert clean.status_code == 201
+    assert clean.json()["event_order"] == {"version": 1, "status": "sent", "created": False}
+    assert "must Revise it" in clean.json()["note"]
+    assert documents_service.get_current(db, booking.id, DocumentType.beo).id == sent.id
+
+
+def test_a_draft_created_by_a_proposal_does_not_reset_the_pipeline_clock(db, loft):
+    """days_at_stage measures people: a document_created written by an
+    `ai:` actor (a proposal making the first draft) must not restart the
+    clock; the same event by staff does. Rows are inserted with explicit
+    times because inside one test transaction every now() is identical."""
+    from app.services import ai_pipeline
+
+    booking = _confirmed(db, _booking(db, loft))
+    base = ai_pipeline.compute_stage_since(booking)
+    later = base + dt.timedelta(days=3)
+    db.add(BookingEvent(booking_id=booking.id, event_type="document_created", field_name="beo_version", new_value="1", actor="ai:claude", created_at=later))
+    db.commit()
+    db.expire(booking)
+
+    assert ai_pipeline.compute_stage_since(booking) == base, "an AI-made draft is not the booking moving"
+
+    db.add(BookingEvent(booking_id=booking.id, event_type="document_created", field_name="beo_version", new_value="2", actor="staff:aaron", created_at=later + dt.timedelta(days=1)))
+    db.commit()
+    db.expire(booking)
+
+    assert ai_pipeline.compute_stage_since(booking) == later + dt.timedelta(days=1), "a staff Generate is"
+
+def test_a_draft_created_by_a_proposal_does_not_clear_the_notes_review_finding(db, hamilton, loft):
+    from app.services import reconciliation
+
+    booking = _confirmed(db, _booking(db, loft))
+    booking.notes = "client said the cousin is allergic to everything, check"
+    db.commit()
+    assert "NOTES_BEFORE_BEO" in {f.check_code for f in reconciliation.collect(db, hamilton) if f.booking_id == booking.id}
+
+    beo_proposals.propose(db, booking, fields={"dietaries": "1x GF"}, source="email", actor="ai:claude")
+
+    assert "NOTES_BEFORE_BEO" in {f.check_code for f in reconciliation.collect(db, hamilton) if f.booking_id == booking.id}, "nobody has read the notes yet"
+    documents_service.create_new_version(db, booking, DocumentType.beo, generate_beo_content(booking), actor="staff:test")
+    assert "NOTES_BEFORE_BEO" not in {f.check_code for f in reconciliation.collect(db, hamilton) if f.booking_id == booking.id}
+
+
+def test_the_booking_page_notice_is_worded_from_the_event_orders_state(admin_client, db, loft):
+    enquiry = _booking(db, loft, name="Notice Enquiry")
+    beo_proposals.propose(db, enquiry, fields={"dietaries": "1x GF"}, source="email", actor="ai:claude")
+    page = admin_client.get(f"/admin/bookings/{enquiry.id}").text
+    assert "Generate the Event Order to review them" in page
+
+    sent_booking = _booking(db, loft, name="Notice Sent")
+    documents_service.mark_sent(db, _beo(db, sent_booking), actor="staff:test")
+    beo_proposals.propose(db, sent_booking, fields={"dietaries": "1x GF"}, source="email", actor="ai:claude")
+    page = admin_client.get(f"/admin/bookings/{sent_booking.id}").text
+    assert "(v1, sent) has already gone out" in page and "Revise it" in page
+
+    legacy_booking = _booking(db, loft, name="Notice Legacy")
+    legacy = _beo(db, legacy_booking)
+    legacy.is_legacy = True
+    legacy.status = DocumentStatus.signed
+    db.commit()
+    beo_proposals.propose(db, legacy_booking, fields={"dietaries": "1x GF"}, source="email", actor="ai:claude")
+    page = admin_client.get(f"/admin/bookings/{legacy_booking.id}").text
+    assert "legacy record" in page
+
+
+def test_a_staff_generate_and_a_proposal_racing_for_the_first_draft_make_one_draft():
+    """Two real sessions. The staff Generate's own sequence (booking-row
+    lock, locked read, create) takes the lock and HOLDS it for a second
+    before creating; propose() starts inside that second. With the
+    booking-row lock in propose it waits and then sees the staff draft;
+    without it, it saw None, created v1 first, and the staff create hit
+    the unique index (proved 2026-09-11). One v1, the proposal attached
+    to it, no error, and the winner is always the staff side here."""
+    import time
+
+    from sqlalchemy import text as sql_text
+
+    from app.models import Booking
+    from app.models.booking import BookingStatus
+    from app.models.document import Document
+    from app.seed import seed as seed_hamilton
+    from app.services.booking import change_status, create_booking
+    from tests.conftest import TestSessionLocal
+
+    setup = TestSessionLocal()
+    venue = seed_hamilton(setup)
+    space = next(sp for sp in venue.spaces if sp.is_bookable)
+    contact = Contact(name="Race First Draft", email=f"race.first.{uuid.uuid4().hex[:8]}@example.com")
+    setup.add(contact)
+    setup.flush()
+    booking = create_booking(
+        setup, space_id=space.id, contact_id=contact.id, event_date=dt.date(2027, 5, 14),
+        start_time=dt.time(18, 0), end_time=dt.time(23, 0), event_name=f"Race First {uuid.uuid4().hex[:6]}",
+        event_type="corporate", adult_count=40, child_count=0, notes=None, actor="test",
+    )
+    change_status(setup, booking, BookingStatus.confirmed, actor="test")
+    booking_id = booking.id
+    setup.close()
+
+    staff_holds_the_lock = threading.Event()
+    errors = {}
+    outcome = {}
+
+    def staff_generate():
+        session = TestSessionLocal()
+        try:
+            b = session.get(Booking, booking_id)
+            content = beo_proposals.fresh_beo_content(session, b)
+            documents_service.lock_booking_row(session, booking_id)
+            current = documents_service.lock_current_for_update(session, booking_id, DocumentType.beo)
+            assert current is None
+            staff_holds_the_lock.set()
+            time.sleep(1.0)  # the AI's propose is running now
+            documents_service.create_new_version(session, b, DocumentType.beo, content, actor="staff:generate")
+            outcome["staff"] = "created"
+        except Exception as exc:  # noqa: BLE001
+            errors["staff"] = exc
+        finally:
+            session.close()
+
+    def ai_propose():
+        session = TestSessionLocal()
+        try:
+            b = session.get(Booking, booking_id)
+            assert staff_holds_the_lock.wait(timeout=5)
+            started = time.monotonic()
+            proposal, result = beo_proposals.propose(session, b, fields={"dietaries": "1x GF"}, source="race", actor="ai:claude")
+            outcome["ai"] = (proposal.document_id, bool(getattr(proposal, "draft_created", False)), result.blocked, time.monotonic() - started)
+        except Exception as exc:  # noqa: BLE001
+            errors["ai"] = exc
+        finally:
+            session.close()
+
+    threads = [threading.Thread(target=staff_generate), threading.Thread(target=ai_propose)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    check = TestSessionLocal()
+    try:
+        assert not errors, errors
+        docs = check.query(Document).filter_by(booking_id=booking_id).all()
+        assert [(d.version, d.is_current) for d in docs] == [(1, True)], (outcome, [(d.version, d.is_current) for d in docs])
+        document_id, created, blocked, waited = outcome["ai"]
+        assert outcome["staff"] == "created" and not created, ("the AI waited and took the staff draft", outcome)
+        assert not blocked and document_id == docs[0].id, outcome
+        assert waited >= 0.5, f"propose did not wait on the lock ({waited:.2f}s)"
+    finally:
+        check.execute(sql_text("SET LOCAL app.allow_booking_purge='on'"))
+        target = check.get(Booking, booking_id)
+        if target is not None:
+            from app.services.booking import delete_booking_and_dependents
+            delete_booking_and_dependents(check, target, actor="staff:test")
+        check.close()
+def test_the_draft_creator_never_builds_over_a_version_that_exists(db, loft):
+    """The race-only branch of _create_draft_for_proposal: propose() only
+    calls it when no Event Order exists, but a staff Generate can land
+    between that read and the lock. Whatever it then finds: a draft is
+    returned as-is, a sent (or viewed, or approved) version is left alone,
+    and nothing is created either way."""
+    booking = _confirmed(db, _booking(db, loft))
+    content = beo_proposals.fresh_beo_content(db, booking)
+
+    draft = _beo(db, booking)
+    assert beo_proposals._create_draft_for_proposal(db, booking, actor="ai:claude", content=content) == (draft, False)
+
+    documents_service.mark_sent(db, draft, actor="staff:test")
+    assert beo_proposals._create_draft_for_proposal(db, booking, actor="ai:claude", content=content) == (None, False)
+    assert documents_service.get_current(db, booking.id, DocumentType.beo).id == draft.id
+
+
+def test_a_failure_after_the_draft_leaves_no_draft_behind(db, loft, monkeypatch):
+    """The draft and the proposal are one transaction: if the proposal
+    cannot be written, the draft it made is rolled back with it. (With
+    create_new_version committing on its own, an AI-made draft with no
+    proposal was left behind and the retry answered created=False.)"""
+    booking = _confirmed(db, _booking(db, loft))
+
+    def explode(*args, **kwargs):
+        raise RuntimeError("supersede failed")
+
+    monkeypatch.setattr(beo_proposals, "_supersede_older", explode)
+    with pytest.raises(RuntimeError):
+        beo_proposals.propose(db, booking, fields={"dietaries": "1x GF"}, source="email", actor="ai:claude")
+    db.rollback()
+
+    assert documents_service.get_current(db, booking.id, DocumentType.beo) is None
+    assert not [e for e in db.query(BookingEvent).filter_by(booking_id=booking.id).all() if e.event_type == "beo_draft_by_proposal"]

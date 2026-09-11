@@ -48,9 +48,18 @@ from app.models.beo_proposal import (
     BeoProposalField,
 )
 from app.models.document import Document, DocumentStatus, DocumentType
-from app.services.document_generation import NO_DIETARIES, REVIEW
+from app.models.wizard_session import WizardSessionStatus
+from app.services.document_generation import NO_DIETARIES, REVIEW, generate_beo_content
 from app.services import beo_rules, document_regeneration, documents as documents_service
+from app.models.booking import BLOCKING_STATUSES
+from app.models.booking import BLOCKING_STATUSES
+from app.models.booking import BLOCKING_STATUSES
+from app.models.booking import BLOCKING_STATUSES
 from app.services.booking import VOIDED_STATUSES
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +95,63 @@ def normalise_beo_field(field: str, value: str | None) -> str | None:
     return text_value
 
 
+def fresh_beo_content(db: Session, booking: Booking) -> dict:
+    """What Generate builds for this booking right now: the wizard's own
+    answers when the client has submitted it, else the booking's facts
+    with [REVIEW] prompts. One definition for the staff click and for a
+    proposal creating the first draft, so the two cannot drift."""
+    session = booking.wizard_session
+    if session is not None and session.status == WizardSessionStatus.submitted:
+        # A completed wizard already has the client's real food/beverage/
+        # music/extras answers -- generating blind placeholders instead
+        # would throw that away (see app.services.wizard_generation).
+        from app.services import wizard_generation
+
+        return wizard_generation.build_beo_content_for_session(db, session)
+    return generate_beo_content(booking)
+
+
+def _create_draft_for_proposal(db: Session, booking: Booking, *, actor: str, content: dict) -> tuple[Document | None, bool]:
+    """(the draft to attach the proposal to, whether THIS call created it).
+
+    Aaron, 2026-09-11: "The proposal should be able to create the Event
+    Order draft if none exists, rather than refusing until I've generated
+    one by hand." Called only once the rules have passed against
+    `content`, the draft's own would-be values -- a blocked proposal
+    creates nothing. Only a tentative/confirmed/completed booking (the
+    caller checks): an enquiry's Event Order is a staff decision.
+
+    No commit here. The draft, its trail row and the proposal land in the
+    caller's one transaction, under the advisory lock the whole propose
+    holds, so neither can exist without the other and a proposal waiting
+    behind this one cannot slip in between (review, 2026-09-11).
+
+    The booking-row lock is the one thing that closes the window against a
+    staff Generate at the same instant: with no Event Order there is no
+    document row for lock_current_for_update to lock, and the Generate
+    paths take this same lock before their own locked read. If a Generate
+    still got there first, its draft is returned and nothing is created."""
+    documents_service.lock_booking_row(db, booking.id)
+    current = documents_service.lock_current_for_update(db, booking.id, DocumentType.beo)
+    if current is not None:
+        if current.status == DocumentStatus.draft and not current.is_legacy:
+            return current, False
+        return None, False
+    document = documents_service.create_new_version(
+        db, booking, DocumentType.beo, content, actor=actor, commit=False
+    )
+    db.add(
+        BookingEvent(
+            booking_id=booking.id,
+            event_type="beo_draft_by_proposal",
+            field_name="beo_version",
+            new_value=str(document.version),
+            actor=actor,
+        )
+    )
+    return document, True
+
+
 def current_draft_beo(db: Session, booking_id: uuid.UUID) -> Document | None:
     """The Event Order a proposal would be applied to: the current one,
     and only while it is still a draft. A sent, viewed or signed Event
@@ -100,7 +166,13 @@ def current_values(document: Document | None) -> dict[str, str]:
     """What the Event Order reads today, for the ten proposable fields --
     the "current" column of the review panel, and the base every
     comparison rule is judged against."""
-    content = (document.content if document is not None else None) or {}
+    return current_values_from_content(document.content if document is not None else None)
+
+
+def current_values_from_content(content: dict | None) -> dict[str, str]:
+    """current_values for content that may not be a document yet: the
+    draft a proposal is about to create is judged BEFORE it exists."""
+    content = content or {}
     values: dict[str, str] = {}
     for field in beo_rules.PROPOSABLE_FIELDS:
         raw = content.get(field)
@@ -258,7 +330,11 @@ def _printed_legacy_music(content: dict) -> str | None:
 
 
 def _rule_context(booking: Booking, document: Document | None = None) -> dict:
-    content = (document.content if document is not None else None) or {}
+    return _rule_context_from_content(booking, document.content if document is not None else None)
+
+
+def _rule_context_from_content(booking: Booking, content: dict | None) -> dict:
+    content = content or {}
     return {
         # The older merged field, so LEGACY_MUSIC_SPLIT can refuse a Music
         # write that would drop the entertainment half of it.
@@ -284,7 +360,10 @@ def propose(
     kept for calibration, exactly as a rules-blocked draft is -- and
     returns it with the rule result so the caller can answer the AI.
 
-    Never applies anything.
+    On a tentative/confirmed/completed booking with no Event Order, a
+    proposal that passes the rules also CREATES the first draft, in the
+    same transaction (Aaron, 2026-09-11); `proposal.draft_created` says
+    whether this call did. Never applies anything.
     """
     refusal = can_receive_proposals(booking)
     if refusal is not None:
@@ -293,9 +372,37 @@ def propose(
     _proposal_lock(db, booking.id)
     document = current_draft_beo(db, booking.id)
     proposed = {name: normalise_newlines(value).strip() for name, value in (fields or {}).items()}
-    current = current_values(document)
 
-    result = beo_rules.validate(proposed, current=current, **_rule_context(booking, document))
+    # What the rules are judged against, and whether this proposal will
+    # create the draft. Three states besides "a draft exists":
+    #   - a current Event Order that has gone out (sent/viewed/signed):
+    #     judged against ITS values -- what a Revise copies forward and
+    #     what approval will see -- and left alone; the proposal waits for
+    #     a staff Revise (a legacy record is a placeholder: judged blank);
+    #   - no Event Order on a tentative/confirmed/completed booking: judged
+    #     against the content the draft WOULD hold, so a blocked proposal
+    #     creates nothing and what was checked is what gets created;
+    #   - no Event Order on an enquiry: judged blank, no draft -- an
+    #     enquiry's Event Order is a staff decision (parity with a client
+    #     who has not yet signed or paid).
+    judged_content: dict | None = None
+    will_create = False
+    if document is not None:
+        judged_content = document.content
+    else:
+        current_any = documents_service.get_current(db, booking.id, DocumentType.beo)
+        if current_any is not None:
+            judged_content = None if current_any.is_legacy else current_any.content
+        elif booking.status in BLOCKING_STATUSES:
+            judged_content = fresh_beo_content(db, booking)
+            will_create = True
+    current = current_values_from_content(judged_content)
+
+    result = beo_rules.validate(proposed, current=current, **_rule_context_from_content(booking, judged_content))
+
+    created_draft = False
+    if not result.blocked and will_create:
+        document, created_draft = _create_draft_for_proposal(db, booking, actor=actor, content=judged_content)
 
     if not result.blocked:
         # Before the insert, so a partial unique index on "one pending
@@ -342,8 +449,19 @@ def propose(
             actor=actor,
         )
     )
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        # The partial unique index on the current version, or the one on
+        # "one pending proposal per booking": another writer landed in the
+        # same instant despite the locks. Nothing is half-written; the AI
+        # is told to propose again rather than shown a 500.
+        db.rollback()
+        raise ProposalError("another write landed on this booking at the same moment -- propose again") from exc
     db.refresh(proposal)
+    # Transient, for the API answer: whether THIS proposal made the draft.
+    # Not a column -- the trail row beo_draft_by_proposal is the record.
+    proposal.draft_created = created_draft
     return proposal, result
 
 

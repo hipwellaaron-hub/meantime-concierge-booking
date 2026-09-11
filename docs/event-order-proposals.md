@@ -139,3 +139,19 @@ Two smaller things in the same area:
   generation, which was not in scope.
 - `booking_events` free text is history, not a live record — never present
   it as a current finding.
+
+
+## 4. Decided 2026-09-11 — moving the boundary
+
+Aaron, after the first live use on HAM-20260926-FM49Q: "it made more work,
+not less … Ten clicks plus typing the food is more effort than pasting the
+text and typing the food. The problem is where the boundary sits. 'The AI
+can't write money' is correct and stays. But the food order is where the
+actual work is." The principle is unchanged: nothing reaches a client
+document without a staff member, and the AI never writes a price.
+
+| Question | Decision | Where it lives |
+|---|---|---|
+| A proposal on a booking with no Event Order | **Creates the first draft** when the booking is tentative, confirmed or completed (an enquiry's Event Order stays a staff decision; the proposal is stored and the API says so). The rules are judged against the content the draft WOULD hold — wizard answers if submitted, else the booking's facts with `[REVIEW]` prompts — BEFORE anything is written, so a blocked proposal creates nothing and what was checked is what gets created. The draft, its `beo_draft_by_proposal` trail row and the proposal are written in ONE transaction under the per-booking advisory lock; "first version" is serialised on the booking row, which always exists (with no Event Order there is no document row to lock), and the staff Generate paths take the same lock — a lost race is a 409 "propose again", never a 500. A current Event Order that has gone out is never superseded: the proposal is judged against that version's values (what a Revise copies forward) and waits for the Revise, which the API says. An AI-made draft does not reset the pipeline's `days_at_stage` clock and does not clear the `NOTES_BEFORE_BEO` reconciliation finding — nobody has read the notes yet. The trail carries `document_created` (actor `ai:claude`) and `beo_draft_by_proposal`; the API answers `event_order: {version, status, created}`. | `beo_proposals.propose`, `_create_draft_for_proposal`, `fresh_beo_content` (one builder shared with the staff Generate click), `documents.lock_booking_row`, `create_new_version(commit=False)` |
+| Approve all, with edit | Was already built (`approve_all`, the `value_*` boxes, the footer button) but sat below ten per-field Approve buttons, so it read as the afterthought. **It is now the primary action at the top of the panel**; per-field buttons read "Approve only X" and are secondary. Nothing else changed: edits in the boxes are recorded as `beo_proposal_edited`, rules run again at approval. | `document_edit_beo.html` |
+| The food order as catalogue items and quantities | **Decided, built in the following commits** (its own section when it lands): the AI proposes `[{menu item, quantity}]`, never a price, never a custom line; the price comes from the catalogue exactly as for the wizard; staff see the lines and the computed total, approve or edit quantities; the Event Order line items and the draft final invoice are built from the catalogue on approval. | to follow |

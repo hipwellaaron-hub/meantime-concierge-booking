@@ -37,6 +37,58 @@ logger = logging.getLogger(__name__)
 BOOKING_EVENT_ACTOR_MAX_LENGTH = 255
 
 
+def lock_booking_row(db: Session, booking_id: uuid.UUID) -> None:
+    """Serialise "make the FIRST version" on a row that always exists.
+
+    lock_current_for_update locks the current document row -- and with no
+    Event Order there is no row, so it locks nothing (SELECT ... FOR UPDATE
+    over zero rows is a no-op). A staff Generate and an AI proposal racing
+    to create v1 then both saw None; the loser hit the unique index and
+    the caller got a 500 (proved 2026-09-11). Every path that may create a
+    first version takes this lock BEFORE its locked read of the current
+    row, so the second arrival sees the first one's draft."""
+    db.execute(select(Booking.id).where(Booking.id == booking_id).with_for_update())
+
+
+def lock_booking_row(db: Session, booking_id: uuid.UUID) -> None:
+    """Serialise "make the FIRST version" on a row that always exists.
+
+    lock_current_for_update locks the current document row -- and with no
+    Event Order there is no row, so it locks nothing (SELECT ... FOR UPDATE
+    over zero rows is a no-op). A staff Generate and an AI proposal racing
+    to create v1 then both saw None; the loser hit the unique index and
+    the caller got a 500 (proved 2026-09-11). Every path that may create a
+    first version takes this lock BEFORE its locked read of the current
+    row, so the second arrival sees the first one's draft."""
+    db.execute(select(Booking.id).where(Booking.id == booking_id).with_for_update())
+
+
+def lock_booking_row(db: Session, booking_id: uuid.UUID) -> None:
+    """Serialise "make the FIRST version" on a row that always exists.
+
+    lock_current_for_update locks the current document row -- and with no
+    Event Order there is no row, so it locks nothing (SELECT ... FOR UPDATE
+    over zero rows is a no-op). A staff Generate and an AI proposal racing
+    to create v1 then both saw None; the loser hit the unique index and
+    the caller got a 500 (proved 2026-09-11). Every path that may create a
+    first version takes this lock BEFORE its locked read of the current
+    row, so the second arrival sees the first one's draft."""
+    db.execute(select(Booking.id).where(Booking.id == booking_id).with_for_update())
+
+
+def lock_booking_row(db: Session, booking_id: uuid.UUID) -> None:
+    """Serialise "make the FIRST version" on a row that always exists.
+
+    lock_current_for_update locks the current document row -- and with no
+    Event Order there is no row, so it locks nothing (SELECT ... FOR UPDATE
+    over zero rows is a no-op). A staff Generate and an AI proposal racing
+    to create v1 then both saw None; the loser hit the unique index and
+    the caller got a 500 (proved 2026-09-11). Every path that may create a
+    first version takes this lock BEFORE its locked read of the current
+    row, so the second arrival sees the first one's draft."""
+    db.execute(select(Booking.id).where(Booking.id == booking_id).with_for_update())
+
+
 def get_current(db: Session, booking_id: uuid.UUID, doc_type: DocumentType) -> Document | None:
     return db.execute(
         select(Document).where(
@@ -380,8 +432,14 @@ def create_new_version(
     actor: str,
     regenerated_note: str | None = None,
     revised_note: str | None = None,
+    commit: bool = True,
 ) -> Document:
-    """`regenerated_note` records what a human chose to keep and what they
+    """`commit=False` leaves the transaction to the caller: a proposal that
+    creates the first Event Order draft writes the draft and itself
+    together, so neither can exist without the other. Event Orders only --
+    the agreement branch below runs after the commit and needs one.
+
+    `regenerated_note` records what a human chose to keep and what they
     let go when this version replaced one carrying their own words. It is
     written in the SAME transaction as the version: committing the version
     first and the note afterwards would let a crash in between leave the
@@ -399,6 +457,8 @@ def create_new_version(
         # just a second room for the parent's event -- its own documents
         # would duplicate the parent's, not describe anything real.
         raise ValueError("cannot create a document on a linked booking -- use the parent booking instead")
+    if not commit and doc_type != DocumentType.beo:
+        raise ValueError("commit=False is for Event Order drafts only")
     previous = get_current(db, booking.id, doc_type)
     if previous is not None and previous.is_legacy:
         # A legacy record is a fixed copy of what was signed in iVvy -- never
@@ -480,6 +540,9 @@ def create_new_version(
                 actor=actor,
             )
         )
+    if not commit:
+        db.flush()
+        return document
     db.commit()
     db.refresh(document)
 

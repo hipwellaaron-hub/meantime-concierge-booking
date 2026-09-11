@@ -333,7 +333,14 @@ def check_notes_before_beo(bookings) -> list[Finding]:
         text = ((b.notes or "") + (b.enquiry_text or "")).strip()
         if not text:
             continue
-        has_beo = any(d.type == DocumentType.beo for d in b.documents)
+        # A draft a proposal created (beo_draft_by_proposal names its
+        # version) is not a person having generated the Event Order, so
+        # it does not count: nobody has read the notes yet.
+        ai_made = {e.new_value for e in b.events if e.event_type == "beo_draft_by_proposal"}
+        has_beo = any(
+            d.type == DocumentType.beo and not (d.status == DocumentStatus.draft and str(d.version) in ai_made)
+            for d in b.documents
+        )
         if has_beo:
             continue
         out.append(
