@@ -2908,3 +2908,139 @@ def test_a_hand_typed_food_line_has_no_approval_identity(db, loft):
     assert document_regeneration._food_order_approval_key(
         {"line_items": [{"description": "Something typed", "quantity": 1, "unit_price": "10.00"}]}
     ) == "", "a line with no catalogue id cannot be matched to an approval, and must not be guessed at"
+
+
+# =============================================================================
+# The invoice follows the approved food order (Aaron, 2026-09-11)
+# =============================================================================
+
+
+def _final_invoices(db, booking):
+    from app.models.invoice import Invoice, InvoiceStatus, InvoiceType
+
+    return db.query(Invoice).filter(
+        Invoice.booking_id == booking.id, Invoice.type == InvoiceType.final, Invoice.status != InvoiceStatus.cancelled
+    ).all()
+
+
+def _invoice_events(db, booking):
+    return [e for e in db.query(BookingEvent).filter_by(booking_id=booking.id).all() if e.event_type == "final_invoice_from_beo"]
+
+
+def test_approving_the_food_order_builds_the_draft_final_invoice_with_the_deposit_credited(db, loft, menu_items):
+    from app.services import policy
+    from tests.test_wizard_generation import _pay_deposit
+
+    booking = _confirmed(db, _booking(db, loft))
+    _pay_deposit(db, booking)  # $500
+    proposal, _ = beo_proposals.propose(
+        db, booking, fields={}, source="email", actor="ai:claude",
+        food_order=_food(menu_items, ("Grazing Platter", 2), ("Pork Belly Bites", 3)),
+    )
+
+    beo_proposals.approve_field(db, _food_row(proposal), actor="staff:aaron")
+
+    invoices = _final_invoices(db, booking)
+    assert len(invoices) == 1
+    invoice = invoices[0]
+    assert invoice.status.value == "draft"
+    assert [(ln["description"], ln["quantity"], ln["unit_price"]) for ln in invoice.line_items] == [
+        ("Grazing Platter", 2, "250.00"), ("Pork Belly Bites", 3, "100.00"), ("Less: deposit credited", 1, "-500.00")
+    ]
+    assert invoice.line_items[0]["menu_item_id"] == str(menu_items["Grazing Platter"].id), "a catalogue line is recognisable"
+    assert str(invoice.total) == "300.00"
+    assert invoice.due_date == policy.final_balance_due_date(booking.event_date, issued_on=dt.date.today())
+    assert "built from the approved food order" in _invoice_events(db, booking)[-1].new_value
+
+
+def test_an_existing_draft_final_invoice_is_refreshed_not_duplicated(db, loft, menu_items):
+    from app.services import invoicing
+
+    booking = _confirmed(db, _booking(db, loft))
+    placeholder = invoicing.create_final_invoice(
+        db, booking, line_items=[{"description": "TBC", "quantity": 1, "unit_price": "1.00"}],
+        due_date=dt.date(2027, 5, 7), actor="staff:aaron",
+    )
+    proposal, _ = beo_proposals.propose(
+        db, booking, fields={}, source="email", actor="ai:claude", food_order=_food(menu_items, ("Grazing Platter", 2))
+    )
+
+    beo_proposals.approve_field(db, _food_row(proposal), actor="staff:aaron")
+
+    invoices = _final_invoices(db, booking)
+    assert [i.id for i in invoices] == [placeholder.id]
+    db.refresh(placeholder)
+    assert [(ln["description"], ln["quantity"]) for ln in placeholder.line_items] == [("Grazing Platter", 2)]
+    assert str(placeholder.total) == "500.00"
+    assert placeholder.due_date == dt.date(2027, 5, 7), "the draft's own due date stands"
+    assert "refreshed" in _invoice_events(db, booking)[-1].new_value
+
+
+def test_a_sent_final_invoice_is_left_alone_and_the_booking_page_says_so(admin_client, db, loft, menu_items):
+    from app.services import invoicing
+
+    booking = _confirmed(db, _booking(db, loft))
+    sent = invoicing.create_final_invoice(
+        db, booking, line_items=[{"description": "Original", "quantity": 1, "unit_price": "10.00"}],
+        due_date=dt.date(2027, 5, 7), actor="staff:aaron",
+    )
+    invoicing.mark_sent(db, sent, actor="staff:aaron")
+    proposal, _ = beo_proposals.propose(
+        db, booking, fields={}, source="email", actor="ai:claude", food_order=_food(menu_items, ("Grazing Platter", 2))
+    )
+
+    document = beo_proposals.approve_field(db, _food_row(proposal), actor="staff:aaron")
+
+    db.refresh(sent)
+    assert [ln["description"] for ln in sent.line_items] == ["Original"] and sent.status.value == "sent"
+    assert document.content["food_order"]["line_items"][0]["description"] == "Grazing Platter", "the Event Order still took the lines"
+    outcome = _invoice_events(db, booking)[-1].new_value
+    assert f"#{sent.invoice_number} is already sent and was left alone" in outcome
+    page = admin_client.get(f"/admin/bookings/{booking.id}").text
+    assert "did not reach the final invoice" in page and "left alone" in page
+
+
+def test_an_undated_booking_gets_the_lines_but_no_invoice(db, loft, menu_items):
+    booking = _confirmed(db, _booking(db, loft))
+    proposal, _ = beo_proposals.propose(
+        db, booking, fields={}, source="email", actor="ai:claude", food_order=_food(menu_items, ("Grazing Platter", 2))
+    )
+    booking.event_date = None
+    db.commit()
+
+    beo_proposals.approve_field(db, _food_row(proposal), actor="staff:aaron")
+
+    assert _final_invoices(db, booking) == []
+    assert "no event date" in _invoice_events(db, booking)[-1].new_value
+
+
+def test_an_invoice_failure_never_undoes_the_approved_lines(db, loft, menu_items, monkeypatch):
+    from app.services import invoicing
+
+    def refuse(*args, **kwargs):
+        raise ValueError("simulated: invoicing refused")
+
+    monkeypatch.setattr(invoicing, "create_final_invoice", refuse)
+    booking = _confirmed(db, _booking(db, loft))
+    proposal, _ = beo_proposals.propose(
+        db, booking, fields={}, source="email", actor="ai:claude", food_order=_food(menu_items, ("Grazing Platter", 2))
+    )
+
+    document = beo_proposals.approve_field(db, _food_row(proposal), actor="staff:aaron")
+
+    db.refresh(document)
+    assert document.content["food_order"]["line_items"][0]["description"] == "Grazing Platter"
+    assert _final_invoices(db, booking) == []
+    assert "not updated: simulated" in _invoice_events(db, booking)[-1].new_value
+    assert beo_proposals.latest_food_invoice_notice(booking).startswith("final invoice not updated")
+
+
+def test_a_built_draft_invoice_needs_no_notice(db, loft, menu_items):
+    booking = _confirmed(db, _booking(db, loft))
+    proposal, _ = beo_proposals.propose(
+        db, booking, fields={}, source="email", actor="ai:claude", food_order=_food(menu_items, ("Grazing Platter", 2))
+    )
+    beo_proposals.approve_field(db, _food_row(proposal), actor="staff:aaron")
+    db.refresh(booking)
+
+    assert beo_proposals.latest_food_invoice_notice(booking) is None, "a draft in the invoice list is its own notice"

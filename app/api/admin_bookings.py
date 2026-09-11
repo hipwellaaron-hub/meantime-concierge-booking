@@ -379,6 +379,7 @@ def booking_detail(
             # problem again" -- a receipt that did not go is a banner with
             # a resend, not a line in a collapsed table.
             receipt_outcome=documents_service.latest_receipt_outcome(db, booking.id),
+            food_invoice_notice=beo_proposals_service.latest_food_invoice_notice(booking),
             alert_outcome=documents_service.latest_alert_outcome(db, booking.id),
             beo_proposal_waiting=len(beo_review_rows),
             beo_proposal_document_id=beo_draft.id if beo_draft is not None else None,

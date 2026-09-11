@@ -36,6 +36,8 @@ from sqlalchemy import select, update, text
 from sqlalchemy.orm import Session
 
 from app.models import Booking, BookingEvent, MenuItem
+from app.models.invoice import Invoice, InvoiceStatus, InvoiceType
+from app.utils import truncate
 from app.models.beo_proposal import (
     FIELD_APPROVED,
     FIELD_BLOCKED,
@@ -370,6 +372,85 @@ def current_food_lines(document: Document | None) -> list[dict]:
         except (ValueError, ArithmeticError):
             continue
     return out
+
+
+def sync_final_invoice_from_food(db: Session, booking: Booking, lines: list[dict], *, actor: str) -> str:
+    """The second half of the ruling: "the line items and invoice are
+    built from the catalogue." Runs after the approved lines are on the
+    Event Order. With no final invoice it CREATES the draft from the same
+    priced lines (the deposit credit is applied by create_final_invoice);
+    an existing DRAFT gets its lines refreshed; an invoice that has gone
+    out or been paid is never touched -- that is a revise, by hand -- and
+    the trail says so. Returns the outcome sentence, which is also the
+    trail row (final_invoice_from_beo).
+
+    Its own transaction, after the document's: a failure here leaves the
+    approved lines on the Event Order and the reason on the trail, and
+    the booking page's own final-invoice form still works."""
+    from app.services import invoicing, policy
+
+    invoice_lines = [
+        {
+            "description": ln["name"],
+            "quantity": ln["quantity"],
+            "unit_price": ln["unit_price"],
+            "category": ln["category"],
+            "menu_item_id": ln["menu_item_id"],
+        }
+        for ln in lines
+    ]
+    existing = db.execute(
+        select(Invoice).where(
+            Invoice.booking_id == booking.id,
+            Invoice.type == InvoiceType.final,
+            Invoice.status != InvoiceStatus.cancelled,
+        )
+    ).scalars().first()
+    try:
+        if existing is None:
+            due = policy.final_balance_due_date(booking.event_date, issued_on=dt.date.today())
+            if due is None:
+                outcome = "no final invoice built: the booking has no event date for it to fall due against"
+            else:
+                invoice = invoicing.create_final_invoice(db, booking, line_items=invoice_lines, due_date=due, actor=actor)
+                outcome = f"draft final invoice #{invoice.invoice_number} built from the approved food order (total {invoice.total})"
+        elif existing.is_legacy:
+            outcome = f"final invoice #{existing.invoice_number} is a legacy record and was left alone"
+        elif existing.status == InvoiceStatus.draft:
+            invoicing.update_invoice(db, existing, line_items=invoice_lines, due_date=existing.due_date, actor=actor)
+            outcome = f"draft final invoice #{existing.invoice_number} refreshed from the approved food order (total {existing.total})"
+        else:
+            outcome = (
+                f"final invoice #{existing.invoice_number} is already {existing.status.value} and was left alone -- "
+                "revise it by hand if the food order changed"
+            )
+    except ValueError as exc:
+        db.rollback()
+        outcome = f"final invoice not updated: {exc}"
+    db.add(
+        BookingEvent(
+            booking_id=booking.id,
+            event_type="final_invoice_from_beo",
+            field_name=FOOD_ORDER_FIELD,
+            new_value=truncate(outcome, 500),
+            actor=actor,
+        )
+    )
+    db.commit()
+    return outcome
+
+
+def latest_food_invoice_notice(booking: Booking) -> str | None:
+    """What the booking page says about the last invoice sync -- only when
+    it did NOT build or refresh a draft, which is the case a person has to
+    act on. A built or refreshed draft is visible in the invoice list."""
+    latest = None
+    for event in booking.events:
+        if event.event_type == "final_invoice_from_beo":
+            latest = event
+    if latest is None or (latest.new_value or "").startswith("draft final invoice"):
+        return None
+    return latest.new_value
 
 
 def _deposit_paid_for(db: Session, document: Document) -> Decimal:
@@ -855,6 +936,7 @@ def _apply(
     previous_values = current_values(document)
     changes: dict[str, object] = {}
     now = dt.datetime.now(dt.timezone.utc)
+    approved_food_lines: list[dict] | None = None
     for field_row, applied in decisions:
         if field_row.field == FOOD_ORDER_FIELD:
             # Priced from the catalogue now; the document gets the lines
@@ -863,6 +945,7 @@ def _apply(
             # total block is rebuilt with it -- lines and heading must
             # never disagree (the 2026-09-08 defect).
             lines = _food_lines_for_apply(db, document, field_row.proposed_value, applied)
+            approved_food_lines = lines
             before = current_food_lines(document)
             changes[FOOD_ORDER_FIELD] = {
                 "line_items": [
@@ -952,7 +1035,7 @@ def _apply(
     # separate question and stays "beo_proposal_applied": the regenerate
     # screen reads "document_edited" as "somebody typed into this version",
     # and an approval is not that.
-    return documents_service.update_content_fields(
+    document = documents_service.update_content_fields(
         db,
         document,
         changes,
@@ -961,6 +1044,11 @@ def _apply(
         authored_fields=document_regeneration.PROTECTED_FIELD_NAMES,
         placeholders=document_regeneration.GENERATED_PLACEHOLDERS,
     )
+    if approved_food_lines is not None:
+        # The Event Order is written and committed; now the money it
+        # commits to, from the same lines (Aaron, 2026-09-11).
+        sync_final_invoice_from_food(db, document.booking, approved_food_lines, actor=actor)
+    return document
 
 
 def approve_field(

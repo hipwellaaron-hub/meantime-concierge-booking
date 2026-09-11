@@ -526,6 +526,11 @@
     </div>
   </form>
   {% endif %}
+  {% if food_invoice_notice %}
+  <p style="margin:0 0 10px; padding:8px 10px; border:1px solid var(--ember); border-radius:6px; font-size:0.85rem;">
+    <b>The approved food order did not reach the final invoice:</b> {{ food_invoice_notice }}.
+  </p>
+  {% endif %}
   {% if not active_final_invoices %}
   <details style="margin-bottom:14px;">
     <summary style="cursor:pointer; color:var(--gold);">Create final invoice</summary>
