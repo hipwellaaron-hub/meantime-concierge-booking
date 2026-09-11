@@ -24,7 +24,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from mcp_server import oauth
 from mcp_server.concierge import ConciergeError
 from mcp_server.config import is_configured, settings
-from mcp_server.tools import call_tool, public_tools
+from mcp_server.tools import BY_NAME, ToolArgumentError, call_tool, public_tools
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -256,6 +256,11 @@ def _handle(message: dict) -> dict | None:
 
     if method is None:
         return _error(request_id, -32600, "Not a request")
+    if "id" not in message:
+        # A notification, whatever its method: JSON-RPC and MCP both say
+        # it gets no response, and an error envelope with id null is a
+        # response.
+        return None
 
     if method == "initialize":
         wanted = params.get("protocolVersion")
@@ -291,11 +296,18 @@ def _handle(message: dict) -> dict | None:
 
     if method == "tools/call":
         name = params.get("name", "")
-        arguments = params.get("arguments") or {}
+        arguments = params.get("arguments")  # None means absent; [] or 0 is a caller's mistake, said as such
+        if not isinstance(name, str) or name not in BY_NAME:
+            return _error(
+                request_id, -32602, f"Unknown tool {name!r}. The tools are: " + ", ".join(BY_NAME)
+            )
         try:
             payload = call_tool(name, arguments)
-        except KeyError:
-            return _error(request_id, -32602, f"Unknown tool {name!r}")
+        except ToolArgumentError as exc:
+            # A bad ARGUMENT, said as such. It used to surface as "Unknown
+            # tool", which sent the caller looking for a deployment problem
+            # instead of its own guessed field name.
+            return _error(request_id, -32602, f"Tool {name!r}: {exc}")
         except ConciergeError as exc:
             # A tool-level failure, reported inside the result so the model
             # sees why and can stop, rather than a transport error.
@@ -339,7 +351,13 @@ async def mcp_endpoint(request: Request, authorization: str | None = Header(defa
         return JSONResponse(_error(None, -32700, "Parse error"), status_code=400)
 
     if isinstance(body, list):
-        responses = [r for r in (_handle(m) for m in body) if r is not None]
+        if not body:
+            return JSONResponse(_error(None, -32600, "Invalid Request: empty batch"), status_code=200)
+        responses = [
+            r
+            for r in (_handle(m) if isinstance(m, dict) else _error(None, -32600, "Invalid Request") for m in body)
+            if r is not None
+        ]
         if not responses:
             return JSONResponse(None, status_code=202)
         return JSONResponse(responses)

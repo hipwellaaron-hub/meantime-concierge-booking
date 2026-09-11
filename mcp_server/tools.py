@@ -280,12 +280,29 @@ TOOLS: list[dict] = [
             "`event_order_proposal` and the Event Order first so you know what is there.\n\n"
             "House rules run on what you send and refuse the proposal outright (HTTP 422 with "
             "`rule_codes`) if it puts decoration or supplier language in Dietaries, writes in "
-            "the client's first-person voice, empties a field that had a value, or drops a "
-            "declared dietary. A refused proposal is recorded but never shown to staff, so it "
-            "helps nobody: read the codes and fix it rather than re-sending.\n\n"
+            "the client's voice (first-person pronouns -- I, we, my, our -- OR request phrasing "
+            "such as 'would like', 'hoping', 'could you'; state the fact, not the sentence), "
+            "empties a field that had a value, or drops a declared dietary. On an 18th, or "
+            "any booking with under-18s, a proposed special_notes must carry the RSA line "
+            "(say 'RSA' or 'responsible service of alcohol') or it is refused with "
+            "rsa_missing; not touching special_notes on such a booking earns a warning "
+            "(rsa_absent_on_document), not a refusal. An older Event Order may hold one "
+            "merged music/entertainment value: on those, propose music and entertainment "
+            "together or the proposal is refused with legacy_music_split -- "
+            "`event_order_proposal` shows you which case you are in. A refused proposal is "
+            "recorded but never shown to staff, so it helps nobody: read the codes and fix "
+            "it rather than re-sending.\n\n"
             "You cannot touch status, the food order, or any figure -- those are computed "
             "from the catalogue, the wizard and the booking, and a proposed line item with a "
-            "wrong price is precisely the class of error this boundary exists to prevent."
+            "wrong price is precisely the class of error this boundary exists to prevent.\n\n"
+            "THE TEN FIELDS, by exact name: catering_order_and_service_style, bar_structure, "
+            "room_layout_notes, music, entertainment, dietaries, accessibility, decorations, "
+            "special_notes, onsite_contact. Any other name (catering_notes, "
+            "music_entertainment, ...) is refused before anything is sent, and the refusal "
+            "names the valid ones. Each value is at most 2000 characters (Concierge counts "
+            "after folding newlines and trimming). `trigger` is at most 30 characters -- a "
+            "label like 'client final details', not a sentence. Optional arguments may be "
+            "omitted or sent as null."
         ),
         "inputSchema": {
             "type": "object",
@@ -296,11 +313,13 @@ TOOLS: list[dict] = [
                 },
                 "source": {
                     "type": "string",
+                    "minLength": 3,
+                    "maxLength": 500,
                     "description": (
                         "Where these values came from, specifically enough that a human can go "
                         "and read it -- 'client email 6 Sep, final details'. Required: an "
                         "untraceable proposal is not reviewable, and this is shown to the "
-                        "person approving it."
+                        "person approving it. 3 to 500 characters."
                     ),
                 },
                 "fields": {
@@ -310,23 +329,35 @@ TOOLS: list[dict] = [
                         "actually changing; an omitted field is left exactly as it is."
                     ),
                     "properties": {
-                        "catering_order_and_service_style": {"type": "string"},
-                        "bar_structure": {"type": "string"},
-                        "room_layout_notes": {"type": "string"},
-                        "music": {"type": "string"},
-                        "entertainment": {"type": "string"},
-                        "dietaries": {"type": "string"},
-                        "accessibility": {"type": "string"},
-                        "decorations": {"type": "string"},
-                        "special_notes": {"type": "string"},
-                        "onsite_contact": {"type": "string"},
+                        "catering_order_and_service_style": {"type": "string", "maxLength": 2000},
+                        "bar_structure": {"type": "string", "maxLength": 2000},
+                        "room_layout_notes": {"type": "string", "maxLength": 2000},
+                        "music": {"type": "string", "maxLength": 2000},
+                        "entertainment": {"type": "string", "maxLength": 2000},
+                        "dietaries": {"type": "string", "maxLength": 2000},
+                        "accessibility": {"type": "string", "maxLength": 2000},
+                        "decorations": {"type": "string", "maxLength": 2000},
+                        "special_notes": {"type": "string", "maxLength": 2000},
+                        "onsite_contact": {"type": "string", "maxLength": 2000},
                     },
                     "additionalProperties": False,
                     "minProperties": 1,
                 },
                 "trigger": {
                     "type": "string",
-                    "description": "Short reason you acted now, e.g. 'client final details'.",
+                    "maxLength": 30,
+                    "description": (
+                        "Short label for why you acted now, e.g. 'client final details'. "
+                        "AT MOST 30 CHARACTERS -- longer is refused; put the detail in `source`."
+                    ),
+                },
+                "model": {
+                    "type": "string",
+                    "maxLength": 80,
+                    "description": (
+                        "Optional: which model produced these values, e.g. claude-fable-5-1. Shown "
+                        "to the approver on the Event Order form beside `source`."
+                    ),
                 },
             },
             "required": ["reference", "source", "fields"],
@@ -343,6 +374,11 @@ TOOLS: list[dict] = [
     },
 ]
 
+for _tool in TOOLS:
+    # What is published is what is enforced: an argument the schema does
+    # not name is refused by name, and the schema says so.
+    _tool["inputSchema"].setdefault("additionalProperties", False)
+
 BY_NAME = {tool["name"]: tool for tool in TOOLS}
 
 
@@ -351,8 +387,84 @@ def public_tools() -> list[dict]:
     return [{k: v for k, v in tool.items() if not k.startswith("_")} for tool in TOOLS]
 
 
-def call_tool(name: str, arguments: dict) -> dict:
+class ToolArgumentError(ValueError):
+    """The arguments do not fit the tool's inputSchema. Says which
+    argument and why, so the model fixes its call rather than going
+    looking for a deployment problem (2026-09-10: a missing top-level key
+    raised KeyError inside the tool and was reported as "Unknown tool")."""
+
+
+def _check(schema: dict, value: object, *, where: str, problems: list[str]) -> None:
+    """The subset of JSON Schema these tools use, checked honestly: type
+    (object, string, integer), enum, required, unexpected keys, minProperties,
+    minLength and maxLength. An explicit null on an OPTIONAL key means
+    "absent" -- Concierge accepts None for every optional and every _call
+    reads them with .get(), so a client that sends null for what it has
+    nothing to say about is not refused. Anything the schema cannot say
+    (a booking that does not exist, a house rule) is Concierge's own
+    validation, reported inside the tool result."""
+    kind = schema.get("type")
+    if "enum" in schema and value not in schema["enum"]:
+        problems.append(f"{where} must be one of: " + ", ".join(str(v) for v in schema["enum"]))
+        return
+    if kind == "object":
+        if not isinstance(value, dict):
+            problems.append(f"{where} must be an object")
+            return
+        props = schema.get("properties") or {}
+        required = schema.get("required") or ()
+        for key in required:
+            if key not in value:
+                label = key if where == "arguments" else f"{where}.{key}"
+                problems.append(f"missing required argument '{label}'")
+        if schema.get("additionalProperties") is False:
+            unexpected = sorted(k for k in value if k not in props)
+            if unexpected:
+                what = "field" if where != "arguments" else "argument"
+                problems.append(
+                    f"unexpected {what}{'s' if len(unexpected) > 1 else ''} "
+                    + ", ".join(repr(k) for k in unexpected)
+                    + f" in {where}; valid {what}s are: " + ", ".join(props)
+                )
+        if "minProperties" in schema and len(value) < schema["minProperties"]:
+            problems.append(f"{where} must have at least {schema['minProperties']} entry")
+        for key, sub in props.items():
+            if key not in value:
+                continue
+            if value[key] is None and key not in required:
+                continue  # null on an optional key is the same as leaving it out
+            _check(sub, value[key], where=key if where == "arguments" else f"{where}.{key}", problems=problems)
+    elif kind == "string":
+        if not isinstance(value, str):
+            problems.append(f"{where} must be a string")
+            return
+        if "minLength" in schema and len(value) < schema["minLength"]:
+            problems.append(f"{where} must be at least {schema['minLength']} characters")
+        if "maxLength" in schema and len(value) > schema["maxLength"]:
+            problems.append(f"{where} must be at most {schema['maxLength']} characters (got {len(value)})")
+    elif kind == "integer":
+        if isinstance(value, bool) or not isinstance(value, int):
+            problems.append(f"{where} must be an integer")
+
+
+def validate_arguments(tool: dict, arguments: object) -> None:
+    problems: list[str] = []
+    _check(tool["inputSchema"], arguments, where="arguments", problems=problems)
+    if problems:
+        raise ToolArgumentError("; ".join(problems))
+
+
+def call_tool(name: str, arguments: object) -> dict:
+    """Unknown name -> KeyError. Arguments that do not fit the schema ->
+    ToolArgumentError, BEFORE anything is sent to Concierge, naming the
+    argument. The validator names every missing or unexpected key, so no
+    KeyError can come out of a tool for an argument any more."""
     tool = BY_NAME.get(name)
     if tool is None:
         raise KeyError(name)
-    return tool["_call"](arguments or {})
+    if arguments is None:
+        arguments = {}
+    validate_arguments(tool, arguments)
+    return tool["_call"](arguments)
+
+

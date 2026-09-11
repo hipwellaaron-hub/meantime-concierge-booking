@@ -231,10 +231,122 @@ def test_notifications_get_no_response_body(client):
     assert resp.status_code == 202
 
 
-def test_unknown_tool_is_a_protocol_error(client):
+def test_unknown_tool_is_a_protocol_error_that_names_the_tools(client):
     token = _connect(client)
     body = _rpc(client, token, "tools/call", {"name": "delete_everything", "arguments": {}}).json()
     assert body["error"]["code"] == -32602
+    assert "Unknown tool 'delete_everything'" in body["error"]["message"]
+    assert "propose_event_order_values" in body["error"]["message"], "the refusal lists what does exist"
+
+
+# --- a bad ARGUMENT is said as such, never as "Unknown tool" -----------------
+#
+# 2026-09-10, the first live proposal: a guessed field name (catering_notes)
+# came back as "Unknown tool 'propose_event_order_values'", which sent the
+# caller looking for a deployment problem instead of its own mistake.
+
+
+def _propose(client, token, arguments):
+    with patch("mcp_server.tools.post_ai") as posted:
+        posted.return_value = {"proposal_id": "p1", "status": "pending", "awaiting_approval": ["music"]}
+        body = _rpc(client, token, "tools/call", {"name": "propose_event_order_values", "arguments": arguments}).json()
+    return body, posted
+
+
+def test_a_guessed_field_name_is_refused_by_name_with_the_valid_ones_listed(client):
+    token = _connect(client)
+    body, posted = _propose(client, token, {
+        "reference": "HAM-20260926-FM49Q", "source": "client email 10 Sep",
+        "fields": {"catering_notes": "grazing", "music_entertainment": "DJ"},
+    })
+
+    assert body["error"]["code"] == -32602
+    message = body["error"]["message"]
+    assert "Unknown tool" not in message
+    assert "'catering_notes'" in message and "'music_entertainment'" in message
+    assert "catering_order_and_service_style" in message and "onsite_contact" in message, "the valid names"
+    assert not posted.called, "nothing reaches Concierge on a refused call"
+
+
+def test_a_missing_required_argument_is_named(client):
+    token = _connect(client)
+    body, posted = _propose(client, token, {"reference": "HAM-20260926-FM49Q", "fields": {"music": "DJ"}})
+
+    assert body["error"]["code"] == -32602
+    assert "missing required argument 'source'" in body["error"]["message"]
+    assert "Unknown tool" not in body["error"]["message"]
+    assert not posted.called
+
+
+def test_an_unexpected_top_level_argument_is_named(client):
+    token = _connect(client)
+    body, posted = _propose(client, token, {
+        "reference": "HAM-20260926-FM49Q", "source": "client email", "fields": {"music": "DJ"}, "booking_id": "x",
+    })
+
+    assert body["error"]["code"] == -32602
+    assert "unexpected argument 'booking_id'" in body["error"]["message"]
+    assert "valid arguments are: reference, source, fields, trigger, model" in body["error"]["message"]
+    assert not posted.called
+
+
+def test_a_long_trigger_is_refused_with_the_limit_stated(client):
+    token = _connect(client)
+    body, posted = _propose(client, token, {
+        "reference": "HAM-20260926-FM49Q", "source": "client email", "fields": {"music": "DJ"},
+        "trigger": "client final details, 16 days out, no Event Order existed",
+    })
+
+    assert body["error"]["code"] == -32602
+    assert "trigger must be at most 30 characters" in body["error"]["message"]
+    assert not posted.called
+
+
+def test_a_read_tool_with_a_missing_argument_is_an_argument_error_not_an_unknown_tool(client):
+    """The earlier instance of the same defect: args['booking_id'] raising
+    KeyError inside booking_documents was reported as Unknown tool. The
+    validator now refuses before the tool runs, naming both mistakes."""
+    token = _connect(client)
+    body = _rpc(client, token, "tools/call", {"name": "booking_documents", "arguments": {"ref": "HAM-1"}}).json()
+
+    assert body["error"]["code"] == -32602
+    assert "Unknown tool" not in body["error"]["message"]
+    assert "missing required argument 'booking_id'" in body["error"]["message"]
+    assert "unexpected argument 'ref'" in body["error"]["message"]
+
+
+def test_a_well_formed_proposal_still_goes_through(client):
+    token = _connect(client)
+    body, posted = _propose(client, token, {
+        "reference": "HAM-20260926-FM49Q", "source": "client email 10 Sep, final details",
+        "fields": {"decorations": "Nothing declared", "accessibility": "No accessibility requirements declared"},
+        "trigger": "client final details",
+    })
+
+    assert "error" not in body, body
+    assert posted.called
+    assert posted.call_args[0][1]["trigger"] == "client final details"
+    assert body["result"]["isError"] is False
+    assert json.loads(body["result"]["content"][0]["text"])["proposal_id"] == "p1", "the model sees Concierge's answer"
+
+
+def test_the_propose_description_states_the_names_and_the_limits(client):
+    token = _connect(client)
+    tools = {t["name"]: t for t in _rpc(client, token, "tools/list").json()["result"]["tools"]}
+    tool = tools["propose_event_order_values"]
+
+    from app.services.beo_rules import MAX_FIELD_LENGTH, PROPOSABLE_FIELDS
+
+    for name in PROPOSABLE_FIELDS:
+        assert name in tool["description"], f"{name} is not named in the description"
+        assert tool["inputSchema"]["properties"]["fields"]["properties"][name]["maxLength"] == MAX_FIELD_LENGTH
+    assert "30 characters" in tool["description"]
+    assert tool["inputSchema"]["properties"]["trigger"]["maxLength"] == 30
+    # The rules Concierge enforces that the model can only learn here.
+    for code in ("rsa_missing", "rsa_absent_on_document", "legacy_music_split"):
+        assert code in tool["description"], code
+    assert "request phrasing" in tool["description"], "client-voice rule is wider than first person"
+    assert "_call" not in tool
 
 
 # --- calling through to Concierge --------------------------------------
@@ -503,3 +615,146 @@ def test_refresh_tokens_outlive_access_tokens_and_a_late_refresh_still_works():
         with patch.object(oauth.time, "time", lambda: t0 + 301):
             with pytest.raises(oauth.OAuthError):
                 oauth.refresh_tokens(pair["refresh_token"])
+
+
+# --- the review of the argument checking ----------------------------------------
+
+
+def test_the_shape_that_produced_unknown_tool_is_named_twice(client):
+    """What the live 2026-09-10 call most likely sent: the field names at
+    the top level with no `fields` wrapper. That raised KeyError('fields')
+    inside the tool, which the router reported as Unknown tool."""
+    token = _connect(client)
+    body, posted = _propose(client, token, {
+        "reference": "HAM-20260926-FM49Q", "source": "client email", "catering_notes": "grazing",
+    })
+
+    assert body["error"]["code"] == -32602
+    assert "missing required argument 'fields'" in body["error"]["message"]
+    assert "unexpected argument 'catering_notes'" in body["error"]["message"]
+    assert "Unknown tool" not in body["error"]["message"]
+    assert not posted.called
+
+
+def test_null_for_an_optional_argument_means_absent(client):
+    """Concierge accepts None for trigger and model, and every _call reads
+    optionals with .get(); a client that sends null for what it has nothing
+    to say about must not be refused (review, 2026-09-11)."""
+    token = _connect(client)
+    body, posted = _propose(client, token, {
+        "reference": "HAM-20260926-FM49Q", "source": "client email", "fields": {"music": "DJ"},
+        "trigger": None, "model": None,
+    })
+
+    assert "error" not in body, body
+    assert posted.call_args[0][1]["trigger"] is None and posted.call_args[0][1]["model"] is None
+
+
+def test_null_for_a_required_argument_is_still_refused(client):
+    token = _connect(client)
+    body, posted = _propose(client, token, {"reference": "HAM-20260926-FM49Q", "source": None, "fields": {"music": "DJ"}})
+
+    assert body["error"]["code"] == -32602
+    assert "source must be a string" in body["error"]["message"]
+    assert not posted.called
+
+
+@pytest.mark.parametrize(
+    ("arguments", "expected"),
+    [
+        ({"reference": "HAM-1", "source": "client email", "fields": {}}, "fields must have at least 1 entry"),
+        ({"reference": "HAM-1", "source": "client email", "fields": "DJ"}, "fields must be an object"),
+        ({"reference": "HAM-1", "source": "client email", "fields": {"music": 5}}, "fields.music must be a string"),
+        ({"reference": "HAM-1", "source": "ab", "fields": {"music": "DJ"}}, "source must be at least 3 characters"),
+        ({"reference": "HAM-1", "source": "client email", "fields": {"music": "x" * 2001}}, "at most 2000 characters (got 2001)"),
+        ({"reference": "HAM-1", "source": "client email", "fields": {"music": "DJ"}, "trigger": "x" * 31}, "trigger must be at most 30 characters"),
+    ],
+)
+def test_each_validator_clause_refuses_with_its_own_words(client, arguments, expected):
+    token = _connect(client)
+    body, posted = _propose(client, token, arguments)
+
+    assert body["error"]["code"] == -32602
+    assert expected in body["error"]["message"], body["error"]["message"]
+    assert not posted.called
+
+
+def test_a_trigger_of_exactly_thirty_characters_is_accepted(client):
+    token = _connect(client)
+    body, posted = _propose(client, token, {
+        "reference": "HAM-1", "source": "client email", "fields": {"music": "DJ"}, "trigger": "x" * 30,
+    })
+
+    assert "error" not in body, body
+    assert posted.call_args[0][1]["trigger"] == "x" * 30
+
+
+def test_integer_and_enum_arguments_are_checked_too(client):
+    token = _connect(client)
+    with patch("mcp_server.tools.call_ai") as called:
+        limit = _rpc(client, token, "tools/call", {"name": "booking_events", "arguments": {"booking_id": "abc", "limit": "ten"}}).json()
+        stage = _rpc(client, token, "tools/call", {"name": "pipeline", "arguments": {"stage": "imaginary"}}).json()
+
+    assert "limit must be an integer" in limit["error"]["message"]
+    assert "stage must be one of:" in stage["error"]["message"]
+    assert not called.called
+
+
+@pytest.mark.parametrize("arguments", [[], 0, False, [1], "x"])
+def test_arguments_that_are_not_an_object_are_said_so(client, arguments):
+    """Including the FALSY shapes ([], 0, false): `params.get("arguments")
+    or {}` used to turn those into an empty object and run the tool."""
+    token = _connect(client)
+    with patch("mcp_server.tools.call_ai") as called:
+        body = _rpc(client, token, "tools/call", {"name": "pipeline", "arguments": arguments}).json()
+
+    assert body["error"]["code"] == -32602, body
+    assert "arguments must be an object" in body["error"]["message"]
+    assert not called.called
+
+
+def test_a_non_string_tool_name_is_an_error_envelope_not_a_500(client):
+    token = _connect(client)
+    resp = _rpc(client, token, "tools/call", {"name": ["x"], "arguments": {}})
+
+    assert resp.status_code == 200
+    assert resp.json()["error"]["code"] == -32602
+    assert "Unknown tool" in resp.json()["error"]["message"]
+
+
+def test_every_published_schema_is_closed(client):
+    token = _connect(client)
+    tools = _rpc(client, token, "tools/list").json()["result"]["tools"]
+
+    assert tools, "no tools listed"
+    for tool in tools:
+        assert tool["inputSchema"].get("additionalProperties") is False, tool["name"]
+
+
+def test_an_id_less_tools_call_is_a_notification_and_gets_nothing_back(client):
+    token = _connect(client)
+    resp = client.post(
+        "/mcp",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"jsonrpc": "2.0", "method": "tools/call", "params": {"name": "nothing", "arguments": {}}},
+    )
+
+    assert resp.status_code == 202
+    assert resp.content in (b"", b"null")
+
+
+def test_batch_edge_cases_are_answered_per_json_rpc(client):
+    token = _connect(client)
+    empty = client.post("/mcp", headers={"Authorization": f"Bearer {token}"}, json=[])
+    mixed = client.post(
+        "/mcp",
+        headers={"Authorization": f"Bearer {token}"},
+        json=[{"jsonrpc": "2.0", "id": 7, "method": "ping"}, "junk", {"jsonrpc": "2.0", "id": 8, "method": "tools/call", "params": {"name": ["x"]}}],
+    )
+
+    assert empty.status_code == 200 and empty.json()["error"]["code"] == -32600
+    assert mixed.status_code == 200
+    codes = [(item.get("id"), (item.get("error") or {}).get("code")) for item in mixed.json()]
+    assert (7, None) in codes, "the good request in the batch still gets its result"
+    assert (None, -32600) in codes, "the non-object item is answered, not crashed on"
+    assert (8, -32602) in codes, "the bad tool name is answered in its own envelope"
