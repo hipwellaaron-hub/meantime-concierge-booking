@@ -564,3 +564,45 @@ def test_resend_welcome_button_shows_only_for_floor(db, admin_client, floor_user
     page = admin_client.get("/admin/staff").text
     # The floor user's row offers a resend; the admin (you) row does not get one for itself.
     assert "Resend setup email" in page
+
+
+# --- venue scoping on the floor's by-id lookup ----------------------------
+#
+# Added 2026-09-12. The LIST was already filtered on Space.venue_id; the
+# by-id routes were not, so the floor's own rule held for what it displays
+# and not for what it would fetch. This is the surface a second venue's
+# staff actually hold.
+
+
+def _entrance_booking(db, contact):
+    import datetime as dt
+    from decimal import Decimal
+
+    from app.models import Space, Venue
+
+    other = Venue(name="Meantime The Entrance", slug="entrance")
+    db.add(other)
+    db.flush()
+    deck = Space(
+        venue_id=other.id, name="Private Bar Function", capacity=80,
+        standard_min_adults=40, min_food_spend=Decimal("1000"), is_bookable=True,
+    )
+    db.add(deck)
+    db.flush()
+    return _confirmed_booking(db, deck, contact, event_name="Entrance Function")
+
+
+def test_the_floor_does_not_open_another_venues_booking_by_id(client, db, contact, loft, floor_user):
+    headers = _login(client)
+    elsewhere = _entrance_booking(db, contact)
+
+    assert client.get(f"/api/staff/bookings/{elsewhere.id}", headers=headers).status_code == 404
+    assert client.get(f"/api/staff/bookings/{elsewhere.id}/beo", headers=headers).status_code == 404
+
+
+def test_the_floor_still_opens_its_own_venues_booking(client, db, contact, loft, floor_user):
+    """The guard must not refuse everything."""
+    headers = _login(client)
+    mine = _confirmed_booking(db, loft, contact, event_name="Hamilton Function")
+
+    assert client.get(f"/api/staff/bookings/{mine.id}", headers=headers).status_code == 200

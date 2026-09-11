@@ -137,7 +137,7 @@ def test_confirmed_and_hold_render_with_distinct_kinds(db, hamilton, mezzanine):
         db, mezzanine, event_date=confirmed_date, event_name="Confirmed One", status=BookingStatus.confirmed,
         start_time=dt.time(12, 0), end_time=dt.time(17, 0),
     )
-    hold = create_hold(db, space_id=mezzanine.id, event_date=hold_date, event_name="Hold One", actor="test")
+    hold = create_hold(db, venue_id=hamilton.id, space_id=mezzanine.id, event_date=hold_date, event_name="Hold One", actor="test")
 
     confirmed_grid = calendar_service.get_week_grid(db, hamilton, calendar_service.week_start_for(confirmed_date))
     hold_grid = calendar_service.get_week_grid(db, hamilton, calendar_service.week_start_for(hold_date))
@@ -150,7 +150,7 @@ def test_confirmed_and_hold_render_with_distinct_kinds(db, hamilton, mezzanine):
 
 def test_room_with_only_a_hold_does_not_render_as_confirmed(admin_client, db, hamilton, loft):
     date = dt.date(2027, 5, 8)
-    create_hold(db, space_id=loft.id, event_date=date, event_name="Just A Hold", actor="test")
+    create_hold(db, venue_id=hamilton.id, space_id=loft.id, event_date=date, event_name="Just A Hold", actor="test")
 
     resp = admin_client.get(f"/admin/calendar?week={calendar_service.week_start_for(date).isoformat()}")
     assert resp.status_code == 200
@@ -169,8 +169,8 @@ def test_open_ended_hold_renders_on_both_spaces_and_is_distinguishable_from_conf
     admin_client, db, hamilton, loft, mezzanine
 ):
     date = dt.date(2026, 10, 8)  # a Thursday
-    hold_loft = create_hold(db, space_id=loft.id, event_date=date, event_name="Lycopodium hold", actor="test")
-    hold_mezz = create_hold(db, space_id=mezzanine.id, event_date=date, event_name="Lycopodium hold", actor="test")
+    hold_loft = create_hold(db, venue_id=hamilton.id, space_id=loft.id, event_date=date, event_name="Lycopodium hold", actor="test")
+    hold_mezz = create_hold(db, venue_id=hamilton.id, space_id=mezzanine.id, event_date=date, event_name="Lycopodium hold", actor="test")
 
     assert hold_loft.hold_expires_at is None
     assert hold_mezz.hold_expires_at is None
@@ -191,7 +191,7 @@ def test_expired_hold_surfaces_as_expired_not_hidden_or_active(db, hamilton, lof
     date = _next_saturday(dt.date.today() + dt.timedelta(days=60))
     past_expiry = dt.date.today() - dt.timedelta(days=3)
     hold = create_hold(
-        db, space_id=loft.id, event_date=date, event_name="Overdue Hold",
+        db, venue_id=hamilton.id, space_id=loft.id, event_date=date, event_name="Overdue Hold",
         hold_expires_at=past_expiry, actor="test",
     )
 
@@ -208,7 +208,7 @@ def test_expired_hold_surfaces_as_expired_not_hidden_or_active(db, hamilton, lof
 def test_expired_hold_still_blocks_is_space_free(db, hamilton, loft):
     date = dt.date.today() + dt.timedelta(days=90)
     create_hold(
-        db, space_id=loft.id, event_date=date, event_name="Overdue Hold 2",
+        db, venue_id=hamilton.id, space_id=loft.id, event_date=date, event_name="Overdue Hold 2",
         hold_expires_at=dt.date.today() - dt.timedelta(days=1), actor="test",
     )
     free, _ = is_space_free(db, loft.id, date)
@@ -394,7 +394,7 @@ def test_create_hold_via_dashboard_across_two_spaces(admin_client, db, hamilton,
 
 def test_create_hold_rejects_conflicting_space(admin_client, db, hamilton, loft):
     date = dt.date(2027, 10, 8)
-    create_hold(db, space_id=loft.id, event_date=date, event_name="Existing Hold", actor="test")
+    create_hold(db, venue_id=hamilton.id, space_id=loft.id, event_date=date, event_name="Existing Hold", actor="test")
 
     page = admin_client.get("/admin/calendar/holds/new")
     csrf_token = _csrf(page.text)
@@ -411,7 +411,7 @@ def test_create_hold_rejects_conflicting_space(admin_client, db, hamilton, loft)
 
 def test_set_hold_expiry_via_dashboard(admin_client, db, hamilton, loft):
     date = dt.date(2027, 10, 9)
-    hold = create_hold(db, space_id=loft.id, event_date=date, event_name="Expiry Test Hold", actor="test")
+    hold = create_hold(db, venue_id=hamilton.id, space_id=loft.id, event_date=date, event_name="Expiry Test Hold", actor="test")
 
     page = admin_client.get(f"/admin/bookings/{hold.id}")
     csrf_token = _csrf(page.text)

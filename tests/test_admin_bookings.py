@@ -1417,3 +1417,212 @@ def test_record_payment_rejects_a_bad_date(admin_client, booking, db):
         follow_redirects=False,
     )
     assert resp.status_code == 422
+
+
+# --- venue scoping on the by-id lookup ------------------------------------
+#
+# Added 2026-09-12. Every by-id route in this router goes through
+# _get_booking_or_404, and until now it was a bare lookup: a booking id from
+# another venue resolved and rendered. Behaviour-identical with one venue,
+# which is exactly why it was worth doing before the second one lands.
+
+
+def _booking_at_another_venue(db):
+    """A real booking at a venue that is not Hamilton."""
+    import datetime as dt
+    from decimal import Decimal
+
+    from app.models import Space, Venue
+    from app.services.booking import create_booking
+
+    other = Venue(name="Meantime The Entrance", slug="entrance")
+    db.add(other)
+    db.flush()
+    deck = Space(
+        venue_id=other.id, name="Private Bar Function", capacity=80,
+        standard_min_adults=40, min_food_spend=Decimal("1000"), is_bookable=True,
+    )
+    db.add(deck)
+    db.flush()
+    return create_booking(
+        db, space_id=deck.id, contact_id=None, event_date=dt.date(2027, 4, 10),
+        start_time=dt.time(18, 0), end_time=dt.time(23, 0), event_name="Entrance Party",
+        event_type="birthday", adult_count=50, child_count=0, notes=None, actor="test",
+    )
+
+
+def test_another_venues_booking_is_not_found_by_id(admin_client, db):
+    """The wrong-room quote Aaron named, reached by nothing more than a
+    pasted URL or a stale tab."""
+    elsewhere = _booking_at_another_venue(db)
+
+    resp = admin_client.get(f"/admin/bookings/{elsewhere.id}")
+
+    assert resp.status_code == 404, "another venue's booking must not render in this venue's admin"
+
+
+def test_this_venues_booking_still_opens(admin_client, db, loft, contact):
+    """The other half: the predicate must not break the ordinary case. A
+    scoping guard that refuses everything passes the test above and is
+    useless."""
+    import datetime as dt
+
+    from app.services.booking import create_booking
+
+    mine = create_booking(
+        db, space_id=loft.id, contact_id=contact.id, event_date=dt.date(2027, 4, 11),
+        start_time=dt.time(18, 0), end_time=dt.time(23, 0), event_name="Hamilton Party",
+        event_type="birthday", adult_count=50, child_count=0, notes=None, actor="test",
+    )
+
+    assert admin_client.get(f"/admin/bookings/{mine.id}").status_code == 200
+
+
+def test_a_write_route_also_refuses_another_venues_booking(admin_client, db):
+    """A read that 404s while a POST still writes is the worse half of the
+    same bug, so prove one of the 43 write routes goes through the helper
+    too."""
+    import re
+
+    elsewhere = _booking_at_another_venue(db)
+    # A real CSRF token, or the POST dies at 422 before the venue check runs
+    # and the test proves nothing. Found that way first time.
+    page = admin_client.get("/admin/")
+    csrf = re.search(r'name="csrf_token" value="([^"]+)"', page.text).group(1)
+
+    resp = admin_client.post(
+        f"/admin/bookings/{elsewhere.id}/delete",
+        # The typed reference too: delete requires it, and supplying it makes
+        # this the stronger test -- the venue check must refuse even a caller
+        # who knows the booking's reference code. Without it the request dies
+        # at 422 before the venue check runs and proves nothing.
+        data={"csrf_token": csrf, "confirm_reference": elsewhere.reference_code},
+        follow_redirects=False,
+    )
+
+    assert resp.status_code == 404, resp.status_code
+    from app.models import Booking
+
+    assert db.get(Booking, elsewhere.id) is not None, "it must still exist -- the refusal has to be real"
+
+
+# --- a booking can never move between venues ------------------------------
+#
+# Added 2026-09-12, in the same commit as the by-id venue predicate, because
+# the predicate is only half a guard without it. Review proved: POST
+# assign-space with another venue's space_id returned 303 to a page that then
+# 404'd, and the move-back POST 404'd too, so there was no screen left to
+# correct it from. Before the predicate the mistake was visible and
+# self-correctable; after it, neither.
+
+
+def test_a_booking_cannot_be_moved_to_another_venues_space(admin_client, db, loft, contact):
+    import datetime as dt
+    import re
+    from decimal import Decimal
+
+    from app.models import Space, Venue
+    from app.services.booking import create_booking
+
+    mine = create_booking(
+        db, space_id=loft.id, contact_id=contact.id, event_date=dt.date(2027, 6, 12),
+        start_time=dt.time(18, 0), end_time=dt.time(23, 0), event_name="Stays At Hamilton",
+        event_type="birthday", adult_count=50, child_count=0, notes=None, actor="test",
+    )
+    other = Venue(name="Meantime The Entrance", slug="entrance")
+    db.add(other)
+    db.flush()
+    deck = Space(
+        venue_id=other.id, name="Private Bar Function", capacity=80,
+        standard_min_adults=40, min_food_spend=Decimal("1000"), is_bookable=True,
+    )
+    db.add(deck)
+    db.flush()
+
+    page = admin_client.get(f"/admin/bookings/{mine.id}")
+    csrf = re.search(r'name="csrf_token" value="([^"]+)"', page.text).group(1)
+    resp = admin_client.post(
+        f"/admin/bookings/{mine.id}/assign-space",
+        data={
+            "csrf_token": csrf,
+            "space_id": str(deck.id),
+            "start_time": "18:00",
+            "end_time": "23:00",
+        },
+        follow_redirects=False,
+    )
+
+    assert resp.status_code == 422, resp.status_code
+    assert "another venue" in resp.text.lower()
+    db.refresh(mine)
+    assert mine.space_id == loft.id, "the booking must not have moved"
+    # And the thing that made it unrecoverable: its own page still opens.
+    assert admin_client.get(f"/admin/bookings/{mine.id}").status_code == 200
+
+
+def test_a_hold_cannot_be_created_on_another_venues_space(admin_client, db, loft):
+    """Worse than the move: one POST used to manufacture a booking that had
+    never been openable from any screen, with nothing having gone wrong
+    first."""
+    import datetime as dt
+    import re
+    from decimal import Decimal
+
+    from app.models import Booking, Space, Venue
+
+    other = Venue(name="Meantime The Entrance", slug="entrance")
+    db.add(other)
+    db.flush()
+    deck = Space(
+        venue_id=other.id, name="Private Bar Function", capacity=80,
+        standard_min_adults=40, min_food_spend=Decimal("1000"), is_bookable=True,
+    )
+    db.add(deck)
+    db.flush()
+    before = db.query(Booking).count()
+
+    page = admin_client.get("/admin/calendar")
+    csrf = re.search(r'name="csrf_token" value="([^"]+)"', page.text).group(1)
+    resp = admin_client.post(
+        "/admin/calendar/holds",
+        data={
+            "csrf_token": csrf,
+            "space_ids": str(deck.id),
+            "event_date": "2027-06-19",
+            "event_name": "Should Not Exist",
+        },
+        follow_redirects=False,
+    )
+
+    assert resp.status_code == 422, resp.status_code
+    assert db.query(Booking).count() == before, "no booking may be created at all"
+
+
+def test_a_linked_room_cannot_be_at_another_venue(db, loft, contact):
+    """Asserted at the service, because the admin route narrows the dropdown
+    and the rule has to hold for whatever posts."""
+    import datetime as dt
+    from decimal import Decimal
+
+    import pytest as _pytest
+
+    from app.models import Space, Venue
+    from app.services.booking import add_linked_space, create_booking
+
+    parent = create_booking(
+        db, space_id=loft.id, contact_id=contact.id, event_date=dt.date(2027, 6, 26),
+        start_time=dt.time(18, 0), end_time=dt.time(23, 0), event_name="Parent Booking",
+        event_type="birthday", adult_count=50, child_count=0, notes=None, actor="test",
+    )
+    other = Venue(name="Meantime The Entrance", slug="entrance")
+    db.add(other)
+    db.flush()
+    deck = Space(
+        venue_id=other.id, name="Private Bar Function", capacity=80,
+        standard_min_adults=40, min_food_spend=Decimal("1000"), is_bookable=True,
+    )
+    db.add(deck)
+    db.flush()
+
+    with _pytest.raises(ValueError, match="another venue"):
+        add_linked_space(db, parent, space_id=deck.id, actor="test")

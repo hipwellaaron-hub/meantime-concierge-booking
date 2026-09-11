@@ -82,8 +82,35 @@ def _venue(db: Session) -> Venue:
 
 
 def _get_booking_or_404(db: Session, booking_id: uuid.UUID) -> Booking:
+    """Every by-id booking route in this router comes through here -- 42 of
+    the router's 45; the other three (the list, and the two /new routes)
+    take no booking id -- which is why the venue check lives here and
+    nowhere else. Counted, not estimated: an earlier draft of this sentence
+    said 43, which was the grep hit on this `def` line.
+
+    Until 2026-09-12 this was a bare lookup with no venue predicate, so a
+    booking id from another venue resolved and rendered. With one venue that
+    was unreachable; with two it is the wrong-room quote Aaron named as the
+    thing to prevent, and it would have been reachable by nothing more than
+    a pasted URL or a stale tab.
+
+    Every OUTCOME is identical while Hamilton is the only venue -- which is
+    the point of doing it now, against a system where it can be proved not to
+    change anything, rather than in the middle of the venue switch. Not every
+    QUERY: on a cold session this costs two extra SELECTs, the `_venue` lookup
+    and a lazy load of `booking.space` that most routes did not trigger
+    before. Measured, and accepted for a single-operator admin.
+
+    404, not 403: the venue a booking belongs to is not this operator's
+    secret, but a different code would tell a caller the id exists
+    somewhere, and "not found here" is the true answer either way.
+
+    `booking.space` is always present (Booking.space_id is NOT NULL) and
+    Space.venue_id is NOT NULL, so the venue is a total function of any
+    booking and this cannot raise on a half-built row.
+    """
     booking = db.get(Booking, booking_id)
-    if booking is None:
+    if booking is None or booking.space.venue_id != _venue(db).id:
         raise HTTPException(status_code=404, detail="Booking not found")
     return booking
 

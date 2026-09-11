@@ -1068,6 +1068,20 @@ def assign_space_and_time(
     space = db.get(Space, space_id)
     if space is None or not space.is_bookable:
         raise ValueError(f"Unknown or non-bookable space {space_id}")
+    # A booking can NEVER move between venues (Aaron's absolute rule). The
+    # admin form only OFFERS this venue's spaces, but the POST accepts any
+    # UUID, and this is the only place in the codebase that assigns
+    # Booking.space_id -- so this is where the rule is enforceable.
+    #
+    # It matters more since the by-id admin lookup became venue-scoped: a
+    # booking moved across venues is now unreachable from every admin route
+    # INCLUDING its own detail page, so the move cannot be undone from any
+    # screen. The route would answer 303 and hand back a 404.
+    if space.venue_id != booking.space.venue_id:
+        raise ValueError(
+            "that space belongs to another venue -- a booking cannot move between venues; "
+            "close this one and create it at the other venue instead"
+        )
 
     old_space = booking.space
     old_space_id, old_start, old_end = booking.space_id, booking.start_time, booking.end_time
@@ -1280,6 +1294,7 @@ def create_hold(
     start_time: dt.time | None = None,
     end_time: dt.time | None = None,
     hold_expires_at: dt.date | None = None,
+    venue_id: uuid.UUID,
     actor: str,
 ) -> Booking:
     """A hold is a Booking created directly at 'tentative' status --
@@ -1293,6 +1308,15 @@ def create_hold(
     space = db.get(Space, space_id)
     if space is None or not space.is_bookable:
         raise ValueError(f"Unknown or non-bookable space {space_id}")
+    # venue_id is REQUIRED, not derived, because a hold has no booking to
+    # take a venue from -- it is the thing being created. Without it one
+    # POST to the calendar could manufacture a booking at another venue
+    # that has never been openable from any screen, with nothing having
+    # gone wrong first.
+    if space.venue_id != venue_id:
+        raise ValueError(
+            "that space belongs to another venue -- switch venue before holding a date there"
+        )
 
     booking = create_booking(
         db,
@@ -1374,6 +1398,14 @@ def add_linked_space(
     space = db.get(Space, space_id)
     if space is None or not space.is_bookable:
         raise ValueError(f"Unknown or non-bookable space {space_id}")
+    # Same rule as assign_space_and_time: a linked child is the parent's
+    # second ROOM, so it cannot be in another building. Without this the
+    # parent renders normally while silently carrying a room in the other
+    # company's venue, and the child's own page 404s.
+    if space.venue_id != parent.space.venue_id:
+        raise ValueError(
+            "that space belongs to another venue -- a linked room must be at the same venue as the booking"
+        )
     # Queried directly rather than read off parent.linked_bookings: the
     # session here has expire_on_commit=False (see tests/conftest.py), so
     # a relationship collection already accessed once (e.g. by an earlier

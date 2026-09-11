@@ -102,7 +102,7 @@ def test_a_tentative_with_no_expiry_still_surfaces(db, hamilton, loft):
 def test_a_deliberate_staff_block_is_never_chased(db, hamilton, loft):
     # create_hold: no client, no deposit invoice -- a block, not a debt.
     hold = create_hold(
-        db, space_id=loft.id, event_date=dt.date(2027, 8, 14), event_name="Owner block",
+        db, venue_id=hamilton.id, space_id=loft.id, event_date=dt.date(2027, 8, 14), event_name="Owner block",
         hold_expires_at=dt.date.today() - dt.timedelta(days=1), actor="test",
     )
     assert hold not in get_holds_to_chase(db, hamilton.id)

@@ -234,8 +234,27 @@ def list_bookings(
 
 
 def _get_visible_booking_or_404(db: Session, booking_id: uuid.UUID) -> Booking:
+    """The floor app's by-id routes -- detail, Event Order, PDF -- all come
+    through here.
+
+    The LIST above already filters on Space.venue_id; these did not, so the
+    floor's own rule ("a phone opened at one venue shows that venue") held
+    for what the app displays and not for what it would fetch by id. Same
+    shape as the admin router's helper, same reasoning, and identical
+    behaviour while Hamilton is the only venue.
+
+    This matters more here than in admin because the floor app is the one
+    surface a second venue's staff would hold: Karly at Hamilton, Ruby at
+    The Entrance, each with their own device token. Scoping is a column on
+    the staff user plus this predicate, not a login system.
+    """
     booking = db.get(Booking, booking_id)
-    if booking is None or booking.status not in FLOOR_VISIBLE_STATUSES or booking.parent_booking_id is not None:
+    if (
+        booking is None
+        or booking.status not in FLOOR_VISIBLE_STATUSES
+        or booking.parent_booking_id is not None
+        or booking.space.venue_id != _venue(db).id
+    ):
         raise HTTPException(status_code=404, detail="Booking not found")
     return booking
 

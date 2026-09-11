@@ -100,6 +100,11 @@ def create_hold(
             created.append(
                 booking_service.create_hold(
                     db,
+                    # This route's own venue, not one derived from the space:
+                    # a hold is the booking being created, so there is nothing
+                    # to derive from, and the form's space_ids are whatever
+                    # the POST carried.
+                    venue_id=_venue(db).id,
                     space_id=space_id,
                     event_date=event_date,
                     event_name=event_name,
