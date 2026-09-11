@@ -175,7 +175,15 @@ def test_the_event_order_and_the_invoice_name_the_same_food(db, loft, menu_items
 
 
 def test_staff_are_told_the_hand_edited_food_order_is_gone(db, loft, menu_items, wizard_client):
-    """Not keeping it is only defensible because it is said out loud."""
+    """Not keeping it is only defensible because it is said out loud.
+
+    This used to assert "re-add them to both", from a sentence that also
+    claimed "The Event Order and the final invoice have both been rebuilt
+    from the client's new choices". The Event Order is rebuilt; an invoice
+    that already exists is reused untouched, so the second half was false
+    whenever there was an invoice to be wrong about. The message now
+    promises only the Event Order and sends staff to check the invoice.
+    """
     booking = _booking_with_hand_edited_food(db, loft, menu_items)
     from app.services import wizard as wizard_service
 
@@ -185,8 +193,17 @@ def test_staff_are_told_the_hand_edited_food_order_is_gone(db, loft, menu_items,
     body = wizard_client.post(f"/w/{session.access_token}/review", json={}).json()
 
     assert body["is_clean"] is False, "a dropped food order must not read as a clean submission"
-    assert any("hand-edited" in item and "re-add them to both" in item for item in body["outstanding_items"]), (
-        body["outstanding_items"]
+    assert any(
+        "hand-edited" in item and "re-add them if they still apply" in item
+        for item in body["outstanding_items"]
+    ), body["outstanding_items"]
+    everything = " ".join(body["outstanding_items"])
+    assert "both been rebuilt" not in everything, (
+        "the invoice is not rebuilt from the client's choices -- saying so is a false "
+        "statement about money"
+    )
+    assert "Check the final invoice against it" in everything, (
+        "dropping the false claim only helps if it is replaced by the thing to do"
     )
 
 

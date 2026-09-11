@@ -351,6 +351,44 @@ def get_by_token(db: Session, token: str) -> Invoice | None:
     return db.execute(select(Invoice).where(Invoice.access_token == token)).scalar_one_or_none()
 
 
+def _refresh_deposit_credit(db: Session, invoice: Invoice, *, actor: str) -> None:
+    """Re-derive a final invoice's deposit credit from the payments
+    actually recorded, at the moment it goes out.
+
+    The credit is system-derived, never hand-typed -- update_invoice
+    already re-derives it on every edit. What it could not cover is a
+    draft that sat: an Event Order's food order is now approved (and its
+    invoice built) well before the deposit is paid, so the draft carried
+    no credit and the client would have been billed the deposit twice
+    (review, 2026-09-11). Closes the same hole for a staff-built and a
+    wizard-built draft, which could always sit in the same way."""
+    if invoice.type != InvoiceType.final or invoice.is_legacy:
+        return
+    charge_lines = _charge_lines(invoice.line_items)
+    credit_line_items = _deposit_credit_lines(db, invoice.booking)
+    if charge_lines + credit_line_items == list(invoice.line_items or []):
+        return
+    subtotal, surcharge, gross_total = compute_totals(db, invoice.booking.event_date, charge_lines)
+    credit_total = sum(
+        (Decimal(str(c["quantity"])) * Decimal(str(c["unit_price"])) for c in credit_line_items), Decimal("0.00")
+    )
+    old_total = invoice.total
+    invoice.line_items = charge_lines + credit_line_items
+    invoice.subtotal = subtotal
+    invoice.surcharge = surcharge
+    invoice.total = gross_total + credit_total
+    db.add(
+        BookingEvent(
+            booking_id=invoice.booking_id,
+            event_type="invoice_credit_rederived",
+            field_name=f"{invoice.type.value}_invoice",
+            old_value=str(old_total),
+            new_value=str(invoice.total),
+            actor=actor,
+        )
+    )
+
+
 def mark_sent(db: Session, invoice: Invoice, *, actor: str) -> Invoice:
     # See record_payment below for why this lock matters: without it, two
     # concurrent calls could both pass a stale in-Python status check.
@@ -365,6 +403,9 @@ def mark_sent(db: Session, invoice: Invoice, *, actor: str) -> Invoice:
         raise ValueError(
             "cannot send: this booking has no contact with a valid email address on file"
         )
+    # Last responsible moment: a draft that has been sitting may predate
+    # the deposit payment, and the credit is derived, never typed.
+    _refresh_deposit_credit(db, invoice, actor=actor)
     old_status = invoice.status
     invoice.status = InvoiceStatus.sent
     db.add(

@@ -374,15 +374,42 @@ def current_food_lines(document: Document | None) -> list[dict]:
     return out
 
 
+def _is_catalogue_built(invoice) -> bool:
+    """Whether every charge line on this invoice came from this sync.
+
+    A catalogue line carries its menu_item_id; nothing else writes one.
+    So this answers "is this invoice entirely mine to rebuild?" -- and
+    only then is replacing its lines safe. The staff invoice form, and
+    the wizard's own line builder, both write lines WITHOUT an id, which
+    is why the id is the right question and "is it food?" is not: the
+    wizard's platters and its priced in-house cake would pass a food
+    test and be double-billed by a merge (review, 2026-09-11)."""
+    from app.services import invoicing
+
+    charges = [
+        line
+        for line in (invoice.line_items or [])
+        if isinstance(line, dict) and line.get("description") != invoicing.DEPOSIT_CREDIT_DESCRIPTION
+    ]
+    # An EMPTY draft (no charge lines at all) counts as mine: there is
+    # nothing on it to lose, and refusing to fill it would raise a banner
+    # asking somebody to reconcile an invoice with nothing on it.
+    return all(line.get("menu_item_id") for line in charges)
+
+
 def sync_final_invoice_from_food(db: Session, booking: Booking, lines: list[dict], *, actor: str) -> str:
     """The second half of the ruling: "the line items and invoice are
     built from the catalogue." Runs after the approved lines are on the
-    Event Order. With no final invoice it CREATES the draft from the same
-    priced lines (the deposit credit is applied by create_final_invoice);
-    an existing DRAFT gets its lines refreshed; an invoice that has gone
-    out or been paid is never touched -- that is a revise, by hand -- and
-    the trail says so. Returns the outcome sentence, which is also the
-    trail row (final_invoice_from_beo).
+    Event Order.
+
+    With no final invoice it CREATES the draft from the same priced lines
+    (the deposit credit is applied by create_final_invoice). A DRAFT THIS
+    SYNC BUILT is refreshed. Anything else -- a draft carrying a line a
+    person or the wizard put there, an invoice that has gone out or been
+    paid, a legacy record -- is LEFT EXACTLY ALONE, because rebuilding it
+    would delete work this path never wrote: room hire, a bar tab, a
+    negotiated discount, the wizard's own in-house cake line. The reason
+    goes on the trail and onto the booking page for a person to settle.
 
     Its own transaction, after the document's: a failure here leaves the
     approved lines on the Event Order and the reason on the trail, and
@@ -399,15 +426,24 @@ def sync_final_invoice_from_food(db: Session, booking: Booking, lines: list[dict
         }
         for ln in lines
     ]
-    existing = db.execute(
-        select(Invoice).where(
-            Invoice.booking_id == booking.id,
-            Invoice.type == InvoiceType.final,
-            Invoice.status != InvoiceStatus.cancelled,
-        )
-    ).scalars().first()
+    if booking.status in VOIDED_STATUSES:
+        # Approving a run sheet on a cancelled booking is a staff
+        # decision; billing for it is not something to do automatically.
+        outcome = f"no final invoice built: this booking is {booking.status.value}"
+        existing = None
+    else:
+        existing = db.execute(
+            select(Invoice).where(
+                Invoice.booking_id == booking.id,
+                Invoice.type == InvoiceType.final,
+                Invoice.status != InvoiceStatus.cancelled,
+            ).order_by(Invoice.created_at.desc())
+        ).scalars().first()
+        outcome = None
     try:
-        if existing is None:
+        if outcome is not None:
+            pass
+        elif existing is None:
             due = policy.final_balance_due_date(booking.event_date, issued_on=dt.date.today())
             if due is None:
                 outcome = "no final invoice built: the booking has no event date for it to fall due against"
@@ -416,41 +452,69 @@ def sync_final_invoice_from_food(db: Session, booking: Booking, lines: list[dict
                 outcome = f"draft final invoice #{invoice.invoice_number} built from the approved food order (total {invoice.total})"
         elif existing.is_legacy:
             outcome = f"final invoice #{existing.invoice_number} is a legacy record and was left alone"
-        elif existing.status == InvoiceStatus.draft:
-            invoicing.update_invoice(db, existing, line_items=invoice_lines, due_date=existing.due_date, actor=actor)
-            outcome = f"draft final invoice #{existing.invoice_number} refreshed from the approved food order (total {existing.total})"
-        else:
+        elif existing.status != InvoiceStatus.draft:
             outcome = (
                 f"final invoice #{existing.invoice_number} is already {existing.status.value} and was left alone -- "
-                "revise it by hand if the food order changed"
+                + (
+                    "cancel and reissue it if the food order changed"
+                    if existing.status == InvoiceStatus.paid
+                    else "revise it by hand if the food order changed"
+                )
             )
-    except ValueError as exc:
+        elif not _is_catalogue_built(existing):
+            outcome = (
+                f"draft final invoice #{existing.invoice_number} carries lines this Event Order did not put there, "
+                "so it was left alone -- check its food lines against the approved order by hand"
+            )
+        else:
+            invoicing.update_invoice(db, existing, line_items=invoice_lines, due_date=existing.due_date, actor=actor)
+            outcome = f"draft final invoice #{existing.invoice_number} refreshed from the approved food order (total {existing.total})"
+    except Exception as exc:  # noqa: BLE001 -- an invoice problem must never undo an approved food order
         db.rollback()
+        logger.exception("Final invoice sync failed for booking %s", booking.id)
         outcome = f"final invoice not updated: {exc}"
-    db.add(
-        BookingEvent(
-            booking_id=booking.id,
-            event_type="final_invoice_from_beo",
-            field_name=FOOD_ORDER_FIELD,
-            new_value=truncate(outcome, 500),
-            actor=actor,
+    try:
+        db.add(
+            BookingEvent(
+                booking_id=booking.id,
+                event_type="final_invoice_from_beo",
+                field_name=FOOD_ORDER_FIELD,
+                new_value=truncate(outcome, 500),
+                actor=actor,
+            )
         )
-    )
-    db.commit()
+        db.commit()
+    except Exception:  # noqa: BLE001 -- the trail is the last thing; it cannot undo the rest
+        db.rollback()
+        logger.exception("Could not record the final-invoice outcome for booking %s", booking.id)
     return outcome
 
 
 def latest_food_invoice_notice(booking: Booking) -> str | None:
     """What the booking page says about the last invoice sync -- only when
     it did NOT build or refresh a draft, which is the case a person has to
-    act on. A built or refreshed draft is visible in the invoice list."""
-    latest = None
-    for event in booking.events:
+    act on. A built or refreshed draft is visible in the invoice list.
+
+    RETIRES ITSELF once somebody has acted: any invoice event after the
+    one that raised it (a revise, a cancel, an edit, a send) means the
+    question has been looked at, and a banner that never clears is one
+    staff learn to scroll past -- which is the failure it exists to
+    prevent, not a smaller version of it (review, 2026-09-11)."""
+    raised = None
+    acted_after = False
+    for event in booking.events:  # ordered by created_at
         if event.event_type == "final_invoice_from_beo":
-            latest = event
-    if latest is None or (latest.new_value or "").startswith("draft final invoice"):
+            raised = event
+            acted_after = False
+        elif raised is not None and event.event_type in (
+            "invoice_created", "invoice_edited", "invoice_status_changed", "invoice_deleted", "payment_received"
+        ):
+            acted_after = True
+    if raised is None or acted_after:
         return None
-    return latest.new_value
+    if (raised.new_value or "").startswith("draft final invoice #") and "left alone" not in (raised.new_value or ""):
+        return None
+    return raised.new_value
 
 
 def _deposit_paid_for(db: Session, document: Document) -> Decimal:

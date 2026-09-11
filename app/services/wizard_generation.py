@@ -34,7 +34,12 @@ from app.services import documents as documents_service
 from app.services import invoicing
 from app.services import notifications
 from app.services import policy
-from app.services.document_generation import build_av_block, build_vendor_snapshot, generate_beo_content
+from app.services.document_generation import (
+    build_av_block,
+    build_vendor_snapshot,
+    compute_food_order_total,
+    generate_beo_content,
+)
 from app.utils import truncate
 
 logger = logging.getLogger(__name__)
@@ -378,14 +383,22 @@ def _build_status_text(db: Session, booking: Booking) -> str:
 # different money -- proved: a kept $1,220 of food on the document against a
 # $1,250 invoice written in the same request. That is worse than the
 # information loss the keep exists to prevent, and it lands on the client.
-WIZARD_NEVER_KEEPS = {
-    "food_order": (
-        "The food order on the previous Event Order was hand-edited and the client has since "
-        "changed their selections. The Event Order and the final invoice have both been rebuilt "
-        "from the client's new choices, so the hand-edited lines are NOT on either -- "
-        "re-add them to both if they still apply."
-    ),
-}
+# The food order is never carried forward: the client's own selections are
+# what the invoice is cut from. What that sentence may NOT claim is that
+# the invoice was rebuilt -- an invoice that already exists is reused
+# untouched (see the final-invoice branch below), and since 2026-09-11 an
+# approved AI food order leaves a draft invoice behind routinely. Saying
+# both in one list is a false statement about money beside a true one.
+def _food_order_replaced_note(loss) -> str:
+    whose = loss.approved_note or "hand-edited"
+    return (
+        f"The food order on the previous Event Order ({whose}) has been replaced on the Event Order by "
+        "the client's own selections -- the previous lines are NOT on it, so re-add them if they still "
+        "apply. Check the final invoice against it before sending."
+    )
+
+
+WIZARD_NEVER_KEEPS = {"food_order": _food_order_replaced_note}
 
 
 def generate_beo_and_invoice(db: Session, session: WizardSession, *, actor: str) -> WizardGenerationResult:
@@ -453,7 +466,7 @@ def generate_beo_and_invoice(db: Session, session: WizardSession, *, actor: str)
         )
         outstanding_items += [
             (
-                WIZARD_NEVER_KEEPS[loss.field]
+                WIZARD_NEVER_KEEPS[loss.field](loss)
                 if loss.field in WIZARD_NEVER_KEEPS
                 else f"{loss.label} kept from the previous Event Order rather than rebuilt from the wizard"
                 f"{' -- ' + loss.approved_note if loss.approved_note else ''}"
@@ -512,7 +525,45 @@ def generate_beo_and_invoice(db: Session, session: WizardSession, *, actor: str)
     # outstanding_items so it always escalates for a human to reconcile,
     # never silently accepted as "clean".
     if invoicing.has_active_final_invoice(db, booking):
-        outstanding_items.append("A final invoice already exists for this booking -- not creating a duplicate")
+        # Reused EXACTLY as it stands -- its lines are not refreshed from
+        # the client's new selections, so it can now disagree with the
+        # Event Order this submission just wrote. Say which, in figures: a
+        # draft invoice built from an approved AI food order is the common
+        # case since 2026-09-11, and "a final invoice already exists" on
+        # its own left somebody to notice the difference.
+        existing_invoice = db.execute(
+            select(Invoice).where(
+                Invoice.booking_id == booking.id,
+                Invoice.type == InvoiceType.final,
+                Invoice.status != InvoiceStatus.cancelled,
+            )
+        ).scalars().first()
+        def _charge_shape(lines):
+            # LINE BY LINE, not by total: 5 x $100 and 2 x $250 both come
+            # to $500, and "the totals agree" would then tell staff the
+            # invoice bills what the client ordered when it bills
+            # something else entirely (caught in my own probe of this
+            # message, 2026-09-11).
+            return [
+                (str(line.get("description")), str(line.get("quantity")), str(line.get("unit_price")))
+                for line in (lines or [])
+                if line.get("description") != invoicing.DEPOSIT_CREDIT_DESCRIPTION
+            ]
+
+        billed = _charge_shape(existing_invoice.line_items)
+        ordered_lines = _charge_shape(food_line_items)
+        billed_total = sum(
+            (Decimal(q) * Decimal(p) for _, q, p in billed), Decimal("0.00")
+        )
+        ordered_total = compute_food_order_total(food_line_items) or Decimal("0.00")
+        outstanding_items.append(
+            f"Final invoice #{existing_invoice.invoice_number} already exists and was NOT rebuilt from this "
+            f"submission: it bills {billed_total:.2f} for food that is not what the client has now chosen "
+            f"({ordered_total:.2f}). Refresh or reissue it before sending."
+            if billed != ordered_lines
+            else f"Final invoice #{existing_invoice.invoice_number} already exists -- not creating a duplicate; "
+            "its food lines are the same as this submission's."
+        )
         invoice = db.execute(
             select(Invoice).where(
                 Invoice.booking_id == booking.id,

@@ -279,3 +279,71 @@ def test_wizard_submission_reuses_existing_manual_final_invoice_not_a_duplicate(
     # flags on.
     assert result.is_clean is False
     assert any("already exists" in item for item in result.outstanding_items)
+
+
+# --- what the wizard says about an invoice it did not rebuild ------------------
+#
+# Since 2026-09-11 an approved AI food order leaves a draft final invoice
+# behind, so "a final invoice already exists" is the common case rather
+# than the rare one. The wizard reuses it EXACTLY as it stands.
+
+
+def _approved_ai_food(db, booking, menu_items, *pairs):
+    from app.services import beo_proposals
+
+    proposal, result = beo_proposals.propose(
+        db, booking, fields={}, source="client email", actor="ai:claude",
+        food_order=[{"menu_item_id": str(menu_items[n].id), "quantity": q} for n, q in pairs],
+    )
+    assert not result.blocked, result.codes
+    row = next(f for f in proposal.fields if f.field == "food_order")
+    return beo_proposals.approve_field(db, row, actor="staff:aaron")
+
+
+def test_the_wizard_names_the_invoice_it_did_not_rebuild_and_what_it_bills(db, loft, menu_items):
+    """It used to say "The Event Order and the final invoice have both been
+    rebuilt from the client's new choices" beside "A final invoice already
+    exists -- not creating a duplicate". The first was false whenever the
+    second appeared, and this is money."""
+    from app.models.booking import BookingStatus
+    from app.services import wizard as wizard_service
+    from app.services.booking import change_status
+
+    booking = _make_booking(db, loft)
+    change_status(db, booking, BookingStatus.confirmed, actor="test")
+    _pay_deposit(db, booking)
+    _approved_ai_food(db, booking, menu_items, ("Pork Belly Bites", 5))  # 5 x 100 = 500
+    session = wizard_service.get_or_create_session(db, booking, actor="staff:test")
+    _complete_all_steps(db, session, menu_items)  # the client picks 2 x Grazing Platter = 500
+
+    session, result = wizard_service.submit_review(db, session, actor="wizard_client:test", final_notes=None)
+
+    assert result.is_clean is False
+    items = " ".join(result.outstanding_items)
+    assert "was NOT rebuilt from this submission" in items
+    assert "food that is not what the client has now chosen" in items, (
+        "the two orders total the same 500.00 -- the comparison has to be line by line, not by total"
+    )
+    assert "rebuilt from the client's new choices" not in items, "the sentence that was false"
+    assert "hand-edited" not in items, "a staff approval is not a hand edit"
+    assert "approved by staff:aaron" in items, "it names who put those lines there"
+
+
+def test_the_wizard_says_so_when_the_invoice_does_agree(db, loft, menu_items):
+    from app.models.booking import BookingStatus
+    from app.services import wizard as wizard_service
+    from app.services.booking import change_status
+
+    booking = _make_booking(db, loft)
+    change_status(db, booking, BookingStatus.confirmed, actor="test")
+    _pay_deposit(db, booking)
+    # The same selection the wizard's own _complete_all_steps makes.
+    _approved_ai_food(db, booking, menu_items, ("Grazing Platter", 2))
+    session = wizard_service.get_or_create_session(db, booking, actor="staff:test")
+    _complete_all_steps(db, session, menu_items)
+
+    session, result = wizard_service.submit_review(db, session, actor="wizard_client:test", final_notes=None)
+
+    items = " ".join(result.outstanding_items)
+    assert "its food lines are the same as this submission's" in items
+    assert "NOT rebuilt" not in items
