@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Thank you — Meantime Hamilton</title>
+<title>Thank you{% if booking.venue.trading_name %} — {{ booking.venue.trading_name }}{% endif %}</title>
 {% include "_tracking_head.html" %}
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -38,7 +38,12 @@
 <body>
 <div class="card">
   <h1>Thanks, {{ (booking.contact.name | person_name) if booking.contact else "" }}</h1>
-  <p>Your enquiry for <strong style="color: var(--cream);">{{ booking.event_name }}</strong> has been received.</p>
+  {# Names the venue on the page, not just in the tab: this is the receipt a
+     person screenshots, and "which building did I just enquire at?" has to
+     be answerable from it. From the booking's own venue row. #}
+  <p>Your enquiry for <strong style="color: var(--cream);">{{ booking.event_name }}</strong>
+    {%- if booking.venue.trading_name %} at <strong style="color: var(--cream);">{{ booking.venue.trading_name }}</strong>{% endif %}
+    has been received.</p>
   <p>Reference: <span class="reference">{{ booking.reference_code }}</span></p>
   <p>We'll be in touch shortly.</p>
 </div>

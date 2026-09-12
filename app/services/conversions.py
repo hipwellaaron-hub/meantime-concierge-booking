@@ -285,12 +285,19 @@ def meta_payload(booking: Booking) -> dict:
         if context.get(src)
     }
     event_time = int((booking.created_at or dt.datetime.now(dt.timezone.utc)).timestamp())
+    # The venue's own form path, so the conversion in Events Manager points
+    # at the page it came from rather than at a URL that only existed while
+    # there was one venue. Bare /enquire when the slug is unknown -- that
+    # URL resolves; "/enquire/" does not.
+    slug = _venue_slug(booking)
+    base = getattr(settings, "public_base_url", "") or settings.dashboard_base_url
+    source_url = f"{base}/enquire/{slug}" if slug else f"{base}/enquire"
     event = {
         "event_name": EVENT_NAME_META,
         "event_time": event_time,
         "event_id": booking.reference_code,
         "action_source": "website",
-        "event_source_url": f"{getattr(settings, 'public_base_url', '') or settings.dashboard_base_url}/enquire",
+        "event_source_url": source_url,
         "user_data": user_data,
         "custom_data": {
             "lead_id": booking.reference_code,

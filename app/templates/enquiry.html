@@ -3,7 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Enquire — Meantime Hamilton</title>
+{# The tab title is the only venue label a person sees while the page is in a background tab. Blank rather than guessed when the venue has no trading name recorded -- NULL means nobody has said. #}
+<title>Enquire{% if venue.trading_name %} — {{ venue.trading_name }}{% endif %}</title>
 {% include "_tracking_head.html" %}
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -87,10 +88,15 @@
 <body>
 <main>
   <p class="brand">meantime</p>
-  <p class="venue-name">Meantime Hamilton</p>
-  <p class="venue-tag">Hamilton</p>
+  {# From venues.trading_name. `venues.name` is the internal label and must
+     never be printed to a client, so the eyebrow below names the PAGE
+     rather than the venue -- it read "Hamilton" on every venue's form. #}
+  <p class="venue-name">{{ venue.trading_name or "" }}</p>
+  <p class="venue-tag">Function Enquiry</p>
 
-  <form method="post" action="/enquiries" id="enquiry-form">
+  {# Posts back to the same venue that served the page, so an enquiry can
+     only be filed against the form the person actually filled in. #}
+  <form method="post" action="/enquire/{{ venue.slug }}" id="enquiry-form">
     <input type="hidden" name="attribution" id="attribution-field">
     <input type="hidden" name="submission_id" id="submission-id-field" autocomplete="off">
     <div class="card">

@@ -42,15 +42,53 @@ def _submission_uuid(raw: str | None) -> uuid.UUID | None:
         return None
 
 
-def _venue(db: Session) -> Venue:
-    # Single-venue app -- same default used throughout (see
-    # app/api/availability.py, app/api/admin_dashboard.py).
-    return db.query(Venue).filter_by(slug="hamilton").one()
+# The venue the LEGACY, un-suffixed paths mean. Every live ad, every button
+# on the marketing site and every link in an email sent before today points
+# at bare /enquire, and all of them have always meant Hamilton. Naming it
+# here is the same move as the legacy Stripe webhook path: the old URL keeps
+# working AND says which venue it resolved to, rather than a lookup that
+# silently answers Hamilton for whoever asks.
+LEGACY_VENUE_SLUG = "hamilton"
+
+
+def _venue(db: Session, slug: str) -> Venue:
+    venue = db.query(Venue).filter_by(slug=slug).one_or_none()
+    if venue is None:
+        # An unknown slug is a 404 and never a fallback. A form served under
+        # /enquire/entrace (sic) that quietly rendered Hamilton's is the
+        # mislabelled page again, on the one surface a stranger uses.
+        raise HTTPException(status_code=404, detail="Unknown venue")
+    return venue
 
 
 @router.get("/enquire", response_class=HTMLResponse)
-def enquiry_form(request: Request):
-    return templates.TemplateResponse(request, "enquiry.html", {"event_types": EVENT_TYPES})
+def enquiry_form_legacy(request: Request):
+    """Bare /enquire, kept alive for every ad and link already in the wild.
+
+    THE QUERY STRING MUST SURVIVE. Ads append `utm_*`, `gclid`, `gbraid`,
+    `wbraid` and `fbclid` to this URL and the form reads them from
+    `window.location.search`; a redirect built from a fixed literal drops
+    them, the enquiry records as organic and nothing anywhere errors. That
+    is exactly how four admin redirects lost a week filter and a staff
+    banner earlier in this work -- same shape, but this one costs
+    attribution on paid clicks.
+
+    301 is deliberate (Aaron's call) so the ad platforms treat Hamilton's
+    path as the real destination. It is also cached hard by browsers: a
+    later decision to make bare /enquire a venue CHOOSER would not reach
+    anyone who has loaded it before.
+    """
+    target = f"/enquire/{LEGACY_VENUE_SLUG}"
+    query = request.url.query
+    return RedirectResponse(url=f"{target}?{query}" if query else target, status_code=301)
+
+
+@router.get("/enquire/{venue_slug}", response_class=HTMLResponse)
+def enquiry_form(venue_slug: str, request: Request, db: Session = Depends(get_db)):
+    venue = _venue(db, venue_slug)
+    return templates.TemplateResponse(
+        request, "enquiry.html", {"event_types": EVENT_TYPES, "venue": venue}
+    )
 
 
 def _total_guests(payload) -> int | None:
@@ -66,6 +104,23 @@ def _total_guests(payload) -> int | None:
     return payload.attendee_count
 
 
+@router.post(
+    "/enquire/{venue_slug}",
+    dependencies=[Depends(rate_limit_dependency(_enquiry_rate_limiter))],
+)
+def submit_enquiry_for_venue(
+    venue_slug: str,
+    request: Request,
+    payload: Annotated[EnquiryCreate, Form()],
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
+    """Where the form posts. The venue is the same path segment that served
+    the page, so the enquiry can only be filed against the venue whose form
+    the person actually filled in."""
+    return _create_enquiry(request, payload, background_tasks, db, _venue(db, venue_slug))
+
+
 @router.post("/enquiries", dependencies=[Depends(rate_limit_dependency(_enquiry_rate_limiter))])
 def submit_enquiry(
     request: Request,
@@ -73,7 +128,22 @@ def submit_enquiry(
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
 ):
-    venue = _venue(db)
+    """The legacy POST. A form page loaded before this deploy -- or held open
+    in a tab over it -- still posts here, and that page was Hamilton's. Kept
+    for that, and logged so a submission arriving here after the marketing
+    site is updated is visible rather than assumed."""
+    venue = _venue(db, LEGACY_VENUE_SLUG)
+    logger.info("Enquiry submitted to the legacy /enquiries path; filed against %s", venue.slug)
+    return _create_enquiry(request, payload, background_tasks, db, venue)
+
+
+def _create_enquiry(
+    request: Request,
+    payload: EnquiryCreate,
+    background_tasks: BackgroundTasks,
+    db: Session,
+    venue: Venue,
+):
     full_name = truncate(f"{payload.first_name} {payload.last_name}", 255)
     referrer = request.headers.get("referer")
     lead_source = classify_lead_source(payload.lead_source, referrer)

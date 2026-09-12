@@ -51,6 +51,7 @@ GET    /browserconfig.xml
 GET    /d/{token}
 GET    /d/{token}/pdf
 GET    /enquire
+GET    /enquire/{venue_slug}
 GET    /enquiries/{booking_id}/thanks
 GET    /favicon.ico
 GET    /floor
@@ -110,6 +111,7 @@ POST   /admin/{venue_slug}/triage/reconcile
 POST   /api/ai/bookings/{reference}/event-order-proposal
 POST   /api/staff/login
 POST   /d/{token}/sign
+POST   /enquire/{venue_slug}
 POST   /enquiries
 POST   /enquiries/{booking_id}/conversion/{platform}
 POST   /w/{token}/av

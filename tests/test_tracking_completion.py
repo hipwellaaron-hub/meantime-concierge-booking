@@ -327,7 +327,7 @@ def test_concurrent_repeats_with_one_submission_id_create_one_lead():
 
 
 def test_the_form_renders_a_submission_id_field(client):
-    html = client.get("/enquire").text
+    html = client.get("/enquire/hamilton").text
     assert 'name="submission_id"' in html
     assert "crypto.randomUUID" in html
     assert 'autocomplete="off"' in html and "pageshow" in html

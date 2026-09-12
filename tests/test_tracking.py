@@ -408,7 +408,7 @@ def test_tags_render_only_when_configured(client):
 
 
 def test_tags_render_when_configured(client, tags_on):
-    on = client.get("/enquire").text
+    on = client.get("/enquire/hamilton").text
     assert f"gtag/js?id={GA4}" in on
     assert f"fbq('init', '{PIXEL}')" in on
     assert "fbq('track', 'PageView')" in on
@@ -426,7 +426,7 @@ def test_validation_failure_creates_no_booking_no_conversion(client, db):
 def test_tracking_does_not_alter_the_enquiry_form(client, tags_on):
     """Analytics is additive: the form's action, hidden attribution field and
     submit must be intact whether or not tags are present."""
-    html = client.get("/enquire").text
-    assert 'action="/enquiries"' in html
+    html = client.get("/enquire/hamilton").text
+    assert 'action="/enquire/hamilton"' in html
     assert 'name="attribution"' in html
     assert "Submit Inquiry" in html

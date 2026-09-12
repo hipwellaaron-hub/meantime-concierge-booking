@@ -4,6 +4,14 @@
 https://book.meantime.com.au/enquire. Nothing here covers Paddles & Pals
 or Meantime The Entrance, and no event for either is introduced.
 
+**One change since this was written (2026-09-12).** The form now lives at
+a per-venue path, `https://book.meantime.com.au/enquire/hamilton`, because
+a second venue is being added. `https://book.meantime.com.au/enquire`
+still works and **301s to it carrying the whole query string**, so every
+link and ad in this document stays correct and `utm_*`/`gclid` still reach
+the form. A URL checker that reports a redirect on the bare link is seeing
+that hop, not a fault. Nothing else here changes.
+
 **Audience.** The website developer (meantime.com.au) and the
 analytics/account reviewer (GTM, GA4, Google Ads, Meta).
 
