@@ -33,6 +33,12 @@ class SpaceCandidate(BaseModel):
 
 
 class SpaceAvailabilityResponse(BaseModel):
+    # WHICH VENUE THIS ANSWER IS ABOUT. A list of rooms, capacities and
+    # minimum spends is a quote in all but name, and a quote that does not
+    # say which building it is for can be read as being about the other one.
+    # Every venue-scoped surface in this app now names its venue for the
+    # same reason: the floor API, the AI read API, and the admin band.
+    venue: str
     event_date: dt.date
     start_time: dt.time
     end_time: dt.time

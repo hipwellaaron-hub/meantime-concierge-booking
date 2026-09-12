@@ -21,7 +21,7 @@ from app.services.documents import create_new_version, mark_sent as mark_documen
 from app.services.invoicing import create_invoice, get_payment_summary, mark_sent as mark_invoice_sent, record_payment
 
 
-def test_full_journey_enquiry_to_paid_invoice_with_intact_audit_trail(db, loft):
+def test_full_journey_enquiry_to_paid_invoice_with_intact_audit_trail(db, loft, hamilton):
     app.dependency_overrides[get_db] = lambda: db
     client = TestClient(app)
     try:
@@ -75,7 +75,8 @@ def test_full_journey_enquiry_to_paid_invoice_with_intact_audit_trail(db, loft):
         # 2. Availability now correctly reflects the confirmed booking (Phase 1)
         avail_resp = client.get(
             "/availability/spaces",
-            params={"date": "2027-02-13", "start": "18:00:00", "end": "23:00:00", "guests": 60},
+            params={"date": "2027-02-13", "start": "18:00:00", "end": "23:00:00",
+                    "guests": 60, "venue_slug": hamilton.slug},
         )
         loft_result = next(s for s in avail_resp.json()["spaces"] if s["space_id"] == str(loft.id))
         assert loft_result["is_available"] is False

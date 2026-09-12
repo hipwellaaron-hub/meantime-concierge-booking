@@ -47,7 +47,18 @@ def check_spaces_availability(
     start: dt.time,
     end: dt.time,
     guests: int = Query(..., ge=1),
-    venue_slug: str = "hamilton",
+    # REQUIRED, not defaulted. This endpoint is PUBLIC and unauthenticated,
+    # and it answers "which rooms could hold this party, at what minimum
+    # spend" -- a quote, in effect. A default meant a caller who said nothing
+    # got Hamilton's rooms, Hamilton's capacities and Hamilton's minimum
+    # food spend, confidently and with no indication that a venue had been
+    # chosen for them. Aaron, 2026-09-12: "a silent default to Hamilton is
+    # how I'd confidently quote the wrong building."
+    #
+    # Query(...) rather than a different default: FastAPI answers 422 and
+    # names the missing parameter, so a caller finds out immediately instead
+    # of receiving a plausible wrong answer.
+    venue_slug: str = Query(..., min_length=1),
     wheelchair_accessible: bool = False,
     db: Session = Depends(get_db),
 ):
@@ -57,6 +68,9 @@ def check_spaces_availability(
     venue = db.query(Venue).filter_by(slug=venue_slug).one_or_none()
     if venue is None:
         raise HTTPException(status_code=404, detail=f"Unknown venue '{venue_slug}'")
+    # Named in the response, so an answer can never be read as being about a
+    # venue the caller did not ask for -- the same reason the floor API and
+    # the AI read API both carry it.
 
     candidates = get_space_candidates(
         db,
@@ -70,6 +84,7 @@ def check_spaces_availability(
     warnings = validate_booking_time(date, start, end)
 
     return SpaceAvailabilityResponse(
+        venue=venue.trading_name or venue.name,
         event_date=date,
         start_time=start,
         end_time=end,

@@ -117,7 +117,11 @@ def test_spaces_endpoint_returns_warnings_for_saturday_daytime_overrun(db, hamil
         client = TestClient(app)
         resp = client.get(
             "/availability/spaces",
-            params={"date": str(EVENT_DATE), "start": "11:00:00", "end": "18:00:00", "guests": 20},
+            # venue_slug is REQUIRED now: this endpoint is public and a
+            # default meant an unspecified caller got Hamilton's rooms and
+            # minimum spends as though they had asked for them.
+            params={"date": str(EVENT_DATE), "start": "11:00:00", "end": "18:00:00",
+                    "guests": 20, "venue_slug": hamilton.slug},
         )
         assert resp.status_code == 200
         body = resp.json()
@@ -192,3 +196,97 @@ def test_is_space_free_serializes_null_time_blocking_booking_via_real_space(db, 
         assert body["blocking_bookings"][0]["end_time"] is None
     finally:
         app.dependency_overrides.clear()
+
+
+# --- the public endpoint cannot pick a venue for you ------------------------
+#
+# Aaron, 2026-09-12, on this specifically: "that's the call I make dozens of
+# times a day and a silent default to Hamilton is how I'd confidently quote
+# the wrong building." Closed rather than moved: the parameter is required,
+# not defaulted somewhere else.
+
+
+def _probe(db, **params):
+    from fastapi.testclient import TestClient
+
+    from app.database import get_db
+    from app.main import app
+
+    app.dependency_overrides[get_db] = lambda: db
+    try:
+        base = {"date": str(EVENT_DATE), "start": "18:00:00", "end": "23:00:00", "guests": 20}
+        base.update(params)
+        return TestClient(app).get("/availability/spaces", params=base)
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_omitting_the_venue_is_refused_rather_than_defaulted(db, hamilton):
+    """THE guard. A caller who says nothing used to get Hamilton's rooms,
+    capacities and minimum food spends -- a quote in all but name -- with
+    nothing to say a venue had been chosen for them."""
+    resp = _probe(db)
+
+    assert resp.status_code == 422, (
+        f"a venue-less request was answered with {resp.status_code}; it must be refused"
+    )
+    assert "venue_slug" in resp.text, "the refusal does not name what is missing"
+
+
+def test_an_empty_venue_is_refused_too(db, hamilton):
+    """"" is not a venue. Without min_length it would pass validation and
+    then 404 as "Unknown venue ''", which reads like a data problem rather
+    than a malformed request."""
+    assert _probe(db, venue_slug="").status_code == 422
+
+
+def test_naming_the_venue_still_works(db, hamilton):
+    """The other half -- a refusal that refused everything would pass the
+    two above while breaking the endpoint."""
+    resp = _probe(db, venue_slug=hamilton.slug)
+
+    assert resp.status_code == 200
+    assert len(resp.json()["spaces"]) >= 1
+
+
+def test_an_unknown_venue_is_a_404_not_an_empty_list(db, hamilton):
+    """An empty list reads as "no rooms available", which is a booking
+    answer. A typo is not a booking answer."""
+    resp = _probe(db, venue_slug="not-a-venue")
+
+    assert resp.status_code == 404
+    assert "not-a-venue" in resp.text
+
+
+def test_the_answer_says_which_venue_it_is_about(db, hamilton):
+    """A list of rooms and minimum spends that does not name its building
+    can be read as being about the other one -- the mislabelled-page failure
+    this project has hit four times."""
+    body = _probe(db, venue_slug=hamilton.slug).json()
+
+    assert body["venue"] == (hamilton.trading_name or hamilton.name)
+
+
+def test_no_public_availability_route_carries_a_default_venue():
+    """The structural half, by AST, so a default cannot creep back in under
+    a different name. Checked against the signature rather than the source
+    text, because a comment mentioning the old default would fool a grep --
+    which is exactly how an earlier sweep in this project passed."""
+    import ast
+    import pathlib
+
+    tree = ast.parse(pathlib.Path("app/api/availability.py").read_text(encoding="utf-8"))
+    offenders = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        args = node.args.args
+        defaults = dict(zip([a.arg for a in args[len(args) - len(node.args.defaults):]],
+                            node.args.defaults))
+        for name, default in defaults.items():
+            if "venue" not in name:
+                continue
+            if isinstance(default, ast.Constant) and default.value is not None:
+                offenders.append(f"{node.name}({name}={default.value!r})")
+
+    assert not offenders, f"a venue parameter carries a literal default: {offenders}"
