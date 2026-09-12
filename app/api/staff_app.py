@@ -46,6 +46,10 @@ FLOOR_VISIBLE_STATUSES = (BookingStatus.confirmed, BookingStatus.completed)
 class StaffLogin(BaseModel):
     email: str = Field(min_length=3, max_length=320)
     password: str = Field(min_length=1, max_length=255)
+    # Optional: only an ADMIN is ever asked for it, because only an
+    # admin has no venue of their own. A floor account that sends one
+    # is refused rather than obeyed.
+    venue: str | None = None
 
 
 def require_app_token(
@@ -68,8 +72,28 @@ def app_login(payload: StaffLogin, request: Request, db: Session = Depends(get_d
     staff = staff_auth.authenticate(db, payload.email, payload.password)
     if staff is None:
         raise HTTPException(status_code=401, detail="Wrong email or password")
-    token = staff_auth.issue_app_token(db, staff)
-    return {"token": token, "name": staff.name}
+
+    # A FLOOR account names its own venue and is never asked. An ADMIN
+    # carries none -- NULL means every venue -- so they say which building
+    # this phone is in. 409 rather than 400: the request was well formed and
+    # the credentials were right; what is missing is a choice only a person
+    # can make (Aaron, 2026-09-12).
+    try:
+        venue = staff_auth.venue_for_token(db, staff, payload.venue)
+    except staff_auth.VenueRequired as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"reason": str(exc), "venues": exc.choices},
+        ) from exc
+
+    token = staff_auth.issue_app_token(db, staff, venue)
+    return {
+        "token": token,
+        "name": staff.name,
+        # The app puts this in its header, so the person holding the phone
+        # can see which building's run sheets they are looking at.
+        "venue": venue.trading_name or venue.name,
+    }
 
 
 def _payment_status(db: Session, booking: Booking) -> str:

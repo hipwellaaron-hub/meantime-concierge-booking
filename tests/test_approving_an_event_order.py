@@ -356,8 +356,11 @@ def _floor_client(db, hamilton):
     """A logged-in floor user, so the floor app's own BEO route renders."""
     from app.services import staff_auth
 
+    # AT a venue: a floor account with none cannot sign into the floor app,
+    # which is step 8's rule rather than an oversight here.
     staff_auth.create_or_update_staff_user(
-        db, email="floor.approve@meantime.com.au", name="Floor Approve", password="floorpassword1", role="floor"
+        db, email="floor.approve@meantime.com.au", name="Floor Approve",
+        password="floorpassword1", role="floor", venue=hamilton,
     )
     app.dependency_overrides[get_db] = lambda: db
     c = TestClient(app)

@@ -78,7 +78,7 @@ def _sent_beo(db, booking):
     return documents_service.mark_sent(db, doc, actor="test")
 
 
-def test_floor_beo_html_hides_money_and_phone(client, db, loft):
+def test_floor_beo_html_hides_money_and_phone(client, db, loft, hamilton):
     """The floor BEO view (is_floor_app) shows kitchen notes but must NOT
     show dollar figures or the client's phone number."""
     from app.services import staff_auth
@@ -89,9 +89,10 @@ def test_floor_beo_html_hides_money_and_phone(client, db, loft):
     _sent_beo(db, booking)
 
     staff = staff_auth.create_or_update_staff_user(
-        db, email="floorsec@meantime.com.au", name="Floor Sec", password="floorpass12", role="floor"
+        db, email="floorsec@meantime.com.au", name="Floor Sec", password="floorpass12",
+        role="floor", venue=hamilton,
     )
-    token = staff_auth.issue_app_token(db, staff)
+    token = staff_auth.issue_app_token(db, staff, hamilton)
     html = client.get(
         f"/api/staff/bookings/{booking.id}/beo", headers={"Authorization": f"Bearer {token}"}
     ).text

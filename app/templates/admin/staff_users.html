@@ -2,16 +2,17 @@
 {% block title %}Staff accounts{% endblock %}
 {% block content %}
 <h1>Staff accounts</h1>
-{#- This page sits under a venue-scoped URL and carries the venue band, so a
-    reader would reasonably take the list below to be THIS venue's staff.
-    It is not: staff_users and staff_app_tokens have no venue column yet, so
-    the list covers every venue. Saying so beats letting the page imply a
-    scoping it does not have -- the mislabelled-page failure this project has
-    already hit twice. The sentence goes when step 8 adds the column.
-    Pinned by tests/test_staff_scoping_gate.py. -#}
+{#- Scoped since step 8. A FLOOR account belongs to one venue and appears
+    only on that venue's page; an ADMIN carries no venue, which means every
+    venue, so they appear on all of them -- correctly, because they do work
+    at all of them. Device tokens are listed only under their own venue: a
+    phone is in one building, and "revoke that device" has to mean something
+    specific. The sentence that used to sit here said accounts were shared
+    across every venue, which was true while this page was unscoped and
+    became false the moment it was not. -#}
 <p class="note" style="color: var(--muted); font-size: 0.85rem; margin: -6px 0 18px;">
-  Staff accounts are shared across every venue &mdash; this list is not limited to
-  {{ (venue.trading_name or venue.name) if venue else "this venue" }}.
+  {{ (venue.trading_name or venue.name) if venue else "This venue" }}&rsquo;s team, plus
+  anyone who works across every venue. Devices are listed where they were signed in.
 </p>
 {#
   "created" and "updated" are different events and the page used to call

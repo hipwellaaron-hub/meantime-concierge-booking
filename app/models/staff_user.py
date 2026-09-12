@@ -1,9 +1,9 @@
 import datetime as dt
 import uuid
 
-from sqlalchemy import Boolean, DateTime, Index, String, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, String, func
 from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
 
@@ -21,6 +21,23 @@ class StaffUser(Base):
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+    # WHICH VENUE THIS PERSON WORKS AT, and NULL MEANS SOMETHING HERE.
+    #
+    # Everywhere else in this codebase a NULL venue means "nobody has said"
+    # and nothing is inferred from it. This column is the exception: NULL
+    # means EVERY venue, which is what an admin is. Aaron is the only admin
+    # and works both buildings, so his account carries no venue and he picks
+    # one when signing a phone into the floor app.
+    #
+    # A FLOOR account always names its venue. Floor staff never see the
+    # picker and cannot choose (Aaron, 2026-09-12): a casual who works one
+    # building should not be able to put the other building's run sheets on
+    # their phone by choosing from a list.
+    venue_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("venues.id"), nullable=True
+    )
+    venue: Mapped["Venue | None"] = relationship()
     # 'admin' = full Concierge access; 'floor' = the read-only Meantime
     # Floor app ONLY -- app/admin_auth.py rejects floor sessions from
     # /admin outright. Plain string validated in Python, matching how

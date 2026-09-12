@@ -34,14 +34,24 @@ def client(db, hamilton):
 
 
 @pytest.fixture()
-def floor_user(db):
+def floor_user(db, hamilton):
+    """A floor account AT A VENUE, which is what the admin form now creates.
+    A floor account with no venue cannot sign into the floor app -- that is
+    the point of step 8, not an oversight in this fixture."""
     return staff_auth.create_or_update_staff_user(
-        db, email=FLOOR_EMAIL, name="Casual Floor", password=FLOOR_PASSWORD, role="floor"
+        db, email=FLOOR_EMAIL, name="Casual Floor", password=FLOOR_PASSWORD,
+        role="floor", venue=hamilton,
     )
 
 
-def _login(client, email=FLOOR_EMAIL, password=FLOOR_PASSWORD) -> dict:
-    resp = client.post("/api/staff/login", json={"email": email, "password": password})
+def _login(client, email=FLOOR_EMAIL, password=FLOOR_PASSWORD, venue=None) -> dict:
+    """`venue` is only ever needed for an ADMIN account: an admin carries no
+    venue of their own (NULL means every venue), so the floor app asks which
+    building the phone is in. A floor account is never asked."""
+    payload = {"email": email, "password": password}
+    if venue is not None:
+        payload["venue"] = venue
+    resp = client.post("/api/staff/login", json=payload)
     assert resp.status_code == 200, resp.text
     return {"Authorization": f"Bearer {resp.json()['token']}"}
 
@@ -123,8 +133,12 @@ def test_floor_role_cannot_enter_admin(client, db, floor_user):
     assert "/admin/login" in resp.headers["location"]
 
 
-def test_admin_role_token_also_works_on_app_api(client, db, staff_user):
-    headers = _login(client, email=staff_user.email, password=STAFF_TEST_PASSWORD)
+def test_admin_role_token_also_works_on_app_api(client, db, staff_user, hamilton):
+    # An admin must name the venue: they carry none of their own, and a
+    # floor token is what puts one building's run sheets on a phone.
+    headers = _login(
+        client, email=staff_user.email, password=STAFF_TEST_PASSWORD, venue=hamilton.slug
+    )
     assert client.get("/api/staff/bookings", headers=headers).status_code == 200
 
 
@@ -436,9 +450,9 @@ def test_admin_deactivate_and_reactivate(db, admin_client, floor_user):
     assert floor_user.is_active is True
 
 
-def test_admin_revokes_single_token(db, admin_client, floor_user):
-    raw_a = staff_auth.issue_app_token(db, floor_user)
-    raw_b = staff_auth.issue_app_token(db, floor_user)
+def test_admin_revokes_single_token(db, admin_client, floor_user, hamilton):
+    raw_a = staff_auth.issue_app_token(db, floor_user, hamilton)
+    raw_b = staff_auth.issue_app_token(db, floor_user, hamilton)
     token_a = next(
         t
         for t in db.query(StaffAppToken).filter_by(staff_user_id=floor_user.id)

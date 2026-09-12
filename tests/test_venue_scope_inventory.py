@@ -108,6 +108,13 @@ def write_snapshot() -> None:
 VENUE_SCOPED = {
     "Booking",  # venue_id, NOT NULL, immutable by trigger (d8c3f1a7e920)
     "Space",    # venue_id, NOT NULL -- the original scoped table
+    # Step 8 (d6b4e9f2a831). Both NULLABLE, for different reasons:
+    "StaffUser",      # NULL means EVERY venue -- an admin. The one place in
+                      # this codebase a NULL venue means something.
+    "StaffAppToken",  # NULL means the token predates the column or came from
+                      # a rolled-back build, and is REFUSED rather than
+                      # guessed. Nullable only so a rolled-back build can
+                      # still issue tokens at all.
 }
 
 # Rows that do NOT carry a venue, each with the reason. A reason of the form
@@ -117,8 +124,6 @@ VENUE_FREE = {
     "Venue": "is the venue",
     "AiSettings": "one row of process configuration; no venue dimension exists",
     "PublicHoliday": "NSW public holidays are a fact about the state, not a venue",
-    "StaffUser": "no venue column today -- the accepted gap; floor staff gain one in the floor slab",
-    "StaffAppToken": "same; a per-device token gains a venue with StaffUser",
     "Contact": "a person is not owned by a venue (Aaron, 2026-09-12: shared, display scoped)",
     "MenuItem": "NOT YET SCOPED -- per-venue was settled 2026-09-12 and the column is not built",
     # Reached through Booking.
@@ -202,4 +207,7 @@ def test_the_known_gaps_are_still_written_down():
         "MenuItem's reason no longer records that per-venue pricing is unbuilt. "
         "If the column now exists, move it to VENUE_SCOPED."
     )
-    assert "accepted gap" in VENUE_FREE["StaffUser"]
+    # StaffUser's "accepted gap" reason is gone: step 8 scoped it, and the
+    # gate that was watching for exactly this fired and was replaced by
+    # tests/test_staff_is_scoped_to_a_venue.py.
+    assert "StaffUser" not in VENUE_FREE, "StaffUser is scoped now; its gap note should be gone"

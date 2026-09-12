@@ -9,7 +9,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.admin_auth import admin_ctx, require_csrf, require_staff
@@ -41,9 +41,34 @@ def staff_list(
     db: Session = Depends(get_db),
     staff: StaffUser = Depends(require_staff),
 ):
-    users = db.scalars(select(StaffUser).order_by(StaffUser.role, StaffUser.name)).all()
+    # THIS VENUE's people, plus the ones who work every venue.
+    #
+    # StaffUser.venue_id NULL means "every venue" -- the one place a NULL
+    # venue means something in this codebase -- so an admin appears on every
+    # venue's staff page, correctly, because they do work at every venue.
+    # A FLOOR account belongs to one building and appears only there.
+    #
+    # Until 2026-09-12 this listed every venue's people and every live device
+    # token under one venue's URL and one venue's band, which is the
+    # mislabelled-page failure this project hit three times in two days.
+    venue = request.state.venue
+    users = db.scalars(
+        select(StaffUser)
+        .where(or_(StaffUser.venue_id == venue.id, StaffUser.venue_id.is_(None)))
+        .order_by(StaffUser.role, StaffUser.name)
+    ).all()
+
+    # Devices are NOT the same question. A phone is in one building, so a
+    # token is listed only under its own venue -- an admin who has signed
+    # phones into both buildings sees each one on its own page, which is the
+    # only way "revoke that device" means something specific.
     tokens_by_user: dict = {}
-    for token in db.scalars(select(StaffAppToken).where(StaffAppToken.revoked_at.is_(None))).all():
+    for token in db.scalars(
+        select(StaffAppToken).where(
+            StaffAppToken.revoked_at.is_(None),
+            StaffAppToken.venue_id == venue.id,
+        )
+    ).all():
         tokens_by_user.setdefault(token.staff_user_id, []).append(token)
     return templates.TemplateResponse(
         request,
@@ -75,7 +100,13 @@ def create_staff(
     # stops misreporting it.
     existed = staff_auth.get_by_email(db, email) is not None
     try:
-        new_user = staff_auth.create_or_update_staff_user(db, email=email, name=name, password=password, role=role)
+        # The venue whose page this form was submitted from -- the only
+        # venue it could have meant. A floor account created without one
+        # cannot sign into the floor app at all.
+        new_user = staff_auth.create_or_update_staff_user(
+            db, email=email, name=name, password=password, role=role,
+            venue=request.state.venue,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
