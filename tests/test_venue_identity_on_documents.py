@@ -305,3 +305,45 @@ def test_a_venue_with_no_identity_prints_nothing_rather_than_hamiltons(db, loft,
             assert value not in resp.text, f"an unfilled venue fell back to Hamilton's {value!r}"
     finally:
         app.dependency_overrides.clear()
+
+
+def test_the_invoice_pdf_names_the_venue_and_the_account(db, loft, contact, hamilton):
+    """The invoice PDF renders through a bypass that skips request context,
+    like the Event Order's. It shares its context builder with the screen
+    version, so they cannot disagree -- proved rather than assumed."""
+    import io
+
+    from pypdf import PdfReader
+
+    booking = _booking(db, loft, contact, name="Invoice PDF")
+    invoice = create_deposit_invoice(db, booking, due_date=dt.date(2027, 8, 1), actor="test")
+    mark_invoice_sent(db, invoice, actor="test")
+
+    try:
+        resp = _client(db).get(f"/i/{invoice.access_token}/pdf")
+        assert resp.status_code == 200
+        text = "".join(page.extract_text() for page in PdfReader(io.BytesIO(resp.content)).pages)
+    finally:
+        app.dependency_overrides.clear()
+
+    for value in (TRADING_NAME, ABN, BSB, ACCOUNT_NUMBER):
+        assert value in text, f"the invoice PDF no longer prints {value!r}"
+
+
+def test_the_admin_document_preview_names_the_venue(db, loft, contact, hamilton, admin_client):
+    """Two staff-facing renders I missed on the first pass: the document
+    preview and its internal PDF. They read the same globals the client
+    surfaces did, so deleting those left both printing a blank venue."""
+    # An EVENT ORDER, not an agreement. The agreement prints its own frozen
+    # copy of the venue, so it renders the trading name whether or not the
+    # route passes one -- the first version of this test used an agreement,
+    # passed with the fix reverted, and proved nothing. Fourth time tonight.
+    booking = _booking(db, loft, contact, name="Admin Preview")
+    document = documents_service.create_new_version(
+        db, booking, DocumentType.beo, generate_beo_content(booking), actor="test"
+    )
+
+    resp = admin_client.get(f"/admin/bookings/{booking.id}/documents/{document.id}/preview")
+    assert resp.status_code == 200, resp.status_code
+    assert TRADING_NAME in resp.text, "the staff preview prints a blank venue"
+    assert PHONE in resp.text

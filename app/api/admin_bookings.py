@@ -873,7 +873,8 @@ def download_document_pdf_for_staff(
         raise HTTPException(status_code=404, detail="Document not found on this booking")
     _refuse_if_legacy(booking_id, document)
     html = templates.get_template("document.html").render(
-        document=document, booking=document.booking, is_pdf=True, is_staff_preview=True
+        document=document, booking=document.booking, is_pdf=True, is_staff_preview=True,
+        **venue_identity(document.booking.venue),
     )
     doc_label = "Agreement" if document.type.value == "agreement" else "BEO"
     filename = f"{document.booking.reference_code}-{doc_label}-v{document.version}-INTERNAL.pdf"
@@ -904,7 +905,13 @@ def preview_document(
         raise HTTPException(status_code=404, detail="Document not found on this booking")
     _refuse_if_legacy(booking_id, document)
     return templates.TemplateResponse(
-        request, "document.html", {"document": document, "booking": document.booking, "is_staff_preview": True}
+        request, "document.html",
+        {
+            "document": document,
+            "booking": document.booking,
+            "is_staff_preview": True,
+            **venue_identity(document.booking.venue),
+        },
     )
 
 
