@@ -840,8 +840,26 @@ def search_bookings(
         stmt = stmt.where(Booking.status.not_in(TERMINAL_STATUSES))
     if query and query.strip():
         like = f"%{query.strip()}%"
+        # The INVOICE reference too. It reads HAM-1004 -- the same shape as
+        # the booking reference above it on the page -- so a client quotes
+        # one and staff type it here. Without this they get "No bookings
+        # match", which is honest and useless: the booking exists, and its
+        # page is where that invoice already lives.
+        #
+        # EXISTS rather than a join, so a booking with three invoices comes
+        # back once rather than three times.
+        invoice_match = (
+            select(Invoice.id)
+            .where(Invoice.booking_id == Booking.id, Invoice.invoice_reference.ilike(like))
+            .exists()
+        )
         stmt = stmt.outerjoin(Contact, Booking.contact_id == Contact.id).where(
-            or_(Booking.event_name.ilike(like), Booking.reference_code.ilike(like), Contact.name.ilike(like))
+            or_(
+                Booking.event_name.ilike(like),
+                Booking.reference_code.ilike(like),
+                Contact.name.ilike(like),
+                invoice_match,
+            )
         )
     # Soonest event first -- Postgres' default ASC null ordering already
     # puts a booking with no event_date yet (see event_date's own nullable
