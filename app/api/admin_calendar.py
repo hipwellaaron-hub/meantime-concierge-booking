@@ -22,8 +22,19 @@ router = APIRouter(prefix="/admin/{venue_slug}/calendar", tags=["admin-calendar"
 BOOKING_EVENT_ACTOR_MAX_LENGTH = 255
 
 
-def _venue(db: Session) -> Venue:
-    return db.query(Venue).filter_by(slug="hamilton").one()
+def _venue(request: Request) -> Venue:
+    """The venue named in the URL, resolved by the router-level venue_scope
+    dependency and stashed on request.state.
+
+    This used to be `db.query(Venue).filter_by(slug="hamilton").one()`. Once
+    the router moved onto /admin/{venue_slug}/, that made the page claim one
+    venue in its URL and in its band while querying another -- which looks
+    exactly like a correct page, and is worse than a visibly mixed list.
+
+    (app/api/availability.py still carries `venue_slug: str = "hamilton"` as
+    a PUBLIC query-parameter default -- a separate surface, not fixed here.)
+    """
+    return request.state.venue
 
 
 def _actor(staff: StaffUser) -> str:
@@ -37,7 +48,7 @@ def calendar_week(
     db: Session = Depends(get_db),
     staff: StaffUser = Depends(require_staff),
 ):
-    venue = _venue(db)
+    venue = _venue(request)
     anchor = week or dt.date.today()
     week_start = calendar_service.week_start_for(anchor)
     grid = calendar_service.get_week_grid(db, venue, week_start)
@@ -65,7 +76,7 @@ def new_hold_form(
     db: Session = Depends(get_db),
     staff: StaffUser = Depends(require_staff),
 ):
-    venue = _venue(db)
+    venue = _venue(request)
     bookable_spaces = db.scalars(
         select(Space).where(Space.venue_id == venue.id, Space.is_bookable.is_(True)).order_by(Space.name)
     ).all()
@@ -105,7 +116,7 @@ def create_hold(
                     # a hold is the booking being created, so there is nothing
                     # to derive from, and the form's space_ids are whatever
                     # the POST carried.
-                    venue_id=_venue(db).id,
+                    venue_id=_venue(request).id,
                     space_id=space_id,
                     event_date=event_date,
                     event_name=event_name,

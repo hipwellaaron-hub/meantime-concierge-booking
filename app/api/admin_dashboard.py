@@ -21,14 +21,24 @@ router = APIRouter(
 )
 
 
-def _venue(db: Session) -> Venue:
-    # Single-venue app -- same default used by app/api/availability.py.
-    return db.query(Venue).filter_by(slug="hamilton").one()
+def _venue(request: Request) -> Venue:
+    """The venue named in the URL, resolved by the router-level venue_scope
+    dependency and stashed on request.state.
+
+    This used to be `db.query(Venue).filter_by(slug="hamilton").one()`. Once
+    the router moved onto /admin/{venue_slug}/, that made the page claim one
+    venue in its URL and in its band while querying another -- which looks
+    exactly like a correct page, and is worse than a visibly mixed list.
+
+    (app/api/availability.py still carries `venue_slug: str = "hamilton"` as
+    a PUBLIC query-parameter default -- a separate surface, not fixed here.)
+    """
+    return request.state.venue
 
 
 @router.get("/", response_class=HTMLResponse)
 def dashboard(request: Request, db: Session = Depends(get_db), staff: StaffUser = Depends(require_staff)):
-    venue = _venue(db)
+    venue = _venue(request)
 
     open_enquiries = db.scalar(
         select(func.count(Booking.id))

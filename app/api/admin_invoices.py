@@ -21,8 +21,19 @@ from app.templating import templates
 router = APIRouter(prefix="/admin/{venue_slug}/invoices", tags=["admin-invoices"], dependencies=[Depends(require_staff), Depends(venue_scope)])
 
 
-def _venue(db: Session) -> Venue:
-    return db.query(Venue).filter_by(slug="hamilton").one()
+def _venue(request: Request) -> Venue:
+    """The venue named in the URL, resolved by the router-level venue_scope
+    dependency and stashed on request.state.
+
+    This used to be `db.query(Venue).filter_by(slug="hamilton").one()`. Once
+    the router moved onto /admin/{venue_slug}/, that made the page claim one
+    venue in its URL and in its band while querying another -- which looks
+    exactly like a correct page, and is worse than a visibly mixed list.
+
+    (app/api/availability.py still carries `venue_slug: str = "hamilton"` as
+    a PUBLIC query-parameter default -- a separate surface, not fixed here.)
+    """
+    return request.state.venue
 
 
 @router.get("", response_class=HTMLResponse)
@@ -41,7 +52,7 @@ def list_invoices(
     except ValueError:
         raise HTTPException(status_code=422, detail=f"Unknown status '{status}'")
 
-    venue = _venue(db)
+    venue = _venue(request)
     invoices = invoicing.search_invoices(db, venue.id, status=parsed_status, include_terminal=include_terminal)
     return templates.TemplateResponse(
         request,

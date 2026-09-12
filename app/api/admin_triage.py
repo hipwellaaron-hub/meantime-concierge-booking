@@ -17,13 +17,24 @@ from app.templating import templates
 router = APIRouter(prefix="/admin/{venue_slug}/triage", tags=["admin-triage"], dependencies=[Depends(require_staff), Depends(venue_scope)])
 
 
-def _venue(db: Session) -> Venue:
-    return db.query(Venue).filter_by(slug="hamilton").one()
+def _venue(request: Request) -> Venue:
+    """The venue named in the URL, resolved by the router-level venue_scope
+    dependency and stashed on request.state.
+
+    This used to be `db.query(Venue).filter_by(slug="hamilton").one()`. Once
+    the router moved onto /admin/{venue_slug}/, that made the page claim one
+    venue in its URL and in its band while querying another -- which looks
+    exactly like a correct page, and is worse than a visibly mixed list.
+
+    (app/api/availability.py still carries `venue_slug: str = "hamilton"` as
+    a PUBLIC query-parameter default -- a separate surface, not fixed here.)
+    """
+    return request.state.venue
 
 
 @router.get("", response_class=HTMLResponse)
 def triage(request: Request, db: Session = Depends(get_db), staff: StaffUser = Depends(require_staff)):
-    venue = _venue(db)
+    venue = _venue(request)
     unassigned = ivvy_import.get_unassigned_bookings(db, venue)
     wizard_ready = wizard_service.get_wizard_eligible_bookings(db, venue)
     needs_clarification = enquiry_classification.get_enquiries_needing_clarification(db, venue)
@@ -70,5 +81,5 @@ def run_reconciliation_now(
     findings rows themselves, which open, persist and self-clear. Exists so
     the checks can be run the moment they matter rather than waiting for
     tonight."""
-    reconciliation.run(db, _venue(db))
+    reconciliation.run(db, _venue(request))
     return RedirectResponse(url=f"{request.state.venue_base}/triage", status_code=303)
