@@ -347,3 +347,43 @@ def test_the_admin_document_preview_names_the_venue(db, loft, contact, hamilton,
     assert resp.status_code == 200, resp.status_code
     assert TRADING_NAME in resp.text, "the staff preview prints a blank venue"
     assert PHONE in resp.text
+
+
+def test_an_unfilled_venue_freezes_BLANKS_into_the_agreement_not_hamiltons(db, loft, contact, hamilton):
+    """THE contract case, and the one the comment above these lines used to
+    get wrong.
+
+    Until 2026-09-12 generate_agreement_content read
+    `venue.trading_name or policy.VENUE_TRADING_NAME` on five fields, while
+    the comment directly above them claimed "an unfilled second venue would
+    print blank rather than print Hamilton's". It was false about the five
+    lines beneath it.
+
+    This dict is FROZEN into the agreement at generation and never
+    regenerated. A Nice Try Events contract written before its venue row was
+    complete would have carried Meantime Pty Ltd's trading name and ABN for
+    the life of the contract, in the one document nobody re-reads. A blank is
+    a missing record somebody notices; the other company's ABN on a signed
+    contract is not.
+    """
+    hamilton.trading_name = None
+    hamilton.abn = None
+    hamilton.address = None
+    hamilton.contact_name = None
+    hamilton.contact_email = None
+    db.flush()
+
+    booking = _booking(db, loft, contact, name="Unfilled At Generation")
+    content = generate_agreement_content(booking)
+
+    assert content["venue"] == "", f"fell back to {content['venue']!r}"
+    assert content["venue_abn"] == "", f"fell back to {content['venue_abn']!r}"
+    assert content["venue_address"] == ""
+    assert content["venue_contact_name"] == ""
+    assert content["venue_contact_email"] == ""
+
+    # And specifically not Hamilton's, named rather than merely "not equal to
+    # the venue row" -- these are the literals a real contract would carry.
+    frozen = " ".join(str(v) for v in content.values())
+    for value in (TRADING_NAME, ABN, ADDRESS):
+        assert value not in frozen, f"an unfilled venue froze Hamilton's {value!r} into a contract"
