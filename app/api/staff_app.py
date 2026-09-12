@@ -53,18 +53,37 @@ class StaffLogin(BaseModel):
 
 
 def require_app_token(
-    authorization: str | None = Header(default=None), db: Session = Depends(get_db)
+    request: Request,
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(get_db),
 ) -> StaffUser:
+    """Authenticate the phone AND record which venue it was signed into.
+
+    The TOKEN carries the venue, not the person: an admin can sign one phone
+    into each building, and each must show its own. Resolving only the staff
+    user threw that away, and _venue below then fell back to a hardcoded
+    lookup -- so a phone signed into The Entrance showed Hamilton's run
+    sheets, with nothing on screen to say so.
+    """
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Not authenticated")
-    staff = staff_auth.get_staff_by_app_token(db, authorization.removeprefix("Bearer ").strip())
-    if staff is None:
+    token = staff_auth.get_token(db, authorization.removeprefix("Bearer ").strip())
+    if token is None:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    return staff
+    request.state.venue = token.venue
+    return token.staff_user
 
 
-def _venue(db: Session) -> Venue:
-    return db.query(Venue).filter_by(slug="hamilton").one()
+def _venue(request: Request) -> Venue:
+    """The venue THIS PHONE was signed into, from its own token.
+
+    Was a hardcoded Hamilton lookup. Once a second venue exists that would
+    put one building's run sheets on the other building's phones -- on the
+    surface the team uses while a function is actually running, where being
+    wrong means the wrong room, the wrong guest count and the wrong
+    dietaries.
+    """
+    return request.state.venue
 
 
 @router.post("/login", dependencies=[Depends(rate_limit_dependency(_app_login_rate_limiter))])
@@ -235,7 +254,7 @@ def list_bookings(
     db: Session = Depends(get_db),
     staff: StaffUser = Depends(require_app_token),
 ):
-    venue = _venue(db)
+    venue = _venue(request)
     query = (
         select(Booking)
         .join(Space, Booking.space_id == Space.id)
@@ -254,18 +273,29 @@ def list_bookings(
         query = query.where(Booking.event_date >= from_date)
     if to_date is not None:
         query = query.where(Booking.event_date <= to_date)
-    return {"bookings": [_booking_payload(db, b) for b in db.scalars(query).all()]}
+    return {
+        # The phone puts this in its header. A list that is CORRECT but
+        # unlabelled is one glance away from being read as the other venue,
+        # which is the failure this project has hit four times -- and on the
+        # floor the cost is the wrong room and the wrong dietaries, at the
+        # moment somebody is acting on them.
+        "venue": venue.trading_name or venue.name,
+        "bookings": [_booking_payload(db, b) for b in db.scalars(query).all()],
+    }
 
 
-def _get_visible_booking_or_404(db: Session, booking_id: uuid.UUID) -> Booking:
+def _get_visible_booking_or_404(request: Request, db: Session, booking_id: uuid.UUID) -> Booking:
     """The floor app's by-id routes -- detail, Event Order, PDF -- all come
     through here.
 
     The LIST above already filters on Space.venue_id; these did not, so the
     floor's own rule ("a phone opened at one venue shows that venue") held
-    for what the app displays and not for what it would fetch by id. Same
-    shape as the admin router's helper, same reasoning, and identical
-    behaviour while Hamilton is the only venue.
+    for what the app displays and not for what it would fetch by id.
+
+    Both now take the venue from THE TOKEN rather than a hardcoded lookup
+    (step 8). That is no longer "identical behaviour while Hamilton is the
+    only venue": a phone signed into another venue previously showed
+    Hamilton's run sheets, proven by test before it was fixed.
 
     This matters more here than in admin because the floor app is the one
     surface a second venue's staff would hold: Karly at Hamilton, Ruby at
@@ -277,7 +307,7 @@ def _get_visible_booking_or_404(db: Session, booking_id: uuid.UUID) -> Booking:
         booking is None
         or booking.status not in FLOOR_VISIBLE_STATUSES
         or booking.parent_booking_id is not None
-        or booking.venue_id != _venue(db).id
+        or booking.venue_id != _venue(request).id
     ):
         raise HTTPException(status_code=404, detail="Booking not found")
     return booking
@@ -290,7 +320,7 @@ def booking_detail(
     db: Session = Depends(get_db),
     staff: StaffUser = Depends(require_app_token),
 ):
-    booking = _get_visible_booking_or_404(db, booking_id)
+    booking = _get_visible_booking_or_404(request, db, booking_id)
     payload = _booking_payload(db, booking)
     # The floor team's run-order facts. Read-only; no client contact
     # details, no dollar figures.
@@ -325,7 +355,7 @@ def booking_beo(
     document viewed, and "viewed" must keep meaning THE CLIENT saw it.
     is_floor_app shows the internal kitchen/bar notes -- this is exactly
     the staff surface they exist for."""
-    booking = _get_visible_booking_or_404(db, booking_id)
+    booking = _get_visible_booking_or_404(request, db, booking_id)
     document, newer = _get_floor_beo_or_404(db, booking)
     return templates.TemplateResponse(
         request,
@@ -354,7 +384,7 @@ def booking_beo_pdf(
     the client's phone or the billing summary (Aaron, 2026-09-10: "the
     floor team doesn't need the client's phone on a document that gets
     left on a bar, and the billing summary is a conversation for me")."""
-    booking = _get_visible_booking_or_404(db, booking_id)
+    booking = _get_visible_booking_or_404(request, db, booking_id)
     document, _newer = _get_floor_beo_or_404(db, booking)
     html = templates.get_template("document.html").render(
         document=document, booking=booking, is_pdf=True, floor_pdf=True,

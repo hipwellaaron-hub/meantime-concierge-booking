@@ -160,6 +160,34 @@ def issue_app_token(db: Session, staff: StaffUser, venue) -> str:
     return raw
 
 
+def get_token(db: Session, raw: str):
+    """The TOKEN row for a raw bearer value, or None.
+
+    Callers need the token and not just its owner, because the token is what
+    carries the venue -- which building this particular phone was signed
+    into. get_staff_by_app_token below discards it, which is exactly how a
+    phone signed into The Entrance ended up showing Hamilton's run sheets.
+    """
+    import datetime as dt
+
+    from app.models.staff_app_token import StaffAppToken
+
+    token = db.execute(
+        select(StaffAppToken).where(StaffAppToken.token_hash == _hash_token(raw))
+    ).scalar_one_or_none()
+    if token is None or token.revoked_at is not None:
+        return None
+    if token.venue_id is None:
+        # Pre-venue or rolled-back token: refuse, do not guess which venue's
+        # run sheets to put on this phone.
+        return None
+    if not token.staff_user.is_active:
+        return None
+    token.last_used_at = dt.datetime.now(dt.timezone.utc)
+    db.commit()
+    return token
+
+
 def get_staff_by_app_token(db: Session, raw: str) -> StaffUser | None:
     """Resolve a bearer token to its (active) staff user. None for a
     revoked token or a deactivated account -- deactivating a person kills

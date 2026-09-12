@@ -83,7 +83,10 @@ def test_login_returns_working_token(client, db, floor_user):
     headers = _login(client)
     resp = client.get("/api/staff/bookings", headers=headers)
     assert resp.status_code == 200
-    assert resp.json() == {"bookings": []}
+    # The payload also names the venue now (so the phone's header can say
+    # which building it is showing), so this asserts the LIST rather than
+    # the whole dict -- pinning the whole shape makes any addition a failure.
+    assert resp.json()["bookings"] == []
 
 
 def test_login_wrong_password_401(client, db, floor_user):
