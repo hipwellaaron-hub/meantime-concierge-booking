@@ -19,7 +19,7 @@ from tests.conftest import TestSessionLocal
 
 def test_concurrent_overlapping_inserts_cannot_both_succeed():
     setup_session = TestSessionLocal()
-    venue = Venue(name="Concurrency Test Venue", slug=f"concurrency-test-{uuid.uuid4().hex[:8]}")
+    venue = Venue(name="Concurrency Test Venue", slug=f"concurrency-test-{uuid.uuid4().hex[:8]}", reference_prefix=uuid.uuid4().hex[:5].upper())
     space = Space(
         venue=venue,
         name="Test Space",

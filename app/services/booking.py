@@ -14,7 +14,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.models import Booking, BookingEvent, Contact, Document, Invoice, Space
+from app.models import Booking, BookingEvent, Contact, Document, Invoice, Space, Venue
 from app.models.booking import BLOCKING_STATUSES, BookingStatus, MinReductionReasonCode
 from app.models.document import DocumentStatus, DocumentType
 from app.models.invoice import InvoiceStatus, InvoiceType
@@ -75,15 +75,35 @@ def times_overlap(a: Booking, b: Booking) -> bool:
     return a.start_time < b.end_time and b.start_time < a.end_time
 
 
-def generate_reference_code(db: Session, event_date: dt.date | None, venue_slug: str = "HAM") -> str:
+def generate_reference_code(db: Session, event_date: dt.date | None, venue: Venue) -> str:
     """Human-readable and unique. Retries on the rare random collision
     rather than relying on any external counter. event_date is None for
     an enquiry that arrived with no date locked in yet -- "TBD" stands in
-    for the date segment rather than guessing one."""
+    for the date segment rather than guessing one.
+
+    THE PREFIX COMES FROM THE VENUE, and there is no default. Until
+    2026-09-12 this read `venue_slug: str = "HAM"` and BOTH call sites
+    passed nothing, so every booking at every venue was stamped HAM- --
+    while venues.reference_prefix existed, was unique, and was read by no
+    application code at all. That is the string a client quotes back on the
+    phone and the one a staff member searches by, and a reference is never
+    rewritten once a client holds it, so a wrong one is permanent.
+
+    A venue with no prefix REFUSES rather than falling back. A booking is
+    the first thing a new venue does, so the prefix has to be set before it
+    can take one; a default would silently stamp the other company's letters
+    on it and nobody would find out until a client read it aloud.
+    """
+    prefix = (getattr(venue, "reference_prefix", None) or "").strip()
+    if not prefix:
+        raise ValueError(
+            f"venue {getattr(venue, 'slug', venue)!r} has no reference_prefix, so no booking "
+            "reference can be generated for it -- set venues.reference_prefix first"
+        )
     date_part = f"{event_date:%Y%m%d}" if event_date is not None else "TBD"
     for _ in range(10):
         suffix = "".join(secrets.choice(REFERENCE_ALPHABET) for _ in range(REFERENCE_SUFFIX_LENGTH))
-        code = f"{venue_slug.upper()}-{date_part}-{suffix}"
+        code = f"{prefix.upper()}-{date_part}-{suffix}"
         exists = db.execute(select(Booking.id).where(Booking.reference_code == code)).first()
         if exists is None:
             return code
@@ -143,7 +163,7 @@ def create_booking(
         notes=notes,
         enquiry_text=enquiry_text,
         status=status,
-        reference_code=generate_reference_code(db, event_date),
+        reference_code=generate_reference_code(db, event_date, space.venue),
         lead_source=lead_source,
         lead_referrer=lead_referrer,
         first_touch_attribution=first_touch_attribution,
@@ -1022,7 +1042,9 @@ def _regenerate_reference_if_tbd(db: Session, booking: Booking, *, actor: str) -
     if has_sent_anything(booking):
         return False
     old = booking.reference_code
-    booking.reference_code = generate_reference_code(db, booking.event_date)
+    # booking.venue, not booking.space.venue: the booking's own column is the
+    # authoritative one, and the composite FK guarantees they agree.
+    booking.reference_code = generate_reference_code(db, booking.event_date, booking.venue)
     db.add(
         BookingEvent(
             booking_id=booking.id,

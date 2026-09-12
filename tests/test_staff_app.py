@@ -580,7 +580,7 @@ def _entrance_booking(db, contact):
 
     from app.models import Space, Venue
 
-    other = Venue(name="Meantime The Entrance", slug="entrance")
+    other = Venue(name="Meantime The Entrance", slug="entrance", reference_prefix="ENT")
     db.add(other)
     db.flush()
     deck = Space(

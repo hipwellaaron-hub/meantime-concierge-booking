@@ -409,7 +409,7 @@ def test_run_resolves_only_this_venues_findings(db, hamilton, loft):
 
     from app.models import ReconciliationFinding, Space, Venue
 
-    entrance = Venue(name="The Entrance", slug="entrance")
+    entrance = Venue(name="The Entrance", slug="entrance", reference_prefix="ENT")
     db.add(entrance)
     db.flush()
     private_bar = Space(venue_id=entrance.id, name="Private Bar", capacity=60,

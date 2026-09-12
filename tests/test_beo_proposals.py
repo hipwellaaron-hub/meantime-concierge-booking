@@ -1156,7 +1156,7 @@ def test_a_proposal_for_another_venues_booking_is_not_found(ai_client, db, loft)
     the venue the credential is for."""
     from app.models import Space, Venue
 
-    other = Venue(name="Meantime The Entrance", slug="entrance")
+    other = Venue(name="Meantime The Entrance", slug="entrance", reference_prefix="ENT")
     db.add(other)
     db.flush()
     other_space = Space(

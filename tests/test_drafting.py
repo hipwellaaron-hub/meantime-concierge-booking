@@ -347,7 +347,7 @@ def test_a_venue_with_no_profile_fails_closed_and_leaves_the_enquiry_alone(db, h
     never called, and the enquiry is untouched."""
     from app.models import Space, Venue
 
-    entrance = Venue(name="The Entrance", slug="entrance")
+    entrance = Venue(name="The Entrance", slug="entrance", reference_prefix="ENT")
     db.add(entrance)
     db.flush()
     holding = Space(venue_id=entrance.id, name="Unassigned (pending triage)", capacity=0,

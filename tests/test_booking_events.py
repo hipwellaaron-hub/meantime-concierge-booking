@@ -100,7 +100,7 @@ def test_a_bookings_venue_can_never_be_changed(db, loft, hamilton):
     from app.models import Venue
 
     booking = _make_booking(db, loft)
-    other = Venue(name="Meantime The Entrance", slug="entrance")
+    other = Venue(name="Meantime The Entrance", slug="entrance", reference_prefix="ENT")
     db.add(other)
     db.flush()
 
@@ -125,7 +125,7 @@ def test_a_bookings_venue_cannot_disagree_with_its_space(db, loft, hamilton):
     from app.models import Space, Venue
 
     booking = _make_booking(db, loft)
-    other = Venue(name="Meantime The Entrance", slug="entrance")
+    other = Venue(name="Meantime The Entrance", slug="entrance", reference_prefix="ENT")
     db.add(other)
     db.flush()
     deck = Space(

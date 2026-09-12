@@ -1435,7 +1435,7 @@ def _booking_at_another_venue(db):
     from app.models import Space, Venue
     from app.services.booking import create_booking
 
-    other = Venue(name="Meantime The Entrance", slug="entrance")
+    other = Venue(name="Meantime The Entrance", slug="entrance", reference_prefix="ENT")
     db.add(other)
     db.flush()
     deck = Space(
@@ -1529,7 +1529,7 @@ def test_a_booking_cannot_be_moved_to_another_venues_space(admin_client, db, lof
         start_time=dt.time(18, 0), end_time=dt.time(23, 0), event_name="Stays At Hamilton",
         event_type="birthday", adult_count=50, child_count=0, notes=None, actor="test",
     )
-    other = Venue(name="Meantime The Entrance", slug="entrance")
+    other = Venue(name="Meantime The Entrance", slug="entrance", reference_prefix="ENT")
     db.add(other)
     db.flush()
     deck = Space(
@@ -1570,7 +1570,7 @@ def test_a_hold_cannot_be_created_on_another_venues_space(admin_client, db, loft
 
     from app.models import Booking, Space, Venue
 
-    other = Venue(name="Meantime The Entrance", slug="entrance")
+    other = Venue(name="Meantime The Entrance", slug="entrance", reference_prefix="ENT")
     db.add(other)
     db.flush()
     deck = Space(
@@ -1614,7 +1614,7 @@ def test_a_linked_room_cannot_be_at_another_venue(db, loft, contact):
         start_time=dt.time(18, 0), end_time=dt.time(23, 0), event_name="Parent Booking",
         event_type="birthday", adult_count=50, child_count=0, notes=None, actor="test",
     )
-    other = Venue(name="Meantime The Entrance", slug="entrance")
+    other = Venue(name="Meantime The Entrance", slug="entrance", reference_prefix="ENT")
     db.add(other)
     db.flush()
     deck = Space(

@@ -238,7 +238,7 @@ def test_calendar_shows_actual_guest_count_not_space_standard(db, hamilton, loft
 
 def test_concurrent_confirmations_same_space_time_only_one_succeeds():
     setup_session = TestSessionLocal()
-    venue = Venue(name="Calendar Concurrency Venue", slug=f"cal-conc-{uuid.uuid4().hex[:8]}")
+    venue = Venue(name="Calendar Concurrency Venue", slug=f"cal-conc-{uuid.uuid4().hex[:8]}", reference_prefix=uuid.uuid4().hex[:5].upper())
     space = Space(
         venue=venue, name="Test Space", capacity=100, min_food_spend=0,
         standard_min_adults=0, wheelchair_accessible=False, has_per_head_shortfall_fee=True,

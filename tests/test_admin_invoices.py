@@ -103,7 +103,7 @@ def test_open_enquiries_tile_links_to_the_filtered_bookings_list(admin_client):
 def test_search_invoices_is_scoped_to_the_venue(db, loft):
     from app.models import Space, Venue
 
-    other_venue = Venue(name="Other", slug="other-venue")
+    other_venue = Venue(name="Other", slug="other-venue", reference_prefix="OTH")
     db.add(other_venue)
     db.flush()
     other_space = Space(

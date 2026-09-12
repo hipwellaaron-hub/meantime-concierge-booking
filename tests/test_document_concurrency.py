@@ -19,7 +19,7 @@ from tests.conftest import TestSessionLocal
 
 def test_concurrent_signs_cannot_both_succeed():
     setup = TestSessionLocal()
-    venue = Venue(name="Sign Concurrency Test Venue", slug=f"sign-concurrency-test-{uuid.uuid4().hex[:8]}")
+    venue = Venue(name="Sign Concurrency Test Venue", slug=f"sign-concurrency-test-{uuid.uuid4().hex[:8]}", reference_prefix=uuid.uuid4().hex[:5].upper())
     space = Space(
         venue=venue,
         name="Test Space",

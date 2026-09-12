@@ -23,7 +23,7 @@ from tests.conftest import TestSessionLocal
 
 def test_concurrent_split_payments_correctly_flip_invoice_to_paid():
     setup = TestSessionLocal()
-    venue = Venue(name="Payment Concurrency Test Venue", slug=f"payment-concurrency-test-{uuid.uuid4().hex[:8]}")
+    venue = Venue(name="Payment Concurrency Test Venue", slug=f"payment-concurrency-test-{uuid.uuid4().hex[:8]}", reference_prefix=uuid.uuid4().hex[:5].upper())
     space = Space(
         venue=venue,
         name="Test Space",
