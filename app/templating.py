@@ -159,6 +159,16 @@ def venue_identity(venue) -> dict:
 
     `venue` may be None for a page with no booking behind it (an expired
     link, an error page). Empty is the right answer there too.
+
+    EVERY key is prefixed `venue_`, without exception. Three of them were not
+    until 2026-09-12 -- bank_account_name, bank_bsb, bank_account_number --
+    and Jinja renders an unknown key as an empty string with no error, so
+    somebody writing `venue_bank_bsb` (the name the other seven make natural)
+    would have got a BLANK BANK BLOCK on a client invoice while the ABN
+    directly above it stayed correct. Three fields empty and one right reads
+    as a template bug, not as a missing record, so it would have been
+    debugged rather than fixed. Keep the prefix on anything added here, and
+    see test_every_identity_key_a_template_reads_is_actually_supplied.
     """
     if venue is None:
         return {key: "" for key in _IDENTITY_KEYS}
@@ -170,9 +180,9 @@ def venue_identity(venue) -> dict:
         "venue_phone": venue.phone or "",
         "venue_contact_name": venue.contact_name or "",
         "venue_contact_email": venue.contact_email or "",
-        "bank_account_name": venue.bank_account_name or "",
-        "bank_bsb": venue.bank_bsb or "",
-        "bank_account_number": venue.bank_account_number or "",
+        "venue_bank_account_name": venue.bank_account_name or "",
+        "venue_bank_bsb": venue.bank_bsb or "",
+        "venue_bank_account_number": venue.bank_account_number or "",
     }
 
 
@@ -184,9 +194,9 @@ _IDENTITY_KEYS = (
     "venue_phone",
     "venue_contact_name",
     "venue_contact_email",
-    "bank_account_name",
-    "bank_bsb",
-    "bank_account_number",
+    "venue_bank_account_name",
+    "venue_bank_bsb",
+    "venue_bank_account_number",
 )
 
 
