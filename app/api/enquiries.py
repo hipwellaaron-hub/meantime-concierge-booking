@@ -73,14 +73,15 @@ def enquiry_form_legacy(request: Request):
     banner earlier in this work -- same shape, but this one costs
     attribution on paid clicks.
 
-    301 is deliberate (Aaron's call) so the ad platforms treat Hamilton's
-    path as the real destination. It is also cached hard by browsers: a
-    later decision to make bare /enquire a venue CHOOSER would not reach
-    anyone who has loaded it before.
+    302, NOT 301 (Aaron, 2026-09-12). Both keep every live ad working --
+    an ad click follows either -- but a 301 is cached hard and for good:
+    a later decision to make bare /enquire a venue CHOOSER would never
+    reach anybody who had loaded it before. 301 buys a search signal on a
+    page that is not a search destination, so it is cost with no benefit.
     """
     target = f"/enquire/{LEGACY_VENUE_SLUG}"
     query = request.url.query
-    return RedirectResponse(url=f"{target}?{query}" if query else target, status_code=301)
+    return RedirectResponse(url=f"{target}?{query}" if query else target, status_code=302)
 
 
 @router.get("/enquire/{venue_slug}", response_class=HTMLResponse)

@@ -86,10 +86,16 @@ def entrance(db, hamilton):
 
 def test_bare_enquire_still_reaches_a_form(client):
     """Every ad, every button on the marketing site and every link already
-    sent points here. It has to keep working."""
+    sent points here. It has to keep working.
+
+    302, not 301 (Aaron, 2026-09-12). An ad click follows either, but a 301
+    is cached hard and permanently -- so a later decision to make bare
+    /enquire a venue CHOOSER would never reach anybody who had loaded it
+    before. The status is asserted, not just the destination, because that
+    is the whole difference."""
     resp = client.get("/enquire")
 
-    assert resp.status_code == 301
+    assert resp.status_code == 302
     assert resp.headers["location"] == "/enquire/hamilton"
 
 
@@ -103,7 +109,7 @@ def test_the_redirect_keeps_the_campaign_parameters(client):
 
     resp = client.get(f"/enquire?{query}")
 
-    assert resp.status_code == 301
+    assert resp.status_code == 302
     location = resp.headers["location"]
     assert location.startswith("/enquire/hamilton?"), location
     for param in ("utm_source=google", "utm_medium=cpc", "utm_campaign=xmas26", "gclid=ZZTESTGCLID"):
