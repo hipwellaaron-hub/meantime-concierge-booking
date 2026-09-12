@@ -4,7 +4,7 @@
 <h1>Dashboard</h1>
 
 <div class="grid cols-3">
-  <a class="card stat" href="/admin/bookings?status=enquiry" style="text-decoration:none;">
+  <a class="card stat" href="{{ venue_base }}/bookings?status=enquiry" style="text-decoration:none;">
     <div class="num">{{ counts.open_enquiries }}</div>
     <div class="label">Open enquiries</div>
   </a>
@@ -48,7 +48,7 @@
           <td class="muted" style="white-space:nowrap;">{{ b.event_date | aus_date }}</td>
           <td class="muted">{{ b.space.name }}</td>
           <td class="muted" style="white-space:nowrap;">{% if b.hold_expires_at %}{{ b.hold_expires_at | aus_date }}{% else %}no expiry set{% endif %}</td>
-          <td><a href="/admin/bookings/{{ b.id }}">Open &rarr;</a></td>
+          <td><a href="{{ venue_base }}/bookings/{{ b.id }}">Open &rarr;</a></td>
         </tr>
       {% endfor %}
       </tbody>

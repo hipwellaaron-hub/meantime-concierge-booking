@@ -138,6 +138,41 @@ def admin_client(db, staff_user, hamilton):
         app.dependency_overrides.clear()
 
 
+@pytest.fixture()
+def raw_admin_client(db, staff_user, hamilton):
+    """Logged in, but WITHOUT the moved-URL rewrite that admin_client
+    applies.
+
+    Needed to exercise the COMPAT routes at all. admin_client rewrites
+    /admin/bookings/... to /admin/<venue>/bookings/..., so a test aiming at
+    the legacy URL never reaches the compat route -- it hits the real one.
+    A test of "an emailed link resolves its own venue" written against
+    admin_client passes because of the REWRITE, not because of the redirect,
+    which is exactly what happened first time.
+    """
+    import re
+
+    from fastapi.testclient import TestClient
+
+    from app.database import get_db
+    from app.main import app
+
+    app.dependency_overrides[get_db] = lambda: db
+    client = TestClient(app)
+    login_page = client.get("/admin/login")
+    csrf_token = re.search(r'name="csrf_token" value="([^"]+)"', login_page.text).group(1)
+    resp = client.post(
+        "/admin/login",
+        data={"csrf_token": csrf_token, "email": staff_user.email,
+              "password": STAFF_TEST_PASSWORD, "next": "/admin/"},
+    )
+    assert resp.status_code in (200, 303)
+    try:
+        yield client
+    finally:
+        app.dependency_overrides.clear()
+
+
 def _scope_admin_urls(client, venue_slug: str):
     """Rewrite /admin/<section> to /admin/<venue>/<section> for the sections
     that have MOVED onto the venue segment.
@@ -152,23 +187,36 @@ def _scope_admin_urls(client, venue_slug: str):
       * test_the_nav_never_points_at_a_section_that_has_not_moved
       * test_every_nav_link_actually_resolves, which follows every nav link
 
-    Driven by the app's own MOVED_SECTIONS, so a section the app has not
-    moved is NOT rewritten here either -- otherwise this fixture would send
-    every bookings test to a URL that does not exist yet, and the failure
-    would look like a broken route rather than a half-finished rollout.
-    """
-    from app.venue_scope import MOVED_SECTIONS
+    EVERY admin section is on the venue segment now, so this rewrites any
+    /admin/... path except the two that are deliberately venue-free. During
+    the rollout it consulted the app's own MOVED_SECTIONS so a not-yet-moved
+    section was left alone; that set was deleted with the last router.
 
-    prefixes = sorted((s for s in MOVED_SECTIONS if s), key=len, reverse=True)
+    Use `raw_admin_client` for anything that must reach a COMPAT route --
+    this rewrite would send it to the real one instead, and a test of "an
+    emailed link resolves its own venue" would then pass because of the
+    rewrite rather than the redirect.
+    """
+    # Rewrite only when the first segment after /admin is a known admin
+    # SECTION. Anything else is already a venue slug -- including another
+    # venue's, which is how the cross-venue tests reach
+    # /admin/entrance/calendar without this fixture sending them to
+    # /admin/hamilton/entrance/calendar.
+    #
+    # Two earlier shapes were wrong: "rewrite everything under /admin" turned
+    # /admin/hamilton/ into /admin/hamilton/hamilton/, and "unless it starts
+    # with THIS venue" still mangled every other venue's URL.
+    from app.venue_scope import RESERVED_SLUGS
+
+    SECTIONS = tuple(f"/{s}" for s in sorted(RESERVED_SLUGS - {"login", "logout"}))
     original = client.request
 
     def request(method, url, *args, **kwargs):
         if isinstance(url, str) and url.startswith("/admin/"):
             rest = url[len("/admin"):]
-            for section in prefixes:
-                if rest == section or rest.startswith(section + "/") or rest.startswith(section + "?"):
-                    url = f"/admin/{venue_slug}{rest}"
-                    break
+            first = "/" + rest.lstrip("/").split("/", 1)[0].split("?", 1)[0]
+            if first in SECTIONS:
+                url = f"/admin/{venue_slug}{rest}"
         return original(method, url, *args, **kwargs)
 
     client.request = request

@@ -213,7 +213,7 @@ def test_snapshot_mismatch_flags_a_changed_booking(db, loft, mezzanine):
 # --- admin upload + serve round-trip -----------------------------------------
 
 
-def test_admin_upload_and_serve_legacy_agreement(admin_client, db, loft):
+def test_admin_upload_and_serve_legacy_agreement(admin_client, db, loft, hamilton):
     b = _booking(db, loft)
     detail = admin_client.get(f"/admin/bookings/{b.id}")
     csrf = re.search(r'name="csrf_token" value="([^"]+)"', detail.text).group(1)
@@ -240,7 +240,13 @@ def test_admin_upload_and_serve_legacy_agreement(admin_client, db, loft):
     detail2 = admin_client.get(f"/admin/bookings/{b.id}")
     assert detail2.status_code == 200
     assert "LEGACY" in detail2.text
-    assert f"/admin/bookings/{b.id}/documents/{doc.id}/legacy-file" in detail2.text
+    # Scoped: admin_bookings moved onto /admin/{venue_slug}/ (step 6). The
+    # literal is kept rather than loosened -- the point is that the page
+    # links to the exact route that serves the signed original.
+    assert (
+        f"/admin/{hamilton.slug}/bookings/{b.id}/documents/{doc.id}/legacy-file"
+        in detail2.text
+    )
 
 
 # --- attaching to an existing unpaid legacy deposit ----------------------

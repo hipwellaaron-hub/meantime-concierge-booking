@@ -1,11 +1,11 @@
 {% extends "admin/_base.html" %}
 {% block title %}New booking{% endblock %}
 {% block content %}
-<p><a href="/admin/bookings">&larr; All bookings</a></p>
+<p><a href="{{ venue_base }}/bookings">&larr; All bookings</a></p>
 <h1>New booking</h1>
 <p class="muted">For a lead that arrived by phone, direct email, or the iVvy marketplace -- goes through the same classification and duplicate checks as a client submitting the enquiry form themselves.</p>
 
-<form method="post" action="/admin/bookings/new">
+<form method="post" action="{{ venue_base }}/bookings/new">
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
 
   <div class="card">

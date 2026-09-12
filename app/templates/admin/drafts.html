@@ -26,7 +26,7 @@
 {% for d in drafts %}
 <div class="card" style="{% if d.status == 'generated' %}border-color: var(--gold-dim);{% endif %}">
   <div style="display:flex; justify-content:space-between; gap:12px; flex-wrap:wrap; align-items:baseline;">
-    <h2 style="margin:0;"><a href="/admin/bookings/{{ d.booking.id }}">{{ d.booking.event_name }}</a>
+    <h2 style="margin:0;"><a href="{{ venue_base }}/bookings/{{ d.booking.id }}">{{ d.booking.event_name }}</a>
       <span class="muted" style="font-size:0.8rem;">{{ d.booking.reference_code }}{% if d.booking.contact %} &middot; {{ d.booking.contact.name }}{% endif %}</span></h2>
     <span>
       <span class="badge {{ 'green' if d.status == 'generated' else ('wine' if d.status in ('failed','data_mismatch') else '') }}">{{ d.status | replace('_',' ') }}</span>

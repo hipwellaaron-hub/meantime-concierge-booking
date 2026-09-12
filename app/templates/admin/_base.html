@@ -215,20 +215,21 @@
       </form></span>
     </div>
   </div>
-  {#- admin_url() decides per link, because the routers move one at a time:
-      a moved section gets /admin/<slug>/..., one that has not moved yet gets
-      its legacy /admin/... path, which still works because its router is
-      untouched. Building every link from the venue base instead would point
-      the nav at a 404 for every section that had not moved yet. -#}
+  {#- Every section is on the venue segment now, so every link is built
+      from venue_base. During the rollout this went through an admin_url()
+      helper that decided per link, because a section that had not moved yet
+      needed its legacy path -- that helper and its MOVED_SECTIONS set were
+      deleted with the last router, rather than left standing as scaffolding
+      whose fallback branch nothing reaches. -#}
   <nav class="primary">
-    <a href="{{ admin_url('') }}">Dashboard</a>
-    <a href="{{ admin_url('/calendar') }}">Calendar</a>
-    <a href="{{ admin_url('/bookings') }}">Bookings</a>
-    <a href="{{ admin_url('/invoices') }}">Invoices</a>
-    <a href="{{ admin_url('/triage') }}">Triage</a>
-    <a href="{{ admin_url('/drafts') }}">AI drafts</a>
-    <a href="{{ admin_url('/reports/attribution') }}">Reports</a>
-    <a href="{{ admin_url('/staff') }}">Staff</a>
+    <a href="{{ venue_base }}/">Dashboard</a>
+    <a href="{{ venue_base }}/calendar">Calendar</a>
+    <a href="{{ venue_base }}/bookings">Bookings</a>
+    <a href="{{ venue_base }}/invoices">Invoices</a>
+    <a href="{{ venue_base }}/triage">Triage</a>
+    <a href="{{ venue_base }}/drafts">AI drafts</a>
+    <a href="{{ venue_base }}/reports/attribution">Reports</a>
+    <a href="{{ venue_base }}/staff">Staff</a>
   </nav>
 </header>
 

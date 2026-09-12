@@ -106,10 +106,12 @@ def test_the_auth_router_declares_no_venue_scope():
 # Routers that have MOVED onto /admin/{venue_slug}/. This list IS the
 # rollout: move a router, add it here, and the tests below check the two
 # halves that have to stay in step.
+# Every admin router, all of them moved. When this equals ALL_STAFF_ROUTERS
+# the rollout is done, which is now.
 MOVED_ROUTERS = {
-    "admin_dashboard", "admin_reports",
-    "admin_calendar", "admin_drafts", "admin_invoices", "admin_staff", "admin_triage",
-}  # admin_bookings is the one still to move
+    "admin_bookings", "admin_calendar", "admin_dashboard", "admin_drafts",
+    "admin_invoices", "admin_reports", "admin_staff", "admin_triage",
+}
 
 ALL_STAFF_ROUTERS = (
     "admin_bookings", "admin_calendar", "admin_dashboard", "admin_drafts",
@@ -218,40 +220,30 @@ def test_no_compat_route_shadows_a_live_one():
 # --- the nav during a partial rollout ---------------------------------------
 
 
-def test_the_nav_never_points_at_a_section_that_has_not_moved(admin_client, hamilton):
-    """The trap the incremental rollout sets.
+def test_every_nav_link_is_scoped_to_the_venue(admin_client, hamilton):
+    """The rollout is over, so every nav link is on the venue segment.
 
-    On a SCOPED page, building every nav link from the venue base would point
-    at /admin/hamilton/bookings before that router moved -- a 404 reached by
-    clicking the main navigation, on a page that worked. admin_url() decides
-    per link instead.
-
-    Reproduced before this test existed: the pilot's nav linked all eight
-    sections to the scoped base while only two had moved.
+    This replaces a test that checked each link against a MOVED_SECTIONS set,
+    which existed only to make a PARTIAL rollout safe -- a link to a section
+    that had not moved yet had to stay legacy, or the nav pointed at a 404.
+    With every router moved, that set and its admin_url() helper were
+    deleted rather than left standing: scaffolding whose fallback branch
+    nothing reaches is scaffolding nobody maintains, and a mutation removing
+    a section from it changed nothing observable.
     """
-    from app.venue_scope import MOVED_SECTIONS
+    import re
 
     resp = admin_client.get(f"/admin/{hamilton.slug}/")
     assert resp.status_code == 200
 
-    import re
-
-    hrefs = re.findall(r'<nav class="primary">(.*?)</nav>', resp.text, re.S)
-    assert hrefs, "the nav did not render"
-    links = re.findall(r'href="([^"]+)"', hrefs[0])
+    nav = re.findall(r'<nav class="primary">(.*?)</nav>', resp.text, re.S)
+    assert nav, "the nav did not render"
+    links = re.findall(r'href="([^"]+)"', nav[0])
     assert len(links) == 8, f"expected 8 nav links, got {len(links)}"
 
-    for link in links:
-        section = link.replace(f"/admin/{hamilton.slug}", "").replace("/admin", "")
-        section = "" if section in ("", "/") else section
-        if link.startswith(f"/admin/{hamilton.slug}"):
-            assert section in MOVED_SECTIONS, (
-                f"{link} points at the venue base but {section!r} has not moved"
-            )
-        else:
-            assert section not in MOVED_SECTIONS, (
-                f"{link} uses the legacy path but {section!r} HAS moved -- it should be scoped"
-            )
+    unscoped = [l for l in links if not l.startswith(f"/admin/{hamilton.slug}/")]
+
+    assert not unscoped, f"these nav links are not venue-scoped: {unscoped}"
 
 
 def test_every_nav_link_actually_resolves(admin_client, hamilton):
@@ -352,8 +344,12 @@ def test_no_moved_router_redirects_to_its_own_legacy_path():
         for n, line in enumerate(source.splitlines(), 1):
             for match in re.finditer(r'url=f?"(/admin/[^"]*)"', line):
                 target = match.group(1)
-                if target.startswith("/admin/bookings"):
-                    continue  # not moved yet; still the real URL
+                # No /admin/bookings exemption any more. That exemption was
+                # correct while admin_bookings had not moved -- its legacy
+                # URL was then the real one -- and became WRONG the moment it
+                # did, silently exempting the largest router from the check.
+                # A mutation proved it: putting a legacy redirect back into
+                # admin_bookings left this test green.
                 if target.startswith("/admin/login") or target.startswith("/admin/logout"):
                     continue  # never scoped
                 offenders.append(f"app/api/{name}.py:{n} -> {target}")
@@ -362,3 +358,51 @@ def test_no_moved_router_redirects_to_its_own_legacy_path():
         "these moved routers redirect to a legacy path, which loses any query "
         f"string on the way through the compat route: {offenders}"
     )
+
+
+# --- the compat by-id redirect, which every emailed link depends on --------
+
+
+def test_a_legacy_booking_link_lands_on_its_own_venue(raw_admin_client, db, hamilton, loft, contact):
+    """The reason emails keep the legacy /admin/bookings/{id} path.
+
+    Eight sites in app/services build that URL for the digest, the enquiry
+    alert and the BEO review link. They are deliberately NOT rewritten to
+    scoped URLs: a link that works out its own venue cannot go stale, cannot
+    be wrong when the message is forwarded, and still resolves a year later.
+    A baked-in slug fails all three.
+
+    So the compat route must resolve the venue FROM THE BOOKING ROW and land
+    on that venue's page -- not on a chooser, and not on a 404.
+    """
+    import datetime as dt
+
+    from app.services.booking import create_booking
+
+    booking = create_booking(
+        db, space_id=loft.id, contact_id=contact.id, event_date=dt.date(2027, 6, 5),
+        start_time=dt.time(18, 0), end_time=dt.time(23, 0), event_name="Emailed Link Target",
+        event_type="birthday", adult_count=40, child_count=0, notes=None, actor="test",
+    )
+    db.flush()
+
+    # The raw legacy URL, exactly as an email contains it.
+    resp = raw_admin_client.get(f"/admin/bookings/{booking.id}", follow_redirects=True)
+
+    assert resp.status_code == 200
+    assert f"/admin/{hamilton.slug}/bookings/{booking.id}" in str(resp.url), (
+        f"an emailed link did not land on its own venue: {resp.url}"
+    )
+    assert "Emailed Link Target" in resp.text, "it landed somewhere, but not on the booking"
+
+
+def test_a_legacy_link_to_a_booking_that_does_not_exist_does_not_404_the_operator(
+    raw_admin_client, db, hamilton
+):
+    """A deleted booking's link should put somebody somewhere useful rather
+    than on a dead end -- the same reasoning as the admin error page."""
+    missing = "00000000-0000-0000-0000-000000000000"
+
+    resp = raw_admin_client.get(f"/admin/bookings/{missing}", follow_redirects=True)
+
+    assert resp.status_code == 200, "a stale link to a deleted booking dead-ended"

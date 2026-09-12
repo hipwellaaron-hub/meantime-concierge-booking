@@ -1,7 +1,7 @@
 {% extends "admin/_base.html" %}
 {% block title %}Edit invoice{% endblock %}
 {% block content %}
-<p><a href="/admin/bookings/{{ booking.id }}">&larr; {{ booking.event_name }}</a></p>
+<p><a href="{{ venue_base }}/bookings/{{ booking.id }}">&larr; {{ booking.event_name }}</a></p>
 <h1>Edit invoice #{{ invoice.invoice_number }}</h1>
 <p class="muted">
   {{ invoice.type.value | capitalize }} invoice &middot; {{ booking.reference_code }} &middot; draft.
@@ -10,7 +10,7 @@
   credited automatically &mdash; you don't add that line yourself.
 </p>
 
-<form method="post" action="/admin/bookings/{{ booking.id }}/invoices/{{ invoice.id }}/edit">
+<form method="post" action="{{ venue_base }}/bookings/{{ booking.id }}/invoices/{{ invoice.id }}/edit">
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
 
   <div class="card">
@@ -51,7 +51,7 @@
     </div>
 
     <button class="btn" type="submit" style="margin-top:12px;">Save invoice</button>
-    <a href="/admin/bookings/{{ booking.id }}" class="btn secondary" style="margin-left:6px;">Cancel</a>
+    <a href="{{ venue_base }}/bookings/{{ booking.id }}" class="btn secondary" style="margin-left:6px;">Cancel</a>
   </div>
 </form>
 

@@ -10,8 +10,9 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.admin_auth import admin_ctx, current_venue, require_csrf, require_staff
+from app.admin_auth import admin_ctx, require_csrf, require_staff
 from app.database import get_db
+from app.venue_scope import venue_scope
 from app.models import (
     BeoProposal,
     BeoProposalField,
@@ -63,7 +64,10 @@ from app.services.document_generation import (
 from app.templating import templates, venue_identity
 from app.utils import is_valid_email, truncate
 
-router = APIRouter(prefix="/admin/bookings", tags=["admin-bookings"], dependencies=[Depends(require_staff), Depends(current_venue)])
+router = APIRouter(
+    prefix="/admin/{venue_slug}/bookings", tags=["admin-bookings"],
+    dependencies=[Depends(require_staff), Depends(venue_scope)],
+)
 
 BOOKING_EVENT_ACTOR_MAX_LENGTH = 255
 
@@ -77,11 +81,20 @@ def _actor(staff: StaffUser) -> str:
     return truncate(f"staff:{staff.email}", BOOKING_EVENT_ACTOR_MAX_LENGTH)
 
 
-def _venue(db: Session) -> Venue:
-    return db.query(Venue).filter_by(slug="hamilton").one()
+def _venue(request: Request) -> Venue:
+    """The venue named in the URL, resolved by the router-level venue_scope
+    dependency and stashed on request.state.
+
+    Was `db.query(Venue).filter_by(slug="hamilton").one()`. Once the router
+    moved onto /admin/{venue_slug}/, that would have made the page claim one
+    venue in its URL and its band while querying another -- which looks
+    exactly like a correct page, and is the failure five other routers were
+    found in two commits ago.
+    """
+    return request.state.venue
 
 
-def _get_booking_or_404(db: Session, booking_id: uuid.UUID) -> Booking:
+def _get_booking_or_404(request: Request, db: Session, booking_id: uuid.UUID) -> Booking:
     """Every by-id booking route in this router comes through here -- 42 of
     the router's 45; the other three (the list, and the two /new routes)
     take no booking id -- which is why the venue check lives here and
@@ -111,13 +124,22 @@ def _get_booking_or_404(db: Session, booking_id: uuid.UUID) -> Booking:
     booking and this cannot raise on a half-built row.
     """
     booking = db.get(Booking, booking_id)
-    if booking is None or booking.venue_id != _venue(db).id:
+    if booking is None or booking.venue_id != request.state.venue.id:
         raise HTTPException(status_code=404, detail="Booking not found")
     return booking
 
 
-def _redirect_to_detail(booking_id: uuid.UUID) -> RedirectResponse:
-    return RedirectResponse(url=f"/admin/bookings/{booking_id}", status_code=303)
+def _redirect_to_detail(request: Request, booking_id: uuid.UUID) -> RedirectResponse:
+    """Back to this venue's copy of the booking.
+
+    The venue base, never the literal "/admin/bookings/...": that path is the
+    compat route now, and it rebuilds its destination from the booking row --
+    correct, but a pointless extra hop from inside the router that already
+    knows the venue. Redirecting to a legacy path also DROPS ANY QUERY
+    STRING through the compat layer, which cost a confirmation banner and a
+    calendar week when admin_staff and admin_calendar did it.
+    """
+    return RedirectResponse(url=f"{request.state.venue_base}/bookings/{booking_id}", status_code=303)
 
 
 @router.post("/{booking_id}/delete", dependencies=[Depends(require_csrf)])
@@ -132,7 +154,7 @@ def delete_booking(
     delete in the app -- guarded by requiring the exact reference code to
     be typed, so it can't happen on a stray click. For removing test or
     erroneous bookings; recoverable only via database PITR."""
-    booking = _get_booking_or_404(db, booking_id)
+    booking = _get_booking_or_404(request, db, booking_id)
     if confirm_reference.strip() != booking.reference_code:
         raise HTTPException(
             status_code=422,
@@ -142,7 +164,7 @@ def delete_booking(
         booking_service.delete_booking_and_dependents(db, booking, actor=_actor(staff))
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return RedirectResponse(url="/admin/bookings", status_code=303)
+    return RedirectResponse(url=f"{request.state.venue_base}/bookings", status_code=303)
 
 
 # --- legacy document uploads (iVvy migration) --------------------------------
@@ -175,7 +197,7 @@ def upload_legacy_agreement(
     db: Session = Depends(get_db),
     staff: StaffUser = Depends(require_staff),
 ):
-    booking = _get_booking_or_404(db, booking_id)
+    booking = _get_booking_or_404(request, db, booking_id)
     try:
         legacy_documents.attach_agreement_pdf(
             db, booking, pdf=_read_upload(file), filename=truncate(file.filename or "agreement.pdf", 255),
@@ -184,7 +206,7 @@ def upload_legacy_agreement(
         )
     except legacy_documents.LegacyUploadError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    return _redirect_to_detail(booking_id)
+    return _redirect_to_detail(request, booking_id)
 
 
 @router.post("/{booking_id}/legacy-deposit", dependencies=[Depends(require_csrf)])
@@ -198,7 +220,7 @@ def upload_legacy_deposit(
     db: Session = Depends(get_db),
     staff: StaffUser = Depends(require_staff),
 ):
-    booking = _get_booking_or_404(db, booking_id)
+    booking = _get_booking_or_404(request, db, booking_id)
     try:
         parsed_amount = Decimal(amount)
     except InvalidOperation as exc:
@@ -213,7 +235,7 @@ def upload_legacy_deposit(
         )
     except legacy_documents.LegacyUploadError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    return _redirect_to_detail(booking_id)
+    return _redirect_to_detail(request, booking_id)
 
 
 def _legacy_file_response(filename: str | None, data: bytes) -> Response:
@@ -230,12 +252,13 @@ def _legacy_file_response(filename: str | None, data: bytes) -> Response:
 
 @router.get("/{booking_id}/documents/{document_id}/legacy-file")
 def serve_legacy_agreement_file(
+    request: Request,
     booking_id: uuid.UUID,
     document_id: uuid.UUID,
     db: Session = Depends(get_db),
     staff: StaffUser = Depends(require_staff),
 ):
-    booking = _get_booking_or_404(db, booking_id)
+    booking = _get_booking_or_404(request, db, booking_id)
     doc = db.get(Document, document_id)
     if doc is None or doc.booking_id != booking.id or not doc.is_legacy or doc.legacy_file is None:
         raise HTTPException(status_code=404, detail="No legacy file on this document")
@@ -244,12 +267,13 @@ def serve_legacy_agreement_file(
 
 @router.get("/{booking_id}/invoices/{invoice_id}/legacy-file")
 def serve_legacy_deposit_file(
+    request: Request,
     booking_id: uuid.UUID,
     invoice_id: uuid.UUID,
     db: Session = Depends(get_db),
     staff: StaffUser = Depends(require_staff),
 ):
-    booking = _get_booking_or_404(db, booking_id)
+    booking = _get_booking_or_404(request, db, booking_id)
     inv = db.get(Invoice, invoice_id)
     if inv is None or inv.booking_id != booking.id or not inv.is_legacy or inv.legacy_file is None:
         raise HTTPException(status_code=404, detail="No legacy file on this invoice")
@@ -275,7 +299,7 @@ def list_bookings(
     except ValueError:
         raise HTTPException(status_code=422, detail=f"Unknown status '{status}'")
 
-    venue = _venue(db)
+    venue = _venue(request)
     bookings = booking_service.search_bookings(
         db, venue.id, status=parsed_status, query=q, include_terminal=include_terminal
     )
@@ -346,7 +370,7 @@ def create_new_booking(
     if payload.lead_source not in STAFF_LEAD_SOURCES:
         raise HTTPException(status_code=422, detail="Choose how this lead reached you")
 
-    venue = _venue(db)
+    venue = _venue(request)
     full_name = truncate(f"{payload.first_name} {payload.last_name}", 255)
     booking, _duplicate_candidates, _is_new = enquiry_classification.create_enquiry_booking(
         db,
@@ -374,14 +398,14 @@ def create_new_booking(
         lead_referrer=None,
         actor=_actor(staff),
     )
-    return _redirect_to_detail(booking.id)
+    return _redirect_to_detail(request, booking.id)
 
 
 @router.get("/{booking_id}", response_class=HTMLResponse)
 def booking_detail(
     booking_id: uuid.UUID, request: Request, db: Session = Depends(get_db), staff: StaffUser = Depends(require_staff)
 ):
-    booking = _get_booking_or_404(db, booking_id)
+    booking = _get_booking_or_404(request, db, booking_id)
     bookable_spaces = db.scalars(
         select(Space).where(Space.venue_id == booking.space.venue_id, Space.is_bookable.is_(True)).order_by(Space.name)
     ).all()
@@ -450,14 +474,14 @@ def transition_booking_status(
     db: Session = Depends(get_db),
     staff: StaffUser = Depends(require_staff),
 ):
-    booking = _get_booking_or_404(db, booking_id)
+    booking = _get_booking_or_404(request, db, booking_id)
     try:
         booking_service.transition_status(
             db, booking, new_status, actor=_actor(staff), reason=reason or None
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    return _redirect_to_detail(booking_id)
+    return _redirect_to_detail(request, booking_id)
 
 
 @router.post("/{booking_id}/status/unpin", dependencies=[Depends(require_csrf)])
@@ -470,9 +494,9 @@ def hand_status_back_to_automation(
     """Clears the manual-override pin a hand-set status leaves behind, so
     the automatic transitions may act on this booking again (and catch up
     immediately). See Booking.status_pinned_at."""
-    booking = _get_booking_or_404(db, booking_id)
+    booking = _get_booking_or_404(request, db, booking_id)
     booking_service.clear_status_pin(db, booking, actor=_actor(staff))
-    return _redirect_to_detail(booking_id)
+    return _redirect_to_detail(request, booking_id)
 
 
 @router.post("/{booking_id}/hold-expiry", dependencies=[Depends(require_csrf)])
@@ -483,13 +507,13 @@ def set_hold_expiry(
     db: Session = Depends(get_db),
     staff: StaffUser = Depends(require_staff),
 ):
-    booking = _get_booking_or_404(db, booking_id)
+    booking = _get_booking_or_404(request, db, booking_id)
     try:
         parsed = dt.date.fromisoformat(hold_expires_at) if hold_expires_at else None
     except ValueError:
         raise HTTPException(status_code=422, detail="Invalid expiry date")
     booking_service.set_hold_expiry(db, booking, hold_expires_at=parsed, actor=_actor(staff))
-    return _redirect_to_detail(booking_id)
+    return _redirect_to_detail(request, booking_id)
 
 
 @router.post("/{booking_id}/assign-space", dependencies=[Depends(require_csrf)])
@@ -503,7 +527,7 @@ def assign_space(
     db: Session = Depends(get_db),
     staff: StaffUser = Depends(require_staff),
 ):
-    booking = _get_booking_or_404(db, booking_id)
+    booking = _get_booking_or_404(request, db, booking_id)
     try:
         parsed_event_date = dt.date.fromisoformat(event_date) if event_date else None
     except ValueError:
@@ -523,7 +547,7 @@ def assign_space(
     except IntegrityError as exc:
         db.rollback()
         raise HTTPException(status_code=409, detail="That space is already booked for an overlapping time") from exc
-    return _redirect_to_detail(booking_id)
+    return _redirect_to_detail(request, booking_id)
 
 
 @router.post("/{booking_id}/contact", dependencies=[Depends(require_csrf)])
@@ -553,7 +577,7 @@ def set_booking_contact(
       are left alone, so one booking's form can never rewrite another
       person's record.
     """
-    booking = _get_booking_or_404(db, booking_id)
+    booking = _get_booking_or_404(request, db, booking_id)
     name, email = name.strip(), email.strip()
     phone = (phone or "").strip() or None
     if not name or not email:
@@ -577,7 +601,7 @@ def set_booking_contact(
     else:
         contact, _duplicates = find_or_create_contact(db, name, email, phone)
         booking_service.set_contact(db, booking, contact_id=contact.id, actor=_actor(staff))
-    return _redirect_to_detail(booking_id)
+    return _redirect_to_detail(request, booking_id)
 
 
 @router.post("/{booking_id}/linked-spaces", dependencies=[Depends(require_csrf)])
@@ -588,7 +612,7 @@ def add_linked_space(
     db: Session = Depends(get_db),
     staff: StaffUser = Depends(require_staff),
 ):
-    booking = _get_booking_or_404(db, booking_id)
+    booking = _get_booking_or_404(request, db, booking_id)
     try:
         booking_service.add_linked_space(db, booking, space_id=space_id, actor=_actor(staff))
     except ValueError as exc:
@@ -596,7 +620,7 @@ def add_linked_space(
     except IntegrityError as exc:
         db.rollback()
         raise HTTPException(status_code=409, detail="That space is already booked for an overlapping time") from exc
-    return _redirect_to_detail(booking_id)
+    return _redirect_to_detail(request, booking_id)
 
 
 def _fresh_document_content(db: Session, booking: Booking, doc_type: DocumentType) -> dict:
@@ -623,7 +647,7 @@ def generate_document(
     exists to prevent (Aaron, 2026-09-06), and a regenerate was doing it.
     Nothing else changes: with nothing to lose, this is the same one click
     it has always been."""
-    booking = _get_booking_or_404(db, booking_id)
+    booking = _get_booking_or_404(request, db, booking_id)
     content = _fresh_document_content(db, booking, doc_type)
     # Locked, not merely read: this path decides "nothing is at risk" and
     # then WRITES on that decision, so it needs the same window closed as
@@ -642,7 +666,7 @@ def generate_document(
     if losses or pending:
         return _render_regenerate_confirmation(request, db, booking, doc_type, current, losses, staff, pending)
     documents_service.create_new_version(db, booking, doc_type, content, actor=_actor(staff))
-    return _redirect_to_detail(booking_id)
+    return _redirect_to_detail(request, booking_id)
 
 
 def _pending_proposal_rows(db, booking, doc_type, current) -> list[dict]:
@@ -693,7 +717,7 @@ def generate_document_confirmed(
     shown. If another approval landed, or the booking changed, in the
     seconds in between, the human was answering a question about different
     values: re-ask rather than write."""
-    booking = _get_booking_or_404(db, booking_id)
+    booking = _get_booking_or_404(request, db, booking_id)
     content = _fresh_document_content(db, booking, doc_type)
     # Locked before the losses are read and held until the version is
     # written: an approval landing in that window used to be silently
@@ -712,7 +736,7 @@ def generate_document_confirmed(
         # Nothing at risk and nothing outstanding: the ordinary one click,
         # with no question asked and none to check.
         documents_service.create_new_version(db, booking, doc_type, content, actor=_actor(staff))
-        return _redirect_to_detail(booking_id)
+        return _redirect_to_detail(request, booking_id)
     if document_regeneration.fingerprint(losses, pending) != expect:
         # Nothing is written; the lock is released when the request ends
         # and get_db closes the session.
@@ -741,7 +765,7 @@ def generate_document_confirmed(
         # summarise() would only say "no human values affected".
         regenerated_note=document_regeneration.summarise(losses, keep_fields) if losses else None,
     )
-    return _redirect_to_detail(booking_id)
+    return _redirect_to_detail(request, booking_id)
 
 
 @router.post("/{booking_id}/documents/{document_id}/revise", dependencies=[Depends(require_csrf)])
@@ -761,7 +785,7 @@ def revise_document(
     Redirects to the new draft's edit form rather than the booking page:
     somebody clicking Revise is mid-sentence, not browsing.
     """
-    booking = _get_booking_or_404(db, booking_id)
+    booking = _get_booking_or_404(request, db, booking_id)
     document = db.get(Document, document_id)
     if document is None or document.booking_id != booking_id:
         raise HTTPException(status_code=404, detail="Document not found on this booking")
@@ -770,7 +794,8 @@ def revise_document(
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return RedirectResponse(
-        url=f"/admin/bookings/{booking.id}/documents/{draft.id}/edit", status_code=303
+        url=f"{request.state.venue_base}/bookings/{booking.id}/documents/{draft.id}/edit",
+        status_code=303,
     )
 
 
@@ -782,7 +807,7 @@ def send_document(
     db: Session = Depends(get_db),
     staff: StaffUser = Depends(require_staff),
 ):
-    _get_booking_or_404(db, booking_id)
+    _get_booking_or_404(request, db, booking_id)
     # A direct lookup, not booking.documents -- the relationship can be
     # stale within a session that outlives a single request (as every
     # admin test's shared `db` fixture does; a real per-request session
@@ -794,7 +819,7 @@ def send_document(
         documents_service.mark_sent(db, document, actor=_actor(staff))
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return _redirect_to_detail(booking_id)
+    return _redirect_to_detail(request, booking_id)
 
 
 def _refuse_if_legacy(booking_id: uuid.UUID, document: Document) -> None:
@@ -867,7 +892,7 @@ def download_document_pdf_for_staff(
     which is not a document this app can render at all -- see
     _refuse_if_legacy above.
     """
-    _get_booking_or_404(db, booking_id)
+    _get_booking_or_404(request, db, booking_id)
     document = db.get(Document, document_id)
     if document is None or document.booking_id != booking_id:
         raise HTTPException(status_code=404, detail="Document not found on this booking")
@@ -899,7 +924,7 @@ def preview_document(
     just Send/Regenerate/Delete it blind. Reuses the exact template a
     client would see; does not call record_view, since a staff read must
     never be mistaken for the client having seen it."""
-    _get_booking_or_404(db, booking_id)
+    _get_booking_or_404(request, db, booking_id)
     document = db.get(Document, document_id)
     if document is None or document.booking_id != booking_id:
         raise HTTPException(status_code=404, detail="Document not found on this booking")
@@ -991,7 +1016,7 @@ def edit_document_form(
     db: Session = Depends(get_db),
     staff: StaffUser = Depends(require_staff),
 ):
-    _get_booking_or_404(db, booking_id)
+    _get_booking_or_404(request, db, booking_id)
     document = _get_draft_document_or_404(db, booking_id, document_id)
     return _edit_form_response(request, staff, db, booking_id, document, form_content=document.content)
 
@@ -1112,7 +1137,7 @@ def save_document_edit(
     left out of the form and carried through untouched -- a contract that
     could silently drift from the live booking record would be worse than
     one that can't be hand-tweaked at all."""
-    _get_booking_or_404(db, booking_id)
+    _get_booking_or_404(request, db, booking_id)
     document = _get_draft_document_or_404(db, booking_id, document_id)
     # Locked BEFORE the content is read, so the values this form's save is
     # compared against are the ones it is actually replacing. Without it a
@@ -1368,7 +1393,7 @@ def save_document_edit(
         authored_fields=document_regeneration.PROTECTED_FIELD_NAMES,
         placeholders=document_regeneration.GENERATED_PLACEHOLDERS,
     )
-    return _redirect_to_detail(booking_id)
+    return _redirect_to_detail(request, booking_id)
 
 
 # --- Event Order proposals: propose-and-approve --------------------------------
@@ -1409,7 +1434,7 @@ def review_beo_proposal(
     db: Session = Depends(get_db),
     staff: StaffUser = Depends(require_staff),
 ):
-    _get_booking_or_404(db, booking_id)
+    _get_booking_or_404(request, db, booking_id)
     proposal = db.get(BeoProposal, proposal_id)
     if proposal is None or proposal.booking_id != booking_id:
         raise HTTPException(status_code=404, detail="Proposal not found on this booking")
@@ -1475,9 +1500,10 @@ def review_beo_proposal(
     document = beo_proposals_service.current_draft_beo(db, booking_id)
     if document is not None:
         return RedirectResponse(
-            url=f"/admin/bookings/{booking_id}/documents/{document.id}/edit", status_code=303
+            url=f"{request.state.venue_base}/bookings/{booking_id}/documents/{document.id}/edit",
+            status_code=303,
         )
-    return _redirect_to_detail(booking_id)
+    return _redirect_to_detail(request, booking_id)
 
 
 # Sentinel for _refresh_draft_beo_timeline: rebuild the vendor snapshot from
@@ -1548,7 +1574,7 @@ def confirm_vendor_bump_in(
     """The staff half of the request/confirm handshake: a client's
     nominated bump-in time renders as "requested" everywhere until this
     is clicked -- same semantics as confirming early setup access."""
-    _get_booking_or_404(db, booking_id)
+    _get_booking_or_404(request, db, booking_id)
     vendor = db.get(BookingVendor, vendor_id)
     if vendor is None or vendor.booking_id != booking_id:
         raise HTTPException(status_code=404, detail="Vendor not found on this booking")
@@ -1569,7 +1595,7 @@ def confirm_vendor_bump_in(
     _refresh_draft_beo_timeline(
         db, db.get(Booking, booking_id), actor=_actor(staff), vendors=_REBUILD_VENDORS
     )
-    return _redirect_to_detail(booking_id)
+    return _redirect_to_detail(request, booking_id)
 
 
 @router.post("/{booking_id}/documents/{document_id}/delete", dependencies=[Depends(require_csrf)])
@@ -1580,7 +1606,7 @@ def delete_document(
     db: Session = Depends(get_db),
     staff: StaffUser = Depends(require_staff),
 ):
-    _get_booking_or_404(db, booking_id)
+    _get_booking_or_404(request, db, booking_id)
     document = db.get(Document, document_id)
     if document is None or document.booking_id != booking_id:
         raise HTTPException(status_code=404, detail="Document not found on this booking")
@@ -1588,7 +1614,7 @@ def delete_document(
         documents_service.delete_draft(db, document, actor=_actor(staff))
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return _redirect_to_detail(booking_id)
+    return _redirect_to_detail(request, booking_id)
 
 
 @router.post("/{booking_id}/invoices/{invoice_id}/delete", dependencies=[Depends(require_csrf)])
@@ -1599,7 +1625,7 @@ def delete_invoice(
     db: Session = Depends(get_db),
     staff: StaffUser = Depends(require_staff),
 ):
-    _get_booking_or_404(db, booking_id)
+    _get_booking_or_404(request, db, booking_id)
     invoice = db.get(Invoice, invoice_id)
     if invoice is None or invoice.booking_id != booking_id:
         raise HTTPException(status_code=404, detail="Invoice not found on this booking")
@@ -1607,7 +1633,7 @@ def delete_invoice(
         invoicing.delete_draft(db, invoice, actor=_actor(staff))
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return _redirect_to_detail(booking_id)
+    return _redirect_to_detail(request, booking_id)
 
 
 @router.post("/{booking_id}/invoices/deposit", dependencies=[Depends(require_csrf)])
@@ -1618,9 +1644,9 @@ def create_deposit_invoice(
     db: Session = Depends(get_db),
     staff: StaffUser = Depends(require_staff),
 ):
-    booking = _get_booking_or_404(db, booking_id)
+    booking = _get_booking_or_404(request, db, booking_id)
     invoicing.create_deposit_invoice(db, booking, due_date=due_date, actor=_actor(staff))
-    return _redirect_to_detail(booking_id)
+    return _redirect_to_detail(request, booking_id)
 
 
 @router.post("/{booking_id}/invoices/final", dependencies=[Depends(require_csrf)])
@@ -1634,7 +1660,7 @@ def create_final_invoice(
     db: Session = Depends(get_db),
     staff: StaffUser = Depends(require_staff),
 ):
-    booking = _get_booking_or_404(db, booking_id)
+    booking = _get_booking_or_404(request, db, booking_id)
 
     line_items = _parse_invoice_line_items(description, quantity, unit_price)
 
@@ -1642,7 +1668,7 @@ def create_final_invoice(
         invoicing.create_final_invoice(db, booking, line_items=line_items, due_date=due_date, actor=_actor(staff))
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return _redirect_to_detail(booking_id)
+    return _redirect_to_detail(request, booking_id)
 
 
 @router.post("/{booking_id}/invoices/{invoice_id}/send", dependencies=[Depends(require_csrf)])
@@ -1653,7 +1679,7 @@ def send_invoice(
     db: Session = Depends(get_db),
     staff: StaffUser = Depends(require_staff),
 ):
-    _get_booking_or_404(db, booking_id)
+    _get_booking_or_404(request, db, booking_id)
     invoice = db.get(Invoice, invoice_id)
     if invoice is None or invoice.booking_id != booking_id:
         raise HTTPException(status_code=404, detail="Invoice not found on this booking")
@@ -1661,7 +1687,7 @@ def send_invoice(
         invoicing.mark_sent(db, invoice, actor=_actor(staff))
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return _redirect_to_detail(booking_id)
+    return _redirect_to_detail(request, booking_id)
 
 
 @router.get("/{booking_id}/invoices/{invoice_id}/preview", response_class=HTMLResponse)
@@ -1676,7 +1702,7 @@ def preview_invoice(
     reasoning as preview_document above. No live Stripe card-payment-link
     call here -- irrelevant for a draft nobody can pay yet, and a wasted
     API call on every preview."""
-    _get_booking_or_404(db, booking_id)
+    _get_booking_or_404(request, db, booking_id)
     invoice = db.get(Invoice, invoice_id)
     if invoice is None or invoice.booking_id != booking_id:
         raise HTTPException(status_code=404, detail="Invoice not found on this booking")
@@ -1735,7 +1761,7 @@ def edit_invoice_form(
     db: Session = Depends(get_db),
     staff: StaffUser = Depends(require_staff),
 ):
-    _get_booking_or_404(db, booking_id)
+    _get_booking_or_404(request, db, booking_id)
     invoice = db.get(Invoice, invoice_id)
     if invoice is None or invoice.booking_id != booking_id:
         raise HTTPException(status_code=404, detail="Invoice not found on this booking")
@@ -1743,7 +1769,7 @@ def edit_invoice_form(
         # Only drafts are editable; a sent invoice is revised (cancel +
         # reissue), so bounce back rather than show an editor that would
         # refuse the save anyway.
-        return _redirect_to_detail(booking_id)
+        return _redirect_to_detail(request, booking_id)
     # Show the staff-editable charge lines only -- the auto deposit credit
     # is re-derived on save, never hand-edited.
     editable_lines = invoicing._charge_lines(invoice.line_items)
@@ -1776,7 +1802,7 @@ def edit_invoice(
     db: Session = Depends(get_db),
     staff: StaffUser = Depends(require_staff),
 ):
-    _get_booking_or_404(db, booking_id)
+    _get_booking_or_404(request, db, booking_id)
     invoice = db.get(Invoice, invoice_id)
     if invoice is None or invoice.booking_id != booking_id:
         raise HTTPException(status_code=404, detail="Invoice not found on this booking")
@@ -1785,7 +1811,7 @@ def edit_invoice(
         invoicing.update_invoice(db, invoice, line_items=line_items, due_date=due_date, actor=_actor(staff))
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return _redirect_to_detail(booking_id)
+    return _redirect_to_detail(request, booking_id)
 
 
 @router.post("/{booking_id}/invoices/{invoice_id}/revise", dependencies=[Depends(require_csrf)])
@@ -1799,7 +1825,7 @@ def revise_invoice(
     """Cancel a sent invoice and reopen it as a fresh draft, landing the
     staff straight on that draft's editor to make the change (e.g. a
     discount) and re-send."""
-    _get_booking_or_404(db, booking_id)
+    _get_booking_or_404(request, db, booking_id)
     invoice = db.get(Invoice, invoice_id)
     if invoice is None or invoice.booking_id != booking_id:
         raise HTTPException(status_code=404, detail="Invoice not found on this booking")
@@ -1808,7 +1834,8 @@ def revise_invoice(
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return RedirectResponse(
-        url=f"/admin/bookings/{booking_id}/invoices/{new_draft.id}/edit", status_code=303
+        url=f"{request.state.venue_base}/bookings/{booking_id}/invoices/{new_draft.id}/edit",
+        status_code=303,
     )
 
 
@@ -1825,7 +1852,7 @@ def record_payment(
     db: Session = Depends(get_db),
     staff: StaffUser = Depends(require_staff),
 ):
-    _get_booking_or_404(db, booking_id)
+    _get_booking_or_404(request, db, booking_id)
     invoice = db.get(Invoice, invoice_id)
     if invoice is None or invoice.booking_id != booking_id:
         raise HTTPException(status_code=404, detail="Invoice not found on this booking")
@@ -1860,40 +1887,40 @@ def record_payment(
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    return _redirect_to_detail(booking_id)
+    return _redirect_to_detail(request, booking_id)
 
 
 @router.post("/{booking_id}/wizard/send", dependencies=[Depends(require_csrf)])
 def send_wizard_link(
     booking_id: uuid.UUID, request: Request, db: Session = Depends(get_db), staff: StaffUser = Depends(require_staff)
 ):
-    booking = _get_booking_or_404(db, booking_id)
+    booking = _get_booking_or_404(request, db, booking_id)
     try:
         wizard_service.get_or_create_session(db, booking, actor=_actor(staff))
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    return _redirect_to_detail(booking_id)
+    return _redirect_to_detail(request, booking_id)
 
 
 @router.post("/{booking_id}/wizard/revoke", dependencies=[Depends(require_csrf)])
 def revoke_wizard_link(
     booking_id: uuid.UUID, request: Request, db: Session = Depends(get_db), staff: StaffUser = Depends(require_staff)
 ):
-    booking = _get_booking_or_404(db, booking_id)
+    booking = _get_booking_or_404(request, db, booking_id)
     if booking.wizard_session is None:
         raise HTTPException(status_code=404, detail="No wizard session exists for this booking")
     try:
         wizard_service.revoke_session(db, booking.wizard_session, actor=_actor(staff))
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return _redirect_to_detail(booking_id)
+    return _redirect_to_detail(request, booking_id)
 
 
 @router.post("/{booking_id}/policy/setup-access/confirm", dependencies=[Depends(require_csrf)])
 def confirm_setup_access(
     booking_id: uuid.UUID, request: Request, db: Session = Depends(get_db), staff: StaffUser = Depends(require_staff)
 ):
-    booking = _get_booking_or_404(db, booking_id)
+    booking = _get_booking_or_404(request, db, booking_id)
     try:
         booking_service.confirm_setup_access(db, booking, actor=_actor(staff))
     except ValueError as exc:
@@ -1902,7 +1929,7 @@ def confirm_setup_access(
     # composed "requested, pending confirmation" into its run sheet at
     # generation, and without this it goes on saying so.
     _refresh_draft_beo_timeline(db, booking, actor=_actor(staff))
-    return _redirect_to_detail(booking_id)
+    return _redirect_to_detail(request, booking_id)
 
 
 @router.post("/{booking_id}/policy/agreed-minimum", dependencies=[Depends(require_csrf)])
@@ -1914,7 +1941,7 @@ def set_agreed_minimum(
     db: Session = Depends(get_db),
     staff: StaffUser = Depends(require_staff),
 ):
-    booking = _get_booking_or_404(db, booking_id)
+    booking = _get_booking_or_404(request, db, booking_id)
     try:
         parsed_reason = MinReductionReasonCode(reason) if reason else None
     except ValueError:
@@ -1925,7 +1952,7 @@ def set_agreed_minimum(
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    return _redirect_to_detail(booking_id)
+    return _redirect_to_detail(request, booking_id)
 
 
 @router.post("/{booking_id}/policy/agreed-food-minimum", dependencies=[Depends(require_csrf)])
@@ -1937,7 +1964,7 @@ def set_agreed_food_minimum(
     db: Session = Depends(get_db),
     staff: StaffUser = Depends(require_staff),
 ):
-    booking = _get_booking_or_404(db, booking_id)
+    booking = _get_booking_or_404(request, db, booking_id)
     try:
         parsed_reason = MinReductionReasonCode(reason) if reason else None
     except ValueError:
@@ -1948,7 +1975,7 @@ def set_agreed_food_minimum(
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    return _redirect_to_detail(booking_id)
+    return _redirect_to_detail(request, booking_id)
 
 
 @router.post("/{booking_id}/policy/bar-credit", dependencies=[Depends(require_csrf)])
@@ -1959,12 +1986,12 @@ def set_bar_credit(
     db: Session = Depends(get_db),
     staff: StaffUser = Depends(require_staff),
 ):
-    booking = _get_booking_or_404(db, booking_id)
+    booking = _get_booking_or_404(request, db, booking_id)
     try:
         booking_service.set_bar_credit(db, booking, bar_credit=bar_credit, actor=_actor(staff))
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    return _redirect_to_detail(booking_id)
+    return _redirect_to_detail(request, booking_id)
 
 
 @router.post("/{booking_id}/policy/outside-cake", dependencies=[Depends(require_csrf)])
@@ -1975,9 +2002,9 @@ def set_outside_cake_permitted(
     db: Session = Depends(get_db),
     staff: StaffUser = Depends(require_staff),
 ):
-    booking = _get_booking_or_404(db, booking_id)
+    booking = _get_booking_or_404(request, db, booking_id)
     booking_service.set_outside_cake_permitted(db, booking, permitted=permitted, actor=_actor(staff))
-    return _redirect_to_detail(booking_id)
+    return _redirect_to_detail(request, booking_id)
 
 
 @router.get("/{booking_id}/enquiry-notification/preview", response_class=HTMLResponse)
@@ -1988,7 +2015,7 @@ def preview_enquiry_notification(
     booking says. Deliberately works whether or not Gmail is configured
     and whether or not this booking ever had one sent -- the question
     "what would this email say" is worth answering on its own."""
-    booking = _get_booking_or_404(db, booking_id)
+    booking = _get_booking_or_404(request, db, booking_id)
     recipient, subject, body, booking_url = enquiry_classification.preview_enquiry_notification(booking)
     contact = booking.contact
     return templates.TemplateResponse(
@@ -2011,7 +2038,7 @@ def preview_enquiry_notification(
 def resend_beo_approval_emails(
     booking_id: uuid.UUID, request: Request, db: Session = Depends(get_db), staff: StaffUser = Depends(require_staff)
 ):
-    booking = _get_booking_or_404(db, booking_id)
+    booking = _get_booking_or_404(request, db, booking_id)
     try:
         failures = documents_service.resend_beo_approval_emails(db, booking, actor=_actor(staff))
     except ValueError as exc:
@@ -2023,16 +2050,16 @@ def resend_beo_approval_emails(
             status_code=502,
             detail="Resend failed -- " + "; ".join(failures) + ". The attempt is recorded on the audit trail.",
         )
-    return _redirect_to_detail(booking_id)
+    return _redirect_to_detail(request, booking_id)
 
 
 @router.post("/{booking_id}/enquiry-notification/resend", dependencies=[Depends(require_csrf)])
 def resend_enquiry_notification(
     booking_id: uuid.UUID, request: Request, db: Session = Depends(get_db), staff: StaffUser = Depends(require_staff)
 ):
-    booking = _get_booking_or_404(db, booking_id)
+    booking = _get_booking_or_404(request, db, booking_id)
     try:
         enquiry_classification.resend_enquiry_notification(db, booking, actor=_actor(staff))
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Resend failed: {exc}") from exc
-    return _redirect_to_detail(booking_id)
+    return _redirect_to_detail(request, booking_id)

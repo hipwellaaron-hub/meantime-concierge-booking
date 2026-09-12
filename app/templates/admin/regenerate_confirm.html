@@ -11,7 +11,7 @@
   Everything is pre-ticked to KEEP. The safe answer requires no action; the
   destructive one requires a deliberate untick.
 #}
-<p><a href="/admin/bookings/{{ booking.id }}">&larr; {{ booking.event_name }}</a></p>
+<p><a href="{{ venue_base }}/bookings/{{ booking.id }}">&larr; {{ booking.event_name }}</a></p>
 
 {% if losses %}
 <h1>Regenerating would overwrite {{ losses | length }} field{{ "" if losses | length == 1 else "s" }}</h1>
@@ -41,7 +41,7 @@
     <li><strong>{{ row.label }}</strong>{% if row.replaces_text %} &mdash; would replace text already there{% endif %}</li>
     {% endfor %}
   </ul>
-  <p style="margin:0;"><a href="/admin/bookings/{{ booking.id }}/documents/{{ document.id }}/edit">Review the proposal first &rarr;</a></p>
+  <p style="margin:0;"><a href="{{ venue_base }}/bookings/{{ booking.id }}/documents/{{ document.id }}/edit">Review the proposal first &rarr;</a></p>
 </div>
 {% endif %}
 
@@ -66,7 +66,7 @@
 </div>
 {% endif %}
 
-<form method="post" action="/admin/bookings/{{ booking.id }}/documents/{{ doc_type.value }}/generate/confirm">
+<form method="post" action="{{ venue_base }}/bookings/{{ booking.id }}/documents/{{ doc_type.value }}/generate/confirm">
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
   <input type="hidden" name="expect" value="{{ expect }}">
 
@@ -90,7 +90,7 @@
 
   <div class="card">
     <button class="btn" type="submit">{{ "Regenerate with these choices" if losses else "Regenerate anyway" }}</button>
-    <a class="btn secondary" href="/admin/bookings/{{ booking.id }}">Cancel</a>
+    <a class="btn secondary" href="{{ venue_base }}/bookings/{{ booking.id }}">Cancel</a>
   </div>
 </form>
 {% endblock %}

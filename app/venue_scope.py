@@ -119,36 +119,6 @@ def venue_scope(
     return scope
 
 
-# Which admin sections have MOVED onto /admin/{venue_slug}/.
-#
-# The rollout is one router at a time, which means there is a period where
-# some sections live under the venue segment and some do not. A nav that
-# built every link from the venue base would point at
-# /admin/hamilton/bookings before that router moved -- a 404 on a page that
-# worked, reached by clicking the main navigation.
-#
-# So the nav asks this. Move a router, add it here, and the link follows.
-# When the set is complete the helper below collapses to `base + path` and
-# both can go.
-MOVED_SECTIONS = frozenset({
-    "", "/reports/attribution",
-    "/calendar", "/drafts", "/invoices", "/staff", "/triage",
-    # "/bookings" is NOT here yet -- that router has not moved.
-})
-
-
-def admin_url(venue_base: str, path: str) -> str:
-    """Where a nav link should point during the rollout.
-
-    `venue_base` is "/admin/<slug>" on a scoped page and "/admin" elsewhere.
-    A section that has moved gets the scoped URL; one that has not gets its
-    legacy URL, which still works because its router has not been touched.
-    """
-    if path in MOVED_SECTIONS:
-        return f"{venue_base}{path}" if path else f"{venue_base}/"
-    return f"/admin{path}" if path else "/admin/"
-
-
 def venues_for(db: Session, staff: StaffUser) -> list[Venue]:
     """Every venue this person may work at, in a stable order.
 

@@ -86,15 +86,6 @@ def require_csrf(request: Request, csrf_token: str = Form(...)) -> None:
         raise HTTPException(status_code=403, detail="Your session expired -- please refresh and try again")
 
 
-def _admin_url_for(request: Request):
-    """A one-argument `admin_url(path)` for the template, with this request's
-    venue base already bound."""
-    from app.venue_scope import admin_url
-
-    base = getattr(request.state, "venue_base", "/admin")
-    return lambda path: admin_url(base, path)
-
-
 def admin_ctx(request: Request, staff: StaffUser | None = None, **extra) -> dict:
     ctx = {
         "request": request,
@@ -117,9 +108,6 @@ def admin_ctx(request: Request, staff: StaffUser | None = None, **extra) -> dict
         # `{{ venue_base }}/bookings` is correct on both, and the routers
         # can move one at a time instead of all at once.
         "venue_base": getattr(request.state, "venue_base", "/admin"),
-        # Used by the nav. During the rollout a link goes to the venue base
-        # only if that section has actually moved; see venue_scope.admin_url.
-        "admin_url": _admin_url_for(request),
         # Every admin page gets this automatically, not just the ones that
         # touch payments -- the risk this guards against ("staff assumes
         # real money is moving") isn't confined to the invoice screen.

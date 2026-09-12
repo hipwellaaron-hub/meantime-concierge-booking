@@ -213,7 +213,7 @@ def test_new_booking_form_renders(admin_client):
     assert "How did this lead reach you?" in resp.text
 
 
-def test_staff_create_booking_via_phone(admin_client, db, unassigned_space):
+def test_staff_create_booking_via_phone(admin_client, db, unassigned_space, hamilton):
     page = admin_client.get("/admin/bookings/new")
     csrf_token = _csrf(page.text)
 
@@ -221,7 +221,8 @@ def test_staff_create_booking_via_phone(admin_client, db, unassigned_space):
         "/admin/bookings/new", data={**_new_booking_payload(), "csrf_token": csrf_token}, follow_redirects=False
     )
     assert resp.status_code == 303
-    assert resp.headers["location"].startswith("/admin/bookings/")
+    # Scoped: admin_bookings moved onto /admin/{venue_slug}/ (step 6).
+    assert resp.headers["location"].startswith(f"/admin/{hamilton.slug}/bookings/")
 
     booking = db.query(Booking).filter_by(event_name="Reyes 40th").one()
     assert booking.status == BookingStatus.enquiry
@@ -276,7 +277,7 @@ def test_staff_create_booking_reuses_recent_duplicate_not_a_second_booking(admin
     assert db.query(Booking).filter_by(event_name="Reyes 40th").count() == 1
 
 
-def test_draft_document_has_no_dead_view_link(admin_client, db, booking):
+def test_draft_document_has_no_dead_view_link(admin_client, db, booking, hamilton):
     """The public /d/{token} route 404s on a draft document by design (not
     yet human-approved for client eyes) -- the detail page must not offer a
     View link that leads straight into that 404. It should instead offer
@@ -295,7 +296,10 @@ def test_draft_document_has_no_dead_view_link(admin_client, db, booking):
     assert "View" not in page2.text
     assert "Preview" in page2.text
     agreement = documents_service.get_current(db, booking.id, DocumentType.agreement)
-    assert f"/admin/bookings/{booking.id}/documents/{agreement.id}/preview" in page2.text
+    assert (
+        f"/admin/{hamilton.slug}/bookings/{booking.id}/documents/{agreement.id}/preview"
+        in page2.text
+    )
 
 
 def test_staff_can_preview_a_draft_document(admin_client, db, booking):
@@ -1318,7 +1322,7 @@ def test_delete_booking_requires_exact_reference(admin_client, booking, db):
     assert db.get(Booking, booking.id) is not None  # still there
 
 
-def test_delete_booking_removes_everything(admin_client, db, loft, mezzanine):
+def test_delete_booking_removes_everything(admin_client, db, loft, mezzanine, hamilton):
     from app.models import Payment
     from app.models.wizard_session import WizardSession
 
@@ -1334,7 +1338,10 @@ def test_delete_booking_removes_everything(admin_client, db, loft, mezzanine):
         follow_redirects=False,
     )
     assert resp.status_code == 303
-    assert resp.headers["location"] == "/admin/bookings"
+    # Scoped, and the LITERAL is kept: after deleting a booking you must
+    # land on the list for the venue you were in, not on the compat route
+    # that would bounce you through a redirect to work it out again.
+    assert resp.headers["location"] == f"/admin/{hamilton.slug}/bookings"
 
     assert db.get(Booking, booking_id) is None
     assert db.get(Booking, child_id) is None  # linked child gone too

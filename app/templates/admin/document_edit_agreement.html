@@ -1,7 +1,7 @@
 {% extends "admin/_base.html" %}
 {% block title %}Edit agreement{% endblock %}
 {% block content %}
-<p><a href="/admin/bookings/{{ booking.id }}">&larr; {{ booking.event_name }}</a></p>
+<p><a href="{{ venue_base }}/bookings/{{ booking.id }}">&larr; {{ booking.event_name }}</a></p>
 <h1>Edit agreement</h1>
 <p class="muted">
   Draft v{{ document.version }} &middot; {{ booking.reference_code }}.
@@ -53,7 +53,7 @@
   </p>
 </div>
 {% endif %}
-<form method="post" action="/admin/bookings/{{ booking.id }}/documents/{{ document.id }}/edit">
+<form method="post" action="{{ venue_base }}/bookings/{{ booking.id }}/documents/{{ document.id }}/edit">
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
   {# Compare-and-set: the values this form was rendered from. The save
      refuses if they have moved, rather than reverting somebody else's
@@ -78,7 +78,7 @@
   </div>
 
   <button type="submit">Save changes</button>
-  <a class="secondary-link" href="/admin/bookings/{{ booking.id }}">Cancel</a>
+  <a class="secondary-link" href="{{ venue_base }}/bookings/{{ booking.id }}">Cancel</a>
 </form>
 
 <template id="clause-template">

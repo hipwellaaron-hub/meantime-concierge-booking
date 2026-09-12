@@ -1,7 +1,7 @@
 {% extends "admin/_base.html" %}
 {% block title %}Edit event order{% endblock %}
 {% block content %}
-<p><a href="/admin/bookings/{{ booking.id }}">&larr; {{ booking.event_name }}</a></p>
+<p><a href="{{ venue_base }}/bookings/{{ booking.id }}">&larr; {{ booking.event_name }}</a></p>
 <h1>Edit event order</h1>
 <p class="muted">
   Draft v{{ document.version }} &middot; {{ booking.reference_code }}.
@@ -49,7 +49,7 @@
   </p>
   {% endif %}
 
-  <form method="post" action="/admin/bookings/{{ booking.id }}/beo-proposals/{{ beo_proposal.id }}/review">
+  <form method="post" action="{{ venue_base }}/bookings/{{ booking.id }}/beo-proposals/{{ beo_proposal.id }}/review">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
 
     <div style="margin:0 0 14px; padding:10px 12px; background:var(--bg); border:1px solid var(--border); border-radius:6px;">
@@ -194,7 +194,7 @@
   </p>
 </div>
 {% endif %}
-<form id="beo-edit-form" method="post" action="/admin/bookings/{{ booking.id }}/documents/{{ document.id }}/edit">
+<form id="beo-edit-form" method="post" action="{{ venue_base }}/bookings/{{ booking.id }}/documents/{{ document.id }}/edit">
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
   {# Compare-and-set: the values this form was rendered from. The save
      refuses if they have moved, rather than reverting somebody else's
@@ -334,7 +334,7 @@
   </div>
 
   <button type="submit">Save changes</button>
-  <a class="secondary-link" href="/admin/bookings/{{ booking.id }}">Cancel</a>
+  <a class="secondary-link" href="{{ venue_base }}/bookings/{{ booking.id }}">Cancel</a>
 </form>
 
 {% if booking.vendors | selectattr("bump_in_time") | rejectattr("bump_in_confirmed") | list %}
@@ -353,7 +353,7 @@
 {% endif %}
 {% for vendor in booking.vendors %}
 {% if vendor.bump_in_time is not none and not vendor.bump_in_confirmed %}
-<form class="inline bump-in-confirm" method="post" action="/admin/bookings/{{ booking.id }}/vendors/{{ vendor.id }}/confirm-bump-in" style="margin-top:8px;">
+<form class="inline bump-in-confirm" method="post" action="{{ venue_base }}/bookings/{{ booking.id }}/vendors/{{ vendor.id }}/confirm-bump-in" style="margin-top:8px;">
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
   <button class="btn" type="submit">Confirm {{ vendor.vendor_type }} bump-in {{ vendor.bump_in_time.strftime('%H:%M') }} ({{ vendor.name }})</button>
 </form>

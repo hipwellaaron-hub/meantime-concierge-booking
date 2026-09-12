@@ -3,10 +3,10 @@
 {% block content %}
 <div style="display:flex; justify-content:space-between; align-items:center;">
   <h1>Bookings</h1>
-  <a class="btn" href="/admin/bookings/new">+ New booking</a>
+  <a class="btn" href="{{ venue_base }}/bookings/new">+ New booking</a>
 </div>
 
-<form method="get" action="/admin/bookings" class="card" style="display:flex; gap:12px; align-items:flex-end;">
+<form method="get" action="{{ venue_base }}/bookings" class="card" style="display:flex; gap:12px; align-items:flex-end;">
   <div style="flex:2;">
     <label for="q">Search</label>
     <input type="text" id="q" name="q" value="{{ q }}" placeholder="Event name, reference, or contact">
@@ -30,7 +30,7 @@
     <thead><tr><th>Event</th><th>Reference</th><th>Date</th><th>Space</th><th>Status</th><th style="text-align:right;">Guests</th></tr></thead>
     <tbody>
     {% for booking in bookings %}
-      <tr onclick="window.location='/admin/bookings/{{ booking.id }}'" style="cursor:pointer;">
+      <tr onclick="window.location='{{ venue_base }}/bookings/{{ booking.id }}'" style="cursor:pointer;">
         <td>
           {{ booking.event_name }}
           <div class="muted" style="font-size:0.72rem;">{{ booking.contact.name | person_name if booking.contact else "No contact" }}</div>

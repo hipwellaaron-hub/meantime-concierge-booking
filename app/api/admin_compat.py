@@ -89,8 +89,7 @@ MOVED_LIST_PATHS: tuple[tuple[str, str], ...] = (
     ("invoices", "/invoices"),
     ("staff", "/staff"),
     ("triage", "/triage"),
-    # "bookings" is NOT here yet: app/api/admin_bookings.py still owns
-    # /admin/bookings, and a compat entry would shadow it.
+    ("bookings", "/bookings"),
 )
 
 for _legacy, _then in MOVED_LIST_PATHS:
@@ -111,8 +110,36 @@ for _legacy, _then in MOVED_LIST_PATHS:
     )
 
 
-# NOT YET, for the same reason: app/api/admin_bookings.py still owns
-# /admin/bookings/{booking_id}. The moment that router moves, this becomes
-# the redirect that resolves a stale link's venue from the booking row --
-# the case that actually happens, and the one that makes a cross-venue link
-# land somewhere useful instead of on a bare 404.
+@router.get("/bookings/{booking_id}", include_in_schema=False)
+def legacy_booking(
+    booking_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    staff: StaffUser = Depends(require_staff),
+):
+    """The one that matters, and the reason the by-id and list cases were
+    always going to be different.
+
+    A stale link to a SPECIFIC booking can answer its own question: the
+    booking row names its venue. So this resolves the venue from the row and
+    redirects to exactly the right page, with no chooser and no guessing.
+
+    THIS IS WHY EMAILS KEEP THE LEGACY PATH. The eight sites in app/services
+    that build {dashboard_base_url}/admin/bookings/{id} -- the digest, the
+    enquiry alert, the BEO review link -- are deliberately NOT rewritten to
+    scoped URLs. A link that works out its own venue cannot go stale, cannot
+    be wrong when the message is forwarded, and still resolves a year later
+    if the venue is renamed. A baked-in slug fails all three.
+
+    It is also the cross-venue case Aaron asked to fix: an operator in one
+    venue who opens a link to the other's booking is TAKEN THERE, with the
+    band already showing where they now are. The alternative -- the bare 404
+    this used to give -- reads identically to "no such booking".
+    """
+    booking = db.get(Booking, booking_id)
+    if booking is None or not staff_may_use(staff, booking.venue):
+        # Identical response for "does not exist" and "not yours", which is
+        # the honest answer in both cases to somebody who cannot see it.
+        return RedirectResponse(url="/admin/", status_code=303)
+    return RedirectResponse(
+        url=f"/admin/{booking.venue.slug}/bookings/{booking.id}", status_code=303
+    )

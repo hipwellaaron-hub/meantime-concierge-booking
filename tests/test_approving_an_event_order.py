@@ -846,7 +846,7 @@ def _fail_the_receipt(monkeypatch):
     monkeypatch.setattr(notifications, "is_gmail_smtp_configured", lambda: False)
 
 
-def test_a_failed_receipt_is_a_banner_with_a_resend_button(client, admin_client, db, loft, monkeypatch):
+def test_a_failed_receipt_is_a_banner_with_a_resend_button(client, admin_client, db, loft, monkeypatch, hamilton):
     """Aaron, 2026-09-10: "An audit row nobody reads is the silence problem
     again. If a client's approval receipt didn't go, I need to see it on
     the booking page and be able to resend from there."
@@ -860,7 +860,10 @@ def test_a_failed_receipt_is_a_banner_with_a_resend_button(client, admin_client,
 
     assert "approval receipt did not send" in page
     assert "Gmail SMTP not configured" in page, "the reason, on the page, not in a collapsed table"
-    assert f'action="/admin/bookings/{booking.id}/beo-approval-emails/resend"' in page
+    assert (
+        f'action="/admin/{hamilton.slug}/bookings/{booking.id}/beo-approval-emails/resend"'
+        in page
+    )
     assert ">Resend</button>" in page
 
 

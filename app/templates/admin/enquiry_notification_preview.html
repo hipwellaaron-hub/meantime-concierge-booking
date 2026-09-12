@@ -1,7 +1,7 @@
 {% extends "admin/_base.html" %}
 {% block title %}Enquiry notification preview{% endblock %}
 {% block content %}
-<p><a href="/admin/bookings/{{ booking.id }}">&larr; {{ booking.event_name }}</a></p>
+<p><a href="{{ venue_base }}/bookings/{{ booking.id }}">&larr; {{ booking.event_name }}</a></p>
 <h1>Enquiry notification</h1>
 <p class="muted">
   Exactly what lands in the venue inbox for this enquiry, built by the same code that sends it.

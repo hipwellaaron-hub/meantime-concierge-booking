@@ -97,9 +97,9 @@ def test_unpaid_tile_count_matches_the_list_it_links_to(admin_client, db, loft, 
     assert len(listed) == 3
 
 
-def test_open_enquiries_tile_links_to_the_filtered_bookings_list(admin_client):
+def test_open_enquiries_tile_links_to_the_filtered_bookings_list(admin_client, hamilton):
     dashboard = admin_client.get("/admin/")
-    assert 'href="/admin/bookings?status=enquiry"' in dashboard.text
+    assert f'href="/admin/{hamilton.slug}/bookings?status=enquiry"' in dashboard.text
     assert admin_client.get("/admin/bookings?status=enquiry").status_code == 200
 
 

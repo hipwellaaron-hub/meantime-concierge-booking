@@ -133,7 +133,9 @@ def create_hold(
         raise HTTPException(status_code=409, detail="That space is already held or booked for an overlapping time") from exc
 
     if len(created) == 1:
-        return RedirectResponse(url=f"/admin/bookings/{created[0].id}", status_code=303)
+        return RedirectResponse(
+            url=f"{request.state.venue_base}/bookings/{created[0].id}", status_code=303
+        )
     return RedirectResponse(
         url=f"{request.state.venue_base}/calendar?week={calendar_service.week_start_for(event_date).isoformat()}",
         status_code=303,

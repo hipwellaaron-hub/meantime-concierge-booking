@@ -21,7 +21,7 @@
     {% for f in findings %}
       <tr>
         <td><span class="badge {{ 'wine' if f.category in ('data_mismatch', 'date_anomaly') else '' }}">{{ f.check_code | lower | replace('_', ' ') }}</span></td>
-        <td><a href="/admin/bookings/{{ f.booking.id }}">{{ f.booking.event_name }}</a></td>
+        <td><a href="{{ venue_base }}/bookings/{{ f.booking.id }}">{{ f.booking.event_name }}</a></td>
         <td class="muted">{{ f.booking.reference_code }}</td>
         <td style="max-width:460px;">{{ f.detail }}</td>
         <td class="muted">{{ f.first_seen_at | sydney_time("%d %b") }}</td>
@@ -48,7 +48,7 @@
     <tbody>
     {% for booking in notes_review %}
       <tr>
-        <td><a href="/admin/bookings/{{ booking.id }}">{{ booking.event_name }}</a>
+        <td><a href="{{ venue_base }}/bookings/{{ booking.id }}">{{ booking.event_name }}</a>
             {% if booking.contact %}<div class="muted" style="font-size:0.8rem;">{{ booking.contact.name }}</div>{% endif %}</td>
         <td class="muted">{{ booking.reference_code }}</td>
         <td>{{ booking.event_date | aus_date if booking.event_date else "Date TBD" }}</td>
@@ -88,7 +88,7 @@
     {% for booking in needs_clarification %}
       {% set flags = booking.events | selectattr('event_type', 'equalto', 'enquiry_flagged') | list %}
       <tr>
-        <td><a href="/admin/bookings/{{ booking.id }}">{{ booking.event_name }}</a></td>
+        <td><a href="{{ venue_base }}/bookings/{{ booking.id }}">{{ booking.event_name }}</a></td>
         <td class="muted">{{ booking.reference_code }}</td>
         <td>{{ booking.event_date | aus_date if booking.event_date else "Date TBD" }}</td>
         <td>
@@ -115,7 +115,7 @@
     {% for booking in flagged_in_progress %}
       {% set flags = booking.events | selectattr('event_type', 'equalto', 'enquiry_flagged') | list %}
       <tr>
-        <td><a href="/admin/bookings/{{ booking.id }}">{{ booking.event_name }}</a></td>
+        <td><a href="{{ venue_base }}/bookings/{{ booking.id }}">{{ booking.event_name }}</a></td>
         <td class="muted">{{ booking.reference_code }}</td>
         <td><span class="badge">{{ booking.status.value }}</span></td>
         <td>{{ booking.event_date | aus_date if booking.event_date else "Date TBD" }}</td>
@@ -142,11 +142,11 @@
     <tbody>
     {% for booking in notification_failures %}
       <tr>
-        <td><a href="/admin/bookings/{{ booking.id }}">{{ booking.event_name }}</a></td>
+        <td><a href="{{ venue_base }}/bookings/{{ booking.id }}">{{ booking.event_name }}</a></td>
         <td class="muted">{{ booking.reference_code }}</td>
         <td>{{ booking.event_date | aus_date if booking.event_date else "Date TBD" }}</td>
         <td>
-          <form method="post" action="/admin/bookings/{{ booking.id }}/enquiry-notification/resend">
+          <form method="post" action="{{ venue_base }}/bookings/{{ booking.id }}/enquiry-notification/resend">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <button class="btn" type="submit">Resend</button>
           </form>
@@ -169,11 +169,11 @@
     <tbody>
     {% for booking in unrecorded_min_reductions %}
       <tr>
-        <td><a href="/admin/bookings/{{ booking.id }}">{{ booking.event_name }}</a></td>
+        <td><a href="{{ venue_base }}/bookings/{{ booking.id }}">{{ booking.event_name }}</a></td>
         <td class="muted">{{ booking.reference_code }}</td>
         <td class="muted">{{ booking.space.standard_min_adults }}</td>
         <td>{{ booking.agreed_min_adults }}</td>
-        <td><a href="/admin/bookings/{{ booking.id }}">Review &rarr;</a></td>
+        <td><a href="{{ venue_base }}/bookings/{{ booking.id }}">Review &rarr;</a></td>
       </tr>
     {% endfor %}
     </tbody>
@@ -191,11 +191,11 @@
     <tbody>
     {% for booking in unassigned %}
       <tr>
-        <td><a href="/admin/bookings/{{ booking.id }}">{{ booking.event_name }}</a></td>
+        <td><a href="{{ venue_base }}/bookings/{{ booking.id }}">{{ booking.event_name }}</a></td>
         <td class="muted">{{ booking.reference_code }}</td>
         <td>{{ booking.event_date | aus_date if booking.event_date else "Date TBD" }}</td>
         <td colspan="2">
-          <form method="post" action="/admin/bookings/{{ booking.id }}/assign-space" class="field-row" style="align-items:flex-end;">
+          <form method="post" action="{{ venue_base }}/bookings/{{ booking.id }}/assign-space" class="field-row" style="align-items:flex-end;">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <div>
               <select name="space_id" required>
@@ -229,11 +229,11 @@
     <tbody>
     {% for booking in wizard_ready %}
       <tr>
-        <td><a href="/admin/bookings/{{ booking.id }}">{{ booking.event_name }}</a></td>
+        <td><a href="{{ venue_base }}/bookings/{{ booking.id }}">{{ booking.event_name }}</a></td>
         <td class="muted">{{ booking.reference_code }}</td>
         <td>{{ booking.event_date | aus_date if booking.event_date else "Date TBD" }}</td>
         <td>
-          <form method="post" action="/admin/bookings/{{ booking.id }}/wizard/send">
+          <form method="post" action="{{ venue_base }}/bookings/{{ booking.id }}/wizard/send">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <button class="btn" type="submit">Send wizard link</button>
           </form>
@@ -256,13 +256,13 @@
     <tbody>
     {% for document in beos_to_review %}
       <tr>
-        <td><a href="/admin/bookings/{{ document.booking_id }}">{{ document.booking.event_name }}</a></td>
+        <td><a href="{{ venue_base }}/bookings/{{ document.booking_id }}">{{ document.booking.event_name }}</a></td>
         <td class="muted">{{ document.booking.reference_code }}</td>
         <td>{{ document.booking.event_date | aus_date if document.booking.event_date else "Date TBD" }}</td>
         <td class="muted">v{{ document.version }}</td>
         <td>
-          <a href="/admin/bookings/{{ document.booking_id }}/documents/{{ document.id }}/edit">Edit</a>
-          <a href="/admin/bookings/{{ document.booking_id }}/documents/{{ document.id }}/preview" target="_blank">Preview &rarr;</a>
+          <a href="{{ venue_base }}/bookings/{{ document.booking_id }}/documents/{{ document.id }}/edit">Edit</a>
+          <a href="{{ venue_base }}/bookings/{{ document.booking_id }}/documents/{{ document.id }}/preview" target="_blank">Preview &rarr;</a>
         </td>
       </tr>
     {% endfor %}

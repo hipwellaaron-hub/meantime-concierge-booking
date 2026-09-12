@@ -11,7 +11,7 @@
   <p style="margin:0;"><span class="badge gold">Event Order proposal waiting</span>
     <span style="font-size:0.9rem;">
       {{ beo_proposal_waiting }} field{{ "" if beo_proposal_waiting == 1 else "s" }} proposed by Claude, not applied.
-      {% if beo_proposal_document_id %}<a href="/admin/bookings/{{ booking.id }}/documents/{{ beo_proposal_document_id }}/edit">Review on the Event Order &rarr;</a>
+      {% if beo_proposal_document_id %}<a href="{{ venue_base }}/bookings/{{ booking.id }}/documents/{{ beo_proposal_document_id }}/edit">Review on the Event Order &rarr;</a>
       {% elif not current_beo %}Generate the Event Order to review them (a proposal creates one itself once the booking is tentative or confirmed).
       {% elif current_beo.is_legacy %}The current Event Order is a legacy record and cannot be revised or regenerated.
       {% else %}The current Event Order (v{{ current_beo.version }}, {{ "approved" if current_beo.status.value == "signed" else current_beo.status.value }}) has already gone out &mdash; Revise it to review them against the new draft.{% endif %}
@@ -22,7 +22,7 @@
 {% set deposit_invoices = booking.invoices | selectattr('type.value', 'equalto', 'deposit') | list %}
 {% set active_final_invoices = booking.invoices | selectattr('type.value', 'equalto', 'final') | rejectattr('status.value', 'equalto', 'cancelled') | list %}
 
-<p><a href="/admin/bookings">&larr; All bookings</a></p>
+<p><a href="{{ venue_base }}/bookings">&larr; All bookings</a></p>
 <h1>{{ booking.event_name }} <span class="badge {{ booking.status.value | status_badge }}">{{ booking.status.value }}</span></h1>
 <p class="muted">{{ booking.reference_code }} &middot; {{ booking.event_date | aus_date if booking.event_date else "Date TBD" }} &middot; {{ booking.space.name }}
   {% if booking.start_time and booking.end_time %} &middot; {{ booking.start_time }}&ndash;{{ booking.end_time }}{% endif %}
@@ -31,7 +31,7 @@
 {% if booking.contact %}
 <p class="muted">{{ booking.contact.name }} &middot; {{ booking.contact.email }}{% if booking.contact.phone %} &middot; {{ booking.contact.phone }}{% endif %}
   <details style="display:inline;"><summary style="display:inline; cursor:pointer; color:var(--gold);">Change</summary>
-  <form method="post" action="/admin/bookings/{{ booking.id }}/contact" class="field-row" style="margin-top:8px;">
+  <form method="post" action="{{ venue_base }}/bookings/{{ booking.id }}/contact" class="field-row" style="margin-top:8px;">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <div><input type="text" name="name" placeholder="Name" value="{{ booking.contact.name }}" required></div>
     <div><input type="email" name="email" placeholder="Email" value="{{ booking.contact.email }}" required></div>
@@ -44,7 +44,7 @@
 <div class="card" style="border-color: var(--ember); background: rgba(212,98,43,0.08);">
   <h2 style="color: var(--ember); margin-bottom: 10px;">No contact on file</h2>
   <p class="muted" style="margin-bottom:10px;">Nothing can be sent to this client -- no agreement, invoice, or wizard link -- until a real contact is added.</p>
-  <form method="post" action="/admin/bookings/{{ booking.id }}/contact" class="field-row">
+  <form method="post" action="{{ venue_base }}/bookings/{{ booking.id }}/contact" class="field-row">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <div><input type="text" name="name" placeholder="Name" required></div>
     <div><input type="email" name="email" placeholder="Email" required></div>
@@ -152,7 +152,7 @@
 <div class="card" style="border-color: var(--gold-dim);">
   <p style="margin:0;">
     This is a linked booking -- a second space for
-    <a href="/admin/bookings/{{ booking.parent_booking.id }}">{{ booking.parent_booking.event_name }} ({{ booking.parent_booking.reference_code }})</a>.
+    <a href="{{ venue_base }}/bookings/{{ booking.parent_booking.id }}">{{ booking.parent_booking.event_name }} ({{ booking.parent_booking.reference_code }})</a>.
     Documents, invoices, and the wizard live on that parent booking, not here.
   </p>
 </div>
@@ -161,7 +161,7 @@
 <div class="card">
   <h2>Status</h2>
   {% if legal_next_statuses %}
-  <form method="post" action="/admin/bookings/{{ booking.id }}/status">
+  <form method="post" action="{{ venue_base }}/bookings/{{ booking.id }}/status">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <div class="field-row">
       <div>
@@ -183,7 +183,7 @@
   <div style="margin-top:12px; padding:10px 12px; border-radius:8px; background:rgba(201,169,110,0.10); border:1px solid var(--gold-dim);">
     <span class="badge">set by hand</span>
     <span class="muted" style="font-size:0.85rem;">This status was set manually, so the automatic moves (hold the date on send, confirm on deposit + signature) leave this booking alone.</span>
-    <form class="inline" method="post" action="/admin/bookings/{{ booking.id }}/status/unpin" style="display:inline; margin-left:8px;"
+    <form class="inline" method="post" action="{{ venue_base }}/bookings/{{ booking.id }}/status/unpin" style="display:inline; margin-left:8px;"
           onsubmit="return confirm('Hand this booking back to automation? If the client has already sent, signed or paid enough, it may move to tentative or confirmed straight away.');">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <button class="btn secondary" type="submit">Hand back to automation</button>
@@ -196,7 +196,7 @@
   <p class="muted">
     {% if booking.hold_expires_at %}Expires {{ booking.hold_expires_at | aus_date }}.{% else %}Open-ended -- no expiry set.{% endif %}
   </p>
-  <form method="post" action="/admin/bookings/{{ booking.id }}/hold-expiry" class="field-row">
+  <form method="post" action="{{ venue_base }}/bookings/{{ booking.id }}/hold-expiry" class="field-row">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <div><input type="date" name="hold_expires_at" value="{{ booking.hold_expires_at or '' }}"></div>
     <div style="flex:0 0 auto;"><button class="btn secondary" type="submit">Save</button></div>
@@ -216,7 +216,7 @@
   {% if receipt_failed and not contact_email_valid %}
   <p class="muted"><strong>Fix the contact's email address above, then resend.</strong> A resend to this address can only fail again.</p>
   {% else %}
-  <form method="post" action="/admin/bookings/{{ booking.id }}/beo-approval-emails/resend" onsubmit="this.querySelector('button').disabled = true;">
+  <form method="post" action="{{ venue_base }}/bookings/{{ booking.id }}/beo-approval-emails/resend" onsubmit="this.querySelector('button').disabled = true;">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <button class="btn" type="submit">Resend</button>
   </form>
@@ -228,20 +228,20 @@
 <div class="card" style="border-color: var(--ember); background: rgba(212,98,43,0.08);">
   <h2 style="color: var(--ember); margin-bottom: 10px;">Enquiry notification failed to send</h2>
   <p class="muted" style="margin-bottom:10px;">The email that makes this enquiry visible in Gmail for drafting a reply never went out. See the audit trail below for the reason.</p>
-  <form method="post" action="/admin/bookings/{{ booking.id }}/enquiry-notification/resend">
+  <form method="post" action="{{ venue_base }}/bookings/{{ booking.id }}/enquiry-notification/resend">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <button class="btn" type="submit">Resend notification</button>
-    <a href="/admin/bookings/{{ booking.id }}/enquiry-notification/preview">See the email</a>
+    <a href="{{ venue_base }}/bookings/{{ booking.id }}/enquiry-notification/preview">See the email</a>
   </form>
 </div>
 {% elif booking.enquiry_notification_sent_at %}
 <p class="muted" style="font-size:0.85rem;">
   Enquiry notification sent {{ booking.enquiry_notification_sent_at | sydney_time }}.
-  <a href="/admin/bookings/{{ booking.id }}/enquiry-notification/preview">See the email</a>
+  <a href="{{ venue_base }}/bookings/{{ booking.id }}/enquiry-notification/preview">See the email</a>
 </p>
 {% else %}
 <p class="muted" style="font-size:0.85rem;">
-  <a href="/admin/bookings/{{ booking.id }}/enquiry-notification/preview">See the enquiry notification email</a>
+  <a href="{{ venue_base }}/bookings/{{ booking.id }}/enquiry-notification/preview">See the enquiry notification email</a>
 </p>
 {% endif %}
 
@@ -266,7 +266,7 @@
 
 <div class="card">
   <h2>Space &amp; time</h2>
-  <form method="post" action="/admin/bookings/{{ booking.id }}/assign-space" class="field-row">
+  <form method="post" action="{{ venue_base }}/bookings/{{ booking.id }}/assign-space" class="field-row">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <div>
       <label>Space</label>
@@ -306,7 +306,7 @@
       <tr>
         <td>{{ child.space.name }}</td>
         <td><span class="badge {{ child.status.value | status_badge }}">{{ child.status.value }}</span></td>
-        <td><a href="/admin/bookings/{{ child.id }}">View &rarr;</a></td>
+        <td><a href="{{ venue_base }}/bookings/{{ child.id }}">View &rarr;</a></td>
       </tr>
     {% endfor %}
     </tbody>
@@ -315,7 +315,7 @@
   {% set linked_space_ids = booking.linked_bookings | map(attribute='space_id') | list %}
   {% set available_spaces = bookable_spaces | rejectattr('id', 'equalto', booking.space_id) | rejectattr('id', 'in', linked_space_ids) | list %}
   {% if available_spaces %}
-  <form method="post" action="/admin/bookings/{{ booking.id }}/linked-spaces" class="field-row" style="margin-top:10px;">
+  <form method="post" action="{{ venue_base }}/bookings/{{ booking.id }}/linked-spaces" class="field-row" style="margin-top:10px;">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <div>
       <label>Add linked space</label>
@@ -344,12 +344,12 @@
         <td>
           {% if current_agreement and current_agreement.is_legacy %}
             {% if current_agreement.legacy_file %}
-            <a href="/admin/bookings/{{ booking.id }}/documents/{{ current_agreement.id }}/legacy-file">Download signed PDF &darr;</a>
+            <a href="{{ venue_base }}/bookings/{{ booking.id }}/documents/{{ current_agreement.id }}/legacy-file">Download signed PDF &darr;</a>
             {% else %}
             <span class="muted">record only — attach the signed PDF below</span>
             {% endif %}
           {% else %}
-          <form class="inline" method="post" action="/admin/bookings/{{ booking.id }}/documents/agreement/generate">
+          <form class="inline" method="post" action="{{ venue_base }}/bookings/{{ booking.id }}/documents/agreement/generate">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <button class="btn secondary" type="submit">{{ "Regenerate" if current_agreement else "Generate" }}</button>
           </form>
@@ -370,22 +370,22 @@
           <div class="badge wine" style="display:block; margin-bottom:6px;">The client has no working link until you send this</div>
           {% endif %}
           {% if current_agreement and current_agreement.status.value == "draft" %}
-          <form class="inline" method="post" action="/admin/bookings/{{ booking.id }}/documents/{{ current_agreement.id }}/send">
+          <form class="inline" method="post" action="{{ venue_base }}/bookings/{{ booking.id }}/documents/{{ current_agreement.id }}/send">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <button class="btn" type="submit">Send</button>
           </form>
-          <form class="inline" method="post" action="/admin/bookings/{{ booking.id }}/documents/{{ current_agreement.id }}/delete" onsubmit="return confirm('Delete this draft agreement?');">
+          <form class="inline" method="post" action="{{ venue_base }}/bookings/{{ booking.id }}/documents/{{ current_agreement.id }}/delete" onsubmit="return confirm('Delete this draft agreement?');">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <button class="btn danger" type="submit">Delete</button>
           </form>
-          <a href="/admin/bookings/{{ booking.id }}/documents/{{ current_agreement.id }}/edit">Edit</a>
-          <a href="/admin/bookings/{{ booking.id }}/documents/{{ current_agreement.id }}/preview" target="_blank">Preview &rarr;</a>
+          <a href="{{ venue_base }}/bookings/{{ booking.id }}/documents/{{ current_agreement.id }}/edit">Edit</a>
+          <a href="{{ venue_base }}/bookings/{{ booking.id }}/documents/{{ current_agreement.id }}/preview" target="_blank">Preview &rarr;</a>
           {% elif current_agreement %}
           <a href="/d/{{ current_agreement.access_token }}" target="_blank">View &rarr;</a>
           {# The INTERNAL copy: it names the fields nobody has filled in and
              shows staff-facing markers the client PDF hides. The clean copy
              the client gets is the link beside it. #}
-          <a href="/admin/bookings/{{ booking.id }}/documents/{{ current_agreement.id }}/pdf">Download PDF</a>
+          <a href="{{ venue_base }}/bookings/{{ booking.id }}/documents/{{ current_agreement.id }}/pdf">Download PDF</a>
           <a href="/d/{{ current_agreement.access_token }}/pdf" class="muted">Client PDF</a>
           <button type="button" class="btn secondary" onclick="copyLink(this, '/d/{{ current_agreement.access_token }}')">Copy link</button>
           {#
@@ -396,7 +396,7 @@
             agreement the client signs again (Aaron, 2026-09-08).
           #}
           {% if current_agreement.status.value != "signed" %}
-          <form method="post" action="/admin/bookings/{{ booking.id }}/documents/{{ current_agreement.id }}/revise" style="display:inline;">
+          <form method="post" action="{{ venue_base }}/bookings/{{ booking.id }}/documents/{{ current_agreement.id }}/revise" style="display:inline;">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <button class="btn secondary" type="submit">Revise</button>
           </form>
@@ -420,7 +420,7 @@
              aside. The loss screen only fires for hand-edited content, so
              without this a one-click Regenerate did that with no signal at
              all. The approver is named so the click is a decision. #}
-          <form class="inline" method="post" action="/admin/bookings/{{ booking.id }}/documents/beo/generate"{% if current_beo and current_beo.status.value == "signed" %} onsubmit="return confirm('This Event Order was approved by {{ current_beo.signer_name | e }}. Regenerating sets that approval aside -- the new version goes out unapproved and will need approving again. Continue?');"{% endif %}>
+          <form class="inline" method="post" action="{{ venue_base }}/bookings/{{ booking.id }}/documents/beo/generate"{% if current_beo and current_beo.status.value == "signed" %} onsubmit="return confirm('This Event Order was approved by {{ current_beo.signer_name | e }}. Regenerating sets that approval aside -- the new version goes out unapproved and will need approving again. Continue?');"{% endif %}>
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <button class="btn secondary" type="submit">{{ "Regenerate" if current_beo else "Generate" }}</button>
           </form>
@@ -441,22 +441,22 @@
           <div class="badge wine" style="display:block; margin-bottom:6px;">The client has no working link until you send this</div>
           {% endif %}
           {% if current_beo and current_beo.status.value == "draft" %}
-          <form class="inline" method="post" action="/admin/bookings/{{ booking.id }}/documents/{{ current_beo.id }}/send">
+          <form class="inline" method="post" action="{{ venue_base }}/bookings/{{ booking.id }}/documents/{{ current_beo.id }}/send">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <button class="btn" type="submit">Send</button>
           </form>
-          <form class="inline" method="post" action="/admin/bookings/{{ booking.id }}/documents/{{ current_beo.id }}/delete" onsubmit="return confirm('Delete this draft BEO?');">
+          <form class="inline" method="post" action="{{ venue_base }}/bookings/{{ booking.id }}/documents/{{ current_beo.id }}/delete" onsubmit="return confirm('Delete this draft BEO?');">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <button class="btn danger" type="submit">Delete</button>
           </form>
-          <a href="/admin/bookings/{{ booking.id }}/documents/{{ current_beo.id }}/edit">Edit</a>
-          <a href="/admin/bookings/{{ booking.id }}/documents/{{ current_beo.id }}/preview" target="_blank">Preview &rarr;</a>
+          <a href="{{ venue_base }}/bookings/{{ booking.id }}/documents/{{ current_beo.id }}/edit">Edit</a>
+          <a href="{{ venue_base }}/bookings/{{ booking.id }}/documents/{{ current_beo.id }}/preview" target="_blank">Preview &rarr;</a>
           {% elif current_beo %}
           <a href="/d/{{ current_beo.access_token }}" target="_blank">View &rarr;</a>
           {# The INTERNAL copy: it names the fields nobody has filled in and
              shows staff-facing markers the client PDF hides. The clean copy
              the client gets is the link beside it. #}
-          <a href="/admin/bookings/{{ booking.id }}/documents/{{ current_beo.id }}/pdf">Download PDF</a>
+          <a href="{{ venue_base }}/bookings/{{ booking.id }}/documents/{{ current_beo.id }}/pdf">Download PDF</a>
           <a href="/d/{{ current_beo.access_token }}/pdf" class="muted">Client PDF</a>
           <button type="button" class="btn secondary" onclick="copyLink(this, '/d/{{ current_beo.access_token }}')">Copy link</button>
           {#
@@ -466,7 +466,7 @@
             SIGNED agreement has no Revise: changing one means a new
             agreement the client signs again (Aaron, 2026-09-08).
           #}
-          <form method="post" action="/admin/bookings/{{ booking.id }}/documents/{{ current_beo.id }}/revise" style="display:inline;">
+          <form method="post" action="{{ venue_base }}/bookings/{{ booking.id }}/documents/{{ current_beo.id }}/revise" style="display:inline;">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <button class="btn secondary" type="submit">Revise</button>
           </form>
@@ -486,7 +486,7 @@
   <details style="margin-top:12px;">
     <summary class="muted" style="cursor:pointer;">Attach a legacy signed document (iVvy migration)</summary>
     <div style="margin-top:10px; display:flex; flex-direction:column; gap:16px;">
-      <form method="post" action="/admin/bookings/{{ booking.id }}/legacy-agreement" enctype="multipart/form-data">
+      <form method="post" action="{{ venue_base }}/bookings/{{ booking.id }}/legacy-agreement" enctype="multipart/form-data">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <div style="font-weight:600; margin-bottom:6px;">Signed agreement (PDF)</div>
         <div class="field-row" style="align-items:flex-end; gap:10px; flex-wrap:wrap;">
@@ -496,7 +496,7 @@
           <div><button class="btn" type="submit">Upload agreement</button></div>
         </div>
       </form>
-      <form method="post" action="/admin/bookings/{{ booking.id }}/legacy-deposit" enctype="multipart/form-data">
+      <form method="post" action="{{ venue_base }}/bookings/{{ booking.id }}/legacy-deposit" enctype="multipart/form-data">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <div style="font-weight:600; margin-bottom:6px;">Paid deposit invoice (PDF)</div>
         <div class="field-row" style="align-items:flex-end; gap:10px; flex-wrap:wrap;">
@@ -518,7 +518,7 @@
     {% else %}<span class="badge wine">Stripe not configured</span>{% endif %}
   </h2>
   {% if not deposit_invoices %}
-  <form method="post" action="/admin/bookings/{{ booking.id }}/invoices/deposit" style="margin-bottom:14px;">
+  <form method="post" action="{{ venue_base }}/bookings/{{ booking.id }}/invoices/deposit" style="margin-bottom:14px;">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <div class="field-row">
       <div><label>Deposit due date</label><input type="date" name="due_date" required></div>
@@ -534,7 +534,7 @@
   {% if not active_final_invoices %}
   <details style="margin-bottom:14px;">
     <summary style="cursor:pointer; color:var(--gold);">Create final invoice</summary>
-    <form method="post" action="/admin/bookings/{{ booking.id }}/invoices/final" style="margin-top:10px;">
+    <form method="post" action="{{ venue_base }}/bookings/{{ booking.id }}/invoices/final" style="margin-top:10px;">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <div class="field-row">
         <div>
@@ -571,25 +571,25 @@
         <td class="muted">{{ invoice.due_date | aus_date }}</td>
         <td>
           {% if invoice.is_legacy %}
-            {% if invoice.legacy_file %}<a href="/admin/bookings/{{ booking.id }}/invoices/{{ invoice.id }}/legacy-file">Download PDF &darr;</a>{% else %}<span class="muted">record only — attach the PDF above</span>{% endif %}
+            {% if invoice.legacy_file %}<a href="{{ venue_base }}/bookings/{{ booking.id }}/invoices/{{ invoice.id }}/legacy-file">Download PDF &darr;</a>{% else %}<span class="muted">record only — attach the PDF above</span>{% endif %}
           {% else %}
           {% if invoice.status.value == "draft" %}
-          <a href="/admin/bookings/{{ booking.id }}/invoices/{{ invoice.id }}/edit" class="btn secondary">Edit</a>
-          <form class="inline" method="post" action="/admin/bookings/{{ booking.id }}/invoices/{{ invoice.id }}/send">
+          <a href="{{ venue_base }}/bookings/{{ booking.id }}/invoices/{{ invoice.id }}/edit" class="btn secondary">Edit</a>
+          <form class="inline" method="post" action="{{ venue_base }}/bookings/{{ booking.id }}/invoices/{{ invoice.id }}/send">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <button class="btn" type="submit">Send</button>
           </form>
-          <form class="inline" method="post" action="/admin/bookings/{{ booking.id }}/invoices/{{ invoice.id }}/delete" onsubmit="return confirm('Delete this draft invoice?');">
+          <form class="inline" method="post" action="{{ venue_base }}/bookings/{{ booking.id }}/invoices/{{ invoice.id }}/delete" onsubmit="return confirm('Delete this draft invoice?');">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <button class="btn danger" type="submit">Delete</button>
           </form>
-          <a href="/admin/bookings/{{ booking.id }}/invoices/{{ invoice.id }}/preview" target="_blank">Preview &rarr;</a>
+          <a href="{{ venue_base }}/bookings/{{ booking.id }}/invoices/{{ invoice.id }}/preview" target="_blank">Preview &rarr;</a>
           {% else %}
           <a href="/i/{{ invoice.access_token }}" target="_blank">View &rarr;</a>
           <a href="/i/{{ invoice.access_token }}/pdf">Download PDF</a>
           <button type="button" class="btn secondary" onclick="copyLink(this, '/i/{{ invoice.access_token }}')">Copy link</button>
           {% if invoice.status.value == "sent" %}
-          <form class="inline" method="post" action="/admin/bookings/{{ booking.id }}/invoices/{{ invoice.id }}/revise" onsubmit="return confirm('Cancel this sent invoice and reopen it as a new editable draft? The client&#39;s current link stops working. (Blocked if any payment has been recorded.)');">
+          <form class="inline" method="post" action="{{ venue_base }}/bookings/{{ booking.id }}/invoices/{{ invoice.id }}/revise" onsubmit="return confirm('Cancel this sent invoice and reopen it as a new editable draft? The client&#39;s current link stops working. (Blocked if any payment has been recorded.)');">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <button class="btn secondary" type="submit">Revise (discount / change)</button>
           </form>
@@ -598,7 +598,7 @@
           {% if invoice.status.value == "sent" %}
           <details style="display:inline-block; margin-left:8px;">
             <summary style="display:inline; cursor:pointer; color:var(--gold);">Record payment</summary>
-            <form method="post" action="/admin/bookings/{{ booking.id }}/invoices/{{ invoice.id }}/payments" style="margin-top:8px;">
+            <form method="post" action="{{ venue_base }}/bookings/{{ booking.id }}/invoices/{{ invoice.id }}/payments" style="margin-top:8px;">
               <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
               <div class="field-row">
                 <div><label>Amount</label><input type="text" name="amount" required></div>
@@ -643,13 +643,13 @@
   </p>
   <p><a href="/w/{{ ws.access_token }}" target="_blank">Wizard link &rarr;</a></p>
   {% if ws.status.value not in ("submitted", "revoked") %}
-  <form method="post" action="/admin/bookings/{{ booking.id }}/wizard/revoke">
+  <form method="post" action="{{ venue_base }}/bookings/{{ booking.id }}/wizard/revoke">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <button class="btn danger" type="submit">Revoke link</button>
   </form>
   {% endif %}
   {% else %}
-  <form method="post" action="/admin/bookings/{{ booking.id }}/wizard/send">
+  <form method="post" action="{{ venue_base }}/bookings/{{ booking.id }}/wizard/send">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <button class="btn" type="submit">Send wizard link</button>
   </form>
@@ -663,7 +663,7 @@
   <h3 style="font-size:0.9rem; color:var(--muted); margin:0 0 6px;">Early setup access</h3>
   {% if booking.setup_access_confirmed is sameas false %}
   <p>Client requested setup access at {{ booking.setup_access_time }} (earlier than standard) — pending confirmation.</p>
-  <form method="post" action="/admin/bookings/{{ booking.id }}/policy/setup-access/confirm">
+  <form method="post" action="{{ venue_base }}/bookings/{{ booking.id }}/policy/setup-access/confirm">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <button class="btn" type="submit">Confirm early access</button>
   </form>
@@ -675,7 +675,7 @@
 
   <h3 style="font-size:0.9rem; color:var(--muted); margin:20px 0 6px;">Agreed minimum guests</h3>
   <p class="muted">Space standard: {{ booking.space.standard_min_adults }} &middot; Currently agreed: {{ booking.agreed_min_adults }}{% if booking.agreed_min_reduction_reason %} ({{ booking.agreed_min_reduction_reason.value }}){% endif %}</p>
-  <form method="post" action="/admin/bookings/{{ booking.id }}/policy/agreed-minimum">
+  <form method="post" action="{{ venue_base }}/bookings/{{ booking.id }}/policy/agreed-minimum">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <div class="field-row">
       <div><label>Agreed minimum</label><input type="number" name="agreed_min_adults" value="{{ booking.agreed_min_adults }}" min="0" required></div>
@@ -691,7 +691,7 @@
 
   <h3 style="font-size:0.9rem; color:var(--muted); margin:20px 0 6px;">Agreed minimum spend</h3>
   <p class="muted">Space standard: ${{ booking.space.min_food_spend }} &middot; Currently agreed: ${{ booking.agreed_min_food_spend }}{% if booking.agreed_min_food_spend_reason %} ({{ booking.agreed_min_food_spend_reason.value }}){% endif %}</p>
-  <form method="post" action="/admin/bookings/{{ booking.id }}/policy/agreed-food-minimum">
+  <form method="post" action="{{ venue_base }}/bookings/{{ booking.id }}/policy/agreed-food-minimum">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <div class="field-row">
       <div><label>Agreed minimum spend ($)</label><input type="number" name="agreed_min_food_spend" value="{{ booking.agreed_min_food_spend }}" min="0" step="0.01" required></div>
@@ -707,7 +707,7 @@
 
   <h3 style="font-size:0.9rem; color:var(--muted); margin:20px 0 6px;">Bar credit</h3>
   <p class="muted">Currently ${{ booking.bar_credit }}{% if booking.bar_credit > 0 %} &middot; prints on the agreement, the Event Order and the bar structure{% endif %}</p>
-  <form method="post" action="/admin/bookings/{{ booking.id }}/policy/bar-credit">
+  <form method="post" action="{{ venue_base }}/bookings/{{ booking.id }}/policy/bar-credit">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <div class="field-row">
       <div><label>Bar credit ($)</label><input type="number" name="bar_credit" value="{{ booking.bar_credit }}" min="0" step="0.01" required></div>
@@ -717,7 +717,7 @@
 
   <h3 style="font-size:0.9rem; color:var(--muted); margin:20px 0 6px;">Outside cake</h3>
   <p class="muted">Currently {{ "permitted" if booking.outside_cake_permitted else "not permitted" }}.</p>
-  <form method="post" action="/admin/bookings/{{ booking.id }}/policy/outside-cake">
+  <form method="post" action="{{ venue_base }}/bookings/{{ booking.id }}/policy/outside-cake">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <input type="hidden" name="permitted" value="{{ 'false' if booking.outside_cake_permitted else 'true' }}">
     <button class="btn secondary" type="submit">{{ "Disallow outside cake" if booking.outside_cake_permitted else "Allow outside cake" }}</button>
@@ -766,7 +766,7 @@
     undone from here (only a database restore can bring it back), so it exists for removing test or
     mistaken bookings, not real ones. Type the reference code <b>{{ booking.reference_code }}</b> to confirm.
   </p>
-  <form method="post" action="/admin/bookings/{{ booking.id }}/delete"
+  <form method="post" action="{{ venue_base }}/bookings/{{ booking.id }}/delete"
         onsubmit="return confirm('Permanently delete {{ booking.reference_code }} and all its invoices, payments and documents? This cannot be undone from Concierge.');">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <div class="field-row" style="align-items:flex-end;">
