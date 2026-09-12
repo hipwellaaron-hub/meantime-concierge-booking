@@ -13,10 +13,21 @@ from app.templating import templates
 router = APIRouter(tags=["floor-app"])
 
 # The venue-dark palette the wizard established.
+#
+# NOTHING IN HERE NAMES A VENUE, and it cannot. This route takes no
+# arguments, declares no dependencies and is fetched by the browser with no
+# Authorization header, so there is no token and therefore no venue to
+# resolve -- a per-venue manifest here would have to guess one. The app
+# names its venue where a venue is genuinely known: the header reads the
+# trading name out of the API response the phone's own token produced.
+#
+# It used to say "Meantime Hamilton functions: what's on, and who's paid."
+# on the home-screen install prompt of every Floor phone, whichever
+# building it was signed into.
 _MANIFEST = """{
   "name": "Meantime Floor",
   "short_name": "Floor",
-  "description": "Meantime Hamilton functions: what's on, and who's paid.",
+  "description": "Run sheets for tonight: what's on, and who's paid.",
   "start_url": "/floor",
   "scope": "/floor",
   "display": "standalone",
