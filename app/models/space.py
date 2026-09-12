@@ -24,6 +24,16 @@ class Space(Base):
     # False for internal placeholder spaces (e.g. the migration-triage
     # "Unassigned" space) that must never appear as a real booking option.
     is_bookable: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # Whether this room has the venue screen in it, which is what decides
+    # the Event Order's AV/Screen section.
+    #
+    # It used to be `booking.space.name != "The Loft"` -- a room name
+    # standing in for a capability. With a second venue that is wrong twice
+    # over: a room at The Entrance with a screen could never have the
+    # section, and any room called "The Loft" anywhere would inherit it.
+    # Default FALSE, so a new room states its capability rather than
+    # inheriting one.
+    has_screen: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     venue: Mapped["Venue"] = relationship(back_populates="spaces")
     bookings: Mapped[list["Booking"]] = relationship(back_populates="space")

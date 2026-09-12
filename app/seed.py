@@ -31,6 +31,10 @@ HAMILTON_SPACES = [
         standard_min_adults=60,
         wheelchair_accessible=False,
         has_per_head_shortfall_fee=True,
+        # The venue screen is in this room. Stated here so a fresh database
+        # and a migrated one agree -- migration e8a1c6f4b209 backfills the
+        # same fact for an existing one.
+        has_screen=True,
     ),
     dict(
         name="The Mezzanine",
