@@ -26,8 +26,9 @@ def _venue(request: Request) -> Venue:
     venue in its URL and in its band while querying another -- which looks
     exactly like a correct page, and is worse than a visibly mixed list.
 
-    (app/api/availability.py still carries `venue_slug: str = "hamilton"` as
-    a PUBLIC query-parameter default -- a separate surface, not fixed here.)
+    (The public availability endpoint had the same shape as a query-parameter
+    default; c28d30a made it `Query(..., min_length=1)`, so it refuses rather
+    than choosing a building for the caller.)
     """
     return request.state.venue
 

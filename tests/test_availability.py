@@ -286,6 +286,14 @@ def test_no_public_availability_route_carries_a_default_venue():
         for name, default in defaults.items():
             if "venue" not in name:
                 continue
+            # BOTH shapes. A bare string is one; the idiomatic way to
+            # write this default in FastAPI is Query("hamilton", ...),
+            # which is a Call -- so a sweep that only recognised Constant
+            # reported clean over the very thing it exists to catch.
+            if isinstance(default, ast.Call) and default.args:
+                default = default.args[0]
+            if isinstance(default, ast.Constant) and default.value is Ellipsis:
+                continue  # Query(...) is REQUIRED, which is the whole point
             if isinstance(default, ast.Constant) and default.value is not None:
                 offenders.append(f"{node.name}({name}={default.value!r})")
 

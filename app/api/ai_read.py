@@ -433,6 +433,18 @@ def catalogue(
         "count": len(payload),
         "items": payload,
         "notes": {
+            # The one disclosure that stops the venue label above being a
+            # lie. The answer is stamped with the venue that was asked for,
+            # but menu_items carries no venue_id -- so it is the same list
+            # and the same prices whichever venue is named. Saying so here
+            # is the difference between a labelled answer and a confidently
+            # mislabelled one, on the surface prices get quoted from.
+            # Delete this line only when the column exists.
+            "venue": (
+                "Prices are NOT per-venue yet. menu_items has no venue column, so this "
+                "list is identical for every venue regardless of the 'venue' field above. "
+                "Do not quote these prices as that venue's prices without confirming them."
+            ),
             "serving_sizes": (
                 "Not stored. No item carries a guest count, so a platter cannot be "
                 "described as feeding a fixed number of people from this data."
