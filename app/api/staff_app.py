@@ -280,6 +280,17 @@ def list_bookings(
         # floor the cost is the wrong room and the wrong dietaries, at the
         # moment somebody is acting on them.
         "venue": venue.trading_name or venue.name,
+        # The days this venue trades, so the calendar stops asserting
+        # Hamilton's week for itself. Python weekday numbers (Monday=0), the
+        # same as venues.trading_days -- the app converts from JavaScript's
+        # Sunday=0 at the point of use, which it already does for its
+        # Monday-first grid.
+        #
+        # NULL stays NULL rather than becoming a default: a venue whose days
+        # nobody has recorded gets NO days greyed out, which reads as "we
+        # have not been told" instead of quietly asserting somebody else's
+        # week.
+        "trading_days": venue.trading_days,
         "bookings": [_booking_payload(db, b) for b in db.scalars(query).all()],
     }
 

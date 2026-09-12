@@ -86,6 +86,13 @@
   .beo-bar .dl { border-color: var(--gold-dim); color: var(--gold); }
   .beo-frame iframe { flex: 1; border: none; background: #fff; }
 
+  /* The venue choice, shown only to an account that works at more than one.
+     Big targets: this is tapped once on a phone, often in a hurry. */
+  .venue-option { display: flex; align-items: center; gap: 10px; padding: 13px 14px;
+    margin-bottom: 8px; border: 1px solid var(--border-bright); border-radius: 10px;
+    font-size: 0.95rem; cursor: pointer; }
+  .venue-option input { width: 18px; height: 18px; }
+
   .empty { text-align: center; color: var(--muted); padding: 26px 0; }
   .refresh-hint { text-align: center; font-size: 0.7rem; color: var(--muted); padding: 10px 0; }
 
@@ -109,7 +116,7 @@
 <body>
 <header class="top">
   <h1>Meantime Floor</h1>
-  <div class="sub">Meantime Hamilton</div>
+  <div class="sub" id="venue-name">&nbsp;</div>
 </header>
 <div class="wrap" id="root"></div>
 
@@ -118,7 +125,14 @@
   "use strict";
   var root = document.getElementById("root");
   var TOKEN_KEY = "floor_token";
-  var state = { view: "upcoming", monthCursor: null, bookings: [], name: null };
+  // `venue` and `tradingDays` come from the API, not from this file. The
+  // header used to say "Meantime Hamilton" and the calendar used to grey out
+  // Mondays and Tuesdays, both written in here -- which is fine for one
+  // venue and silently wrong for a phone signed into another.
+  var state = {
+    view: "upcoming", monthCursor: null, bookings: [], name: null,
+    venue: null, tradingDays: null,
+  };
 
   function token() { try { return localStorage.getItem(TOKEN_KEY); } catch (e) { return null; } }
   function setToken(t) { try { t ? localStorage.setItem(TOKEN_KEY, t) : localStorage.removeItem(TOKEN_KEY); } catch (e) {} }
@@ -201,19 +215,77 @@
       "</form></div>";
     document.getElementById("login-form").addEventListener("submit", function (e) {
       e.preventDefault();
-      fetch("/api/staff/login", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: document.getElementById("f-email").value, password: document.getElementById("f-password").value })
-      }).then(function (resp) {
-        if (!resp.ok) return resp.json().then(function (d) { throw new Error(d.detail || "Sign in failed"); });
-        return resp.json();
-      }).then(function (data) {
-        setToken(data.token);
-        state.name = data.name;
-        loadAndRender();
-      }).catch(function (err) {
-        document.getElementById("login-error").textContent = err.message;
-      });
+      submitLogin(
+        document.getElementById("f-email").value,
+        document.getElementById("f-password").value,
+        venueChoice()
+      );
+    });
+  }
+
+  // Which venue the person picked, if the picker is showing. A FLOOR account
+  // never sees it -- their account names its venue and the server never asks
+  // -- so this is null for them and the server ignores it.
+  function venueChoice() {
+    var picked = document.querySelector('input[name="venue"]:checked');
+    return picked ? picked.value : null;
+  }
+
+  function submitLogin(email, password, venue) {
+    var payload = { email: email, password: password };
+    if (venue) payload.venue = venue;
+    fetch("/api/staff/login", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    }).then(function (resp) {
+      // 409: the credentials were RIGHT and a choice is missing. Rendering
+      // this as "Sign in failed" -- which it used to -- tells somebody with
+      // the correct password that their password is wrong, and gives them
+      // nowhere to go.
+      if (resp.status === 409) {
+        return resp.json().then(function (d) {
+          var detail = (d && d.detail) || {};
+          renderVenuePicker(email, password, detail.venues || [], detail.reason);
+          throw { handled: true };
+        });
+      }
+      if (!resp.ok) return resp.json().then(function (d) { throw new Error(d.detail || "Sign in failed"); });
+      return resp.json();
+    }).then(function (data) {
+      setToken(data.token);
+      state.name = data.name;
+      state.venue = data.venue || null;
+      renderVenueName();
+      loadAndRender();
+    }).catch(function (err) {
+      if (err && err.handled) return;
+      var box = document.getElementById("login-error");
+      if (box) box.textContent = (err && err.message) || "Sign in failed";
+    });
+  }
+
+  function renderVenuePicker(email, password, venues, reason) {
+    // Only an ADMIN reaches this: an account with no venue of its own, which
+    // means every venue. The choice is deliberate and per device, because a
+    // floor token is what puts one building's run sheets on this phone for
+    // the rest of the night.
+    root.innerHTML =
+      '<div class="card" style="margin-top:26px;">' +
+      '<h2 style="font-family:var(--font-head); margin-bottom:4px;">Which venue?</h2>' +
+      '<p style="color:var(--muted); font-size:0.85rem;">' +
+      esc(reason || "This account works at more than one venue.") +
+      ' This phone will show that venue until it is signed out.</p>' +
+      '<form id="venue-form">' +
+      venues.map(function (v, i) {
+        return '<label class="venue-option"><input type="radio" name="venue" value="' +
+          esc(v) + '"' + (i === 0 ? " checked" : "") + "> " + esc(v) + "</label>";
+      }).join("") +
+      '<button class="primary" type="submit">Continue</button>' +
+      '<div class="error" id="login-error"></div>' +
+      "</form></div>";
+    document.getElementById("venue-form").addEventListener("submit", function (e) {
+      e.preventDefault();
+      submitLogin(email, password, venueChoice());
     });
   }
 
@@ -236,8 +308,48 @@
     var to = range.to > isoOf(horizon) ? range.to : isoOf(horizon);
     api("/bookings?from=" + from + "&to=" + to).then(function (resp) { return resp.json(); }).then(function (data) {
       state.bookings = data.bookings;
+      // The venue and its week come from the response, every load -- so a
+      // token re-issued for another venue changes the header rather than
+      // leaving a stale name over new data.
+      state.venue = data.venue || null;
+      state.tradingDays = data.trading_days || null;
+      renderVenueName();
       renderApp();
     }).catch(showError);
+  }
+
+  // JavaScript's getDay() is Sunday=0; venues.trading_days is Python's
+  // Monday=0, which is what every server-side check uses. Converting here,
+  // once, beats storing two numbering schemes.
+  function pyDow(jsDow) { return (jsDow + 6) % 7; }
+
+  function isClosed(jsDow) {
+    if (!state.tradingDays) return false;  // nobody has said; assert nothing
+    return state.tradingDays.indexOf(pyDow(jsDow)) === -1;
+  }
+
+  var DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+
+  function closedLegend() {
+    if (!state.tradingDays) return "";
+    var shut = [];
+    for (var d = 0; d < 7; d++) {
+      if (state.tradingDays.indexOf(d) === -1) shut.push(DAY_NAMES[d].slice(0, 3));
+    }
+    if (!shut.length) return "<span>Open every day</span>";
+    // A PLAIN ampersand: esc() turns it into &amp; exactly once. Writing
+    // the entity here and then escaping it produced "Mon &amp;amp; Tue",
+    // which rendered as "Mon &amp; Tue closed" on the phone -- caught in a
+    // browser, invisible to every server-side test.
+    return "<span>" + esc(shut.join(" & ")) + " closed</span>";
+  }
+
+  function renderVenueName() {
+    var el = document.getElementById("venue-name");
+    if (!el) return;
+    // Never blank once known: the header is the only thing on screen that
+    // says which building these run sheets are for.
+    el.textContent = state.venue || "";
   }
 
   function isoOf(d) { return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); }
@@ -325,7 +437,10 @@
       var date = new Date(year, month, day);
       var iso = isoOf(date);
       var dow = date.getDay();
-      var closed = dow === 1 || dow === 2;  // Mondays and Tuesdays: venue closed
+      // From venues.trading_days, not from this file. NULL means nobody has
+      // recorded this venue's week, and then NOTHING is greyed out -- an
+      // honest blank rather than another venue's days asserted here.
+      var closed = isClosed(dow);
       var events = byDate[iso] || [];
       var dots = events.map(function (b) {
         return '<span class="dot ' + (b.payment_status === "paid" ? "paid" : "owing") + '"></span>';
@@ -335,7 +450,7 @@
     }
     html += "</div>" +
       '<div class="cal-legend"><span><span class="dot paid"></span>Paid</span>' +
-      '<span><span class="dot owing"></span>Owing</span><span>Mon &amp; Tue closed</span></div>' +
+      '<span><span class="dot owing"></span>Owing</span>' + closedLegend() + '</div>' +
       '<div id="cal-day-events"></div>';
     view.innerHTML = html;
 
