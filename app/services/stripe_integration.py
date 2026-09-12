@@ -25,10 +25,22 @@ from app.models import Invoice
 
 logger = logging.getLogger(__name__)
 
-# Hamilton's, and the DEFAULT name a venue points at. Read at import, which
-# is fine for a value that cannot change without a redeploy.
-STRIPE_SECRET_KEY = os.environ.get("STRIPE_SECRET_KEY")
+# The DEFAULT variable name a venue's row points at -- the NAME, not the
+# value. It used to also be read here at import into a module constant that
+# get_mode() and is_configured() then answered from, while secret_key_for()
+# read os.environ and actually minted the links. Two sources for one fact,
+# which is the shape get_mode's own docstring argues against: "a separate
+# 'is this live?' flag can silently disagree with which key is actually
+# loaded". They agreed in production and disagreed in four tests, which is
+# how the badge stayed process-wide without anybody noticing.
+DEFAULT_STRIPE_SECRET_KEY_ENV = "STRIPE_SECRET_KEY"
 STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET")
+
+
+def _process_stripe_key() -> str | None:
+    """The process-wide key, read live. Every question about "which key"
+    comes through here or through secret_key_for, never a cached copy."""
+    return os.environ.get(DEFAULT_STRIPE_SECRET_KEY_ENV)
 
 
 class StripeVenueMismatch(RuntimeError):
@@ -38,7 +50,8 @@ class StripeVenueMismatch(RuntimeError):
     and records as a successful payment for the other company."""
 
 
-# The one venue whose row may still be blank and still mean STRIPE_SECRET_KEY.
+# The one venue whose row may still be blank and still mean the default
+# STRIPE_SECRET_KEY variable.
 # Hamilton was taking card payments before venues had a column to name their
 # own key in, so its row can legitimately be NULL during the rollback window
 # and the process-wide variable is genuinely its key.
@@ -75,7 +88,7 @@ def secret_key_for(venue) -> str:
                 "back to -- another venue's key would take this venue's money into "
                 "another company's account"
             )
-        name = "STRIPE_SECRET_KEY"
+        name = DEFAULT_STRIPE_SECRET_KEY_ENV
     key = os.environ.get(name)
     if not key:
         raise StripeNotConfigured(
@@ -141,7 +154,7 @@ def is_configured() -> bool:
     """Process-level: is ANY Stripe key set. Still used by the admin's
     live/test badge, which has no venue in scope. Not the right question
     for a payment link -- see is_configured_for."""
-    return bool(STRIPE_SECRET_KEY)
+    return bool(_process_stripe_key())
 
 
 def is_configured_for(venue) -> bool:
@@ -202,7 +215,7 @@ def get_mode() -> StripeMode:
     hasn't seen before) is reported as "live". Money is the one place
     where an unrecognized case must fail toward "assume this is real",
     never toward "assume it's safe to ignore"."""
-    return _mode_of(STRIPE_SECRET_KEY)
+    return _mode_of(_process_stripe_key())
 
 
 def _to_cents(amount: Decimal) -> int:

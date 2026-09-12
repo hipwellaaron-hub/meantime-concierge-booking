@@ -46,7 +46,6 @@ def hamilton_live_entrance_test(monkeypatch):
     while the other is still being set up."""
     monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_live_HAMILTON")
     monkeypatch.setenv("STRIPE_SECRET_KEY_ENTRANCE", "sk_test_NICETRY")
-    monkeypatch.setattr(stripe_integration, "STRIPE_SECRET_KEY", "sk_live_HAMILTON")
 
 
 # --- the helper ------------------------------------------------------------
@@ -105,7 +104,6 @@ def test_a_live_venue_is_not_covered_by_the_other_ones_test_banner(
     charges' banner over a page whose links charge real cards."""
     monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_HAMILTON")
     monkeypatch.setenv("STRIPE_SECRET_KEY_ENTRANCE", "sk_live_NICETRY")
-    monkeypatch.setattr(stripe_integration, "STRIPE_SECRET_KEY", "sk_test_HAMILTON")
 
     ent = admin_client.get("/admin/entrance/", follow_redirects=True).text
 

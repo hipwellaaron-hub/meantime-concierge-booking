@@ -17,6 +17,7 @@ auto-supersede) gets the same guarantees:
    superseded them) -- a "no longer available" page, not a 404.
 """
 
+import os
 import datetime as dt
 from decimal import Decimal
 from unittest.mock import patch
@@ -431,7 +432,7 @@ def test_invoice_link_is_unavailable_once_the_booking_is_terminal_and_mints_no_n
 
     app.dependency_overrides[get_db] = lambda: db
     try:
-        with patch.object(stripe_integration, "STRIPE_SECRET_KEY", "sk_test_fake"), \
+        with patch.dict(os.environ, {"STRIPE_SECRET_KEY": "sk_test_fake"}), \
              patch.object(stripe_integration.stripe.PaymentLink, "create") as mock_create:
             client = TestClient(app)
             resp = client.get(f"/i/{invoice.access_token}")

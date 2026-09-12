@@ -1,3 +1,4 @@
+import os
 import datetime as dt
 import re
 
@@ -74,7 +75,7 @@ def test_dashboard_shows_test_mode_banner(admin_client):
 
     from app.services import stripe_integration
 
-    with patch.object(stripe_integration, "STRIPE_SECRET_KEY", "sk_test_fake"):
+    with patch.dict(os.environ, {"STRIPE_SECRET_KEY": "sk_test_fake"}):
         resp = admin_client.get("/admin/")
     assert resp.status_code == 200
     assert "STRIPE TEST MODE" in resp.text
@@ -86,7 +87,7 @@ def test_dashboard_shows_live_badge_not_alarming_banner(admin_client):
 
     from app.services import stripe_integration
 
-    with patch.object(stripe_integration, "STRIPE_SECRET_KEY", "sk_live_fake"):
+    with patch.dict(os.environ, {"STRIPE_SECRET_KEY": "sk_live_fake"}):
         resp = admin_client.get("/admin/")
     assert resp.status_code == 200
     assert "Stripe is live" in resp.text  # the green header status badge's tooltip
@@ -101,7 +102,7 @@ def test_triage_page_also_carries_the_banner(admin_client):
 
     from app.services import stripe_integration
 
-    with patch.object(stripe_integration, "STRIPE_SECRET_KEY", "sk_test_fake"):
+    with patch.dict(os.environ, {"STRIPE_SECRET_KEY": "sk_test_fake"}):
         resp = admin_client.get("/admin/triage")
     assert resp.status_code == 200
     assert "STRIPE TEST MODE" in resp.text

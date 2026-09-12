@@ -37,7 +37,6 @@ from app.services.booking import create_booking
 def keys(monkeypatch):
     monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_HAMILTON")
     monkeypatch.setenv("STRIPE_SECRET_KEY_ENTRANCE", "sk_test_NICETRY")
-    monkeypatch.setattr(stripe_integration, "STRIPE_SECRET_KEY", "sk_test_HAMILTON")
 
 
 @pytest.fixture()

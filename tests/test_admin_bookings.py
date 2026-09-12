@@ -1,3 +1,4 @@
+import os
 import datetime as dt
 import re
 from decimal import Decimal
@@ -493,7 +494,7 @@ def test_invoices_card_shows_stripe_test_mode_badge(admin_client, booking):
 
     from app.services import stripe_integration
 
-    with patch.object(stripe_integration, "STRIPE_SECRET_KEY", "sk_test_fake"):
+    with patch.dict(os.environ, {"STRIPE_SECRET_KEY": "sk_test_fake"}):
         resp = _detail_page(admin_client, booking.id)
 
     invoices_section = resp.text.split('id="sec-invoices"')[1].split("</h2>")[0]

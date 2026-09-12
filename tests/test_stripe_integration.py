@@ -62,34 +62,34 @@ def test_to_cents_rounds_half_up():
 
 
 def test_mode_not_configured_when_no_key():
-    with patch.object(stripe_integration, "STRIPE_SECRET_KEY", None):
+    with patch.dict(os.environ, {"STRIPE_SECRET_KEY": ""}):
         assert stripe_integration.get_mode() == stripe_integration.StripeMode.not_configured
 
 
 def test_mode_test_for_sk_test_key():
-    with patch.object(stripe_integration, "STRIPE_SECRET_KEY", "sk_test_51AbCdEf1234567890"):
+    with patch.dict(os.environ, {"STRIPE_SECRET_KEY": "sk_test_51AbCdEf1234567890"}):
         assert stripe_integration.get_mode() == stripe_integration.StripeMode.test
 
 
 def test_mode_test_for_restricted_test_key():
-    with patch.object(stripe_integration, "STRIPE_SECRET_KEY", "rk_test_51AbCdEf1234567890"):
+    with patch.dict(os.environ, {"STRIPE_SECRET_KEY": "rk_test_51AbCdEf1234567890"}):
         assert stripe_integration.get_mode() == stripe_integration.StripeMode.test
 
 
 def test_mode_live_for_sk_live_key():
-    with patch.object(stripe_integration, "STRIPE_SECRET_KEY", "sk_live_51AbCdEf1234567890"):
+    with patch.dict(os.environ, {"STRIPE_SECRET_KEY": "sk_live_51AbCdEf1234567890"}):
         assert stripe_integration.get_mode() == stripe_integration.StripeMode.live
 
 
 def test_mode_live_for_restricted_live_key():
-    with patch.object(stripe_integration, "STRIPE_SECRET_KEY", "rk_live_51AbCdEf1234567890"):
+    with patch.dict(os.environ, {"STRIPE_SECRET_KEY": "rk_live_51AbCdEf1234567890"}):
         assert stripe_integration.get_mode() == stripe_integration.StripeMode.live
 
 
 def test_mode_defaults_to_live_for_unrecognized_key_shape():
     """An unrecognized shape must fail toward "assume this is real money",
     never toward "assume it's safe" -- see get_mode's own docstring."""
-    with patch.object(stripe_integration, "STRIPE_SECRET_KEY", "some_future_key_format_stripe_hasnt_shipped_yet"):
+    with patch.dict(os.environ, {"STRIPE_SECRET_KEY": "some_future_key_format_stripe_hasnt_shipped_yet"}):
         assert stripe_integration.get_mode() == stripe_integration.StripeMode.live
 
 
@@ -101,7 +101,7 @@ def test_create_payment_link_raises_when_not_configured(db, booking):
         db, booking, InvoiceType.deposit, [{"description": "Deposit", "quantity": 1, "unit_price": "500.00"}],
         dt.date(2026, 9, 1), actor="test",
     )
-    with patch.object(stripe_integration, "STRIPE_SECRET_KEY", None):
+    with patch.dict(os.environ, {"STRIPE_SECRET_KEY": ""}):
         with pytest.raises(stripe_integration.StripeNotConfigured):
             stripe_integration.create_payment_link(invoice, Decimal("500.00"))
 
@@ -411,7 +411,7 @@ def test_an_unset_variable_refuses_rather_than_falling_back(db, booking, hamilto
     # environment -- so the fallback had nothing to fall back TO and the
     # test passed either way.
     with patch.dict(os.environ, {"STRIPE_SECRET_KEY": "sk_test_hamiltons"}):
-        with patch.object(stripe_integration, "STRIPE_SECRET_KEY", "sk_test_hamiltons"):
+        with patch.dict(os.environ, {"STRIPE_SECRET_KEY": "sk_test_hamiltons"}):
             with pytest.raises(stripe_integration.StripeNotConfigured, match="STRIPE_SECRET_KEY_NOT_SET"):
                 stripe_integration.create_payment_link(invoice, Decimal("500.00"))
 
