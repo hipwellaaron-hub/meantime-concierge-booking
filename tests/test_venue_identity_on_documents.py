@@ -166,3 +166,36 @@ def test_a_frozen_agreement_does_not_follow_a_later_change(db, loft, contact, ha
 
     assert ABN in html, "a signed agreement must keep the ABN it was agreed under"
     assert "99 999 999 999" not in html
+
+
+# --- the venue record itself ----------------------------------------------
+
+
+def test_the_seeded_venue_carries_its_own_identity(db, hamilton):
+    """Migration e1b6a44c7f83 gave the venue record the identity that used
+    to live only in module constants. Nothing renders from these columns
+    yet; this pins that they are POPULATED, because a freshly seeded
+    database and a migrated one disagreeing is the kind of difference that
+    only shows up on somebody's invoice."""
+    assert hamilton.trading_name == TRADING_NAME
+    assert hamilton.legal_name == LEGAL_NAME
+    assert hamilton.abn == ABN
+    assert hamilton.address == ADDRESS
+    assert hamilton.phone == PHONE
+    assert hamilton.bank_bsb == BSB
+    assert hamilton.bank_account_number == ACCOUNT_NUMBER
+    assert hamilton.reference_prefix == "HAM"
+    # The NAME of the variable, never the key.
+    assert hamilton.stripe_secret_key_env == "STRIPE_SECRET_KEY"
+    assert not any(
+        str(v or "").startswith("sk_") for v in vars(hamilton).values()
+    ), "no Stripe secret may ever be stored on the venue row"
+
+
+def test_the_internal_label_and_the_trading_name_stay_different(db, hamilton):
+    """`name` is the internal label and has been since the first import.
+    Printing it to a client would say "Hamilton" where the contract says
+    "Meantime Hamilton"."""
+    assert hamilton.name == "Hamilton"
+    assert hamilton.trading_name == "Meantime Hamilton"
+    assert hamilton.name != hamilton.trading_name

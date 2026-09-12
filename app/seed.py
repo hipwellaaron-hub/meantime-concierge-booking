@@ -12,6 +12,7 @@ from decimal import Decimal
 
 from app.database import SessionLocal
 from app.models import Space, Venue
+from app.services import policy
 
 HAMILTON_SLUG = "hamilton"
 
@@ -69,6 +70,28 @@ def seed(db=None) -> Venue:
             venue = Venue(name="Hamilton", slug=HAMILTON_SLUG)
             db.add(venue)
             db.flush()
+
+        # Identity, from the same values migration e1b6a44c7f83 backfills.
+        # Set every run, not only on creation: a freshly seeded database and
+        # a migrated one have to agree, and this is also how a venue that
+        # predates the columns gets filled. `name` stays the internal label
+        # ("Hamilton"); `trading_name` is what a client sees.
+        #
+        # Deliberately reads policy.py rather than repeating the literals.
+        # The constants are still the source until the renders move onto
+        # these columns, and two copies would drift the moment one changed.
+        venue.trading_name = policy.VENUE_TRADING_NAME
+        venue.legal_name = policy.VENUE_LEGAL_NAME
+        venue.abn = policy.VENUE_ABN
+        venue.address = policy.VENUE_ADDRESS
+        venue.phone = policy.VENUE_PHONE
+        venue.contact_name = policy.VENUE_CONTACT_NAME
+        venue.contact_email = policy.VENUE_CONTACT_EMAIL
+        venue.bank_account_name = policy.BANK_ACCOUNT_NAME
+        venue.bank_bsb = policy.BANK_BSB
+        venue.bank_account_number = policy.BANK_ACCOUNT_NUMBER
+        venue.reference_prefix = "HAM"
+        venue.stripe_secret_key_env = "STRIPE_SECRET_KEY"
 
         existing_names = {s.name for s in db.query(Space).filter_by(venue_id=venue.id)}
         for space_kwargs in HAMILTON_SPACES:
