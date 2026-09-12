@@ -487,18 +487,22 @@ def _close_payment_links(invoice: Invoice, *, why: str) -> None:
     worse.
     """
     try:
-        stripe_integration.deactivate_payment_links(invoice.stripe_payment_link_ids or [])
+        stripe_integration.deactivate_payment_links(invoice)
     except Exception:  # noqa: BLE001 -- see above
         logger.exception("Could not deactivate Payment Links for invoice %s after %s", invoice.id, why)
 
 
-def record_payment_link(db: Session, invoice: Invoice, link_id: str) -> None:
+def record_payment_link(db: Session, invoice: Invoice, link_id: str, *, account: str = "") -> None:
     """Every Payment Link ever created for this invoice, so that both
     drains (_close_payment_links, from cancellation and from full payment)
     have something to deactivate. A fresh link is generated on each
     invoice-page view (see stripe_integration's own docstring), so there
     can be more than one live at a time."""
-    invoice.stripe_payment_link_ids = [*(invoice.stripe_payment_link_ids or []), link_id]
+    # Stored with the account that minted it: a link can only be deactivated
+    # through that account, and "whichever key is current" stops being it the
+    # moment a second venue exists. Older entries are bare strings.
+    entry = {"id": link_id, "account": account} if account else link_id
+    invoice.stripe_payment_link_ids = [*(invoice.stripe_payment_link_ids or []), entry]
     db.commit()
 
 

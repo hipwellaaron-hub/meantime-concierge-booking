@@ -59,6 +59,16 @@ def _booking_on(db, space, contact, *, when=dt.date(2026, 11, 21), start=dt.time
 # --- a booking dying cancels its own invoices and Stripe links --------------
 
 
+
+def _link_ids(invoice) -> list[str]:
+    """Stored entries are a bare id (written before 2026-09-12) or
+    {"id": ..., "account": ...}. Both shapes have to read the same here."""
+    out = []
+    for entry in invoice.stripe_payment_link_ids or []:
+        out.append(entry.get("id") if isinstance(entry, dict) else entry)
+    return out
+
+
 def test_moving_to_dead_cancels_live_invoices_and_deactivates_their_stripe_links(db, loft, contact):
     sophie = _booking_on(db, loft, contact, name="Sophie's Party")
     invoice = create_invoice(
@@ -75,7 +85,13 @@ def test_moving_to_dead_cancels_live_invoices_and_deactivates_their_stripe_links
 
     db.refresh(invoice)
     assert invoice.status == InvoiceStatus.cancelled
-    mock_deactivate.assert_called_once_with(["plink_one", "plink_two"])
+    # Signature changed 2026-09-12: deactivation takes the INVOICE, because
+    # a link can only be closed through the account that minted it and only
+    # the invoice knows its venue. The ids are read off the invoice, so that
+    # is where they are asserted.
+    mock_deactivate.assert_called_once()
+    passed = mock_deactivate.call_args.args[0]
+    assert _link_ids(passed) == ["plink_one", "plink_two"]
 
 
 def test_a_paid_invoice_is_left_alone_when_the_booking_dies(db, loft, contact):
@@ -338,7 +354,8 @@ def test_a_pinned_offer_still_dies_when_a_rival_confirms(db, loft, contact):
     db.refresh(invoice)
     assert sophie.status == BookingStatus.dead
     assert invoice.status == InvoiceStatus.cancelled
-    mock_deactivate.assert_called_once_with(["plink_pinned"])
+    mock_deactivate.assert_called_once()
+    assert _link_ids(mock_deactivate.call_args.args[0]) == ["plink_pinned"]
 
 
 # --- public document routes gate on booking status and document currency ---
@@ -521,7 +538,8 @@ def test_paying_an_invoice_in_full_deactivates_every_payment_link_ever_minted(db
 
     db.refresh(invoice)
     assert invoice.status == InvoiceStatus.paid
-    mock_deactivate.assert_called_once_with(["plink_view_one", "plink_view_two", "plink_pdf"])
+    mock_deactivate.assert_called_once()
+    assert _link_ids(mock_deactivate.call_args.args[0]) == ["plink_view_one", "plink_view_two", "plink_pdf"]
 
 
 def test_a_part_payment_leaves_the_links_alone(db, loft, contact):
@@ -635,7 +653,8 @@ def test_a_dead_booking_still_kills_everything(db, loft, contact):
 
     db.refresh(invoice)
     assert invoice.status == InvoiceStatus.cancelled
-    mock_deactivate.assert_called_once_with(["plink_dead"])
+    mock_deactivate.assert_called_once()
+    assert _link_ids(mock_deactivate.call_args.args[0]) == ["plink_dead"]
 
     app.dependency_overrides[get_db] = lambda: db
     try:

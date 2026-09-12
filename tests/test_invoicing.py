@@ -1,4 +1,5 @@
 import datetime as dt
+import os
 from decimal import Decimal
 
 import pytest
@@ -295,7 +296,7 @@ def test_a_card_payment_costs_exactly_the_balance(db, booking):
 
     # Stripe is not configured in the test environment, and a skipped test
     # proves nothing about money -- stub it so this actually runs.
-    with patch.object(stripe_integration, "STRIPE_SECRET_KEY", "sk_test_fake"):
+    with patch.dict(os.environ, {"STRIPE_SECRET_KEY": "sk_test_fake"}):
         with patch.object(stripe_integration.stripe.PaymentLink, "create", return_value=FakeLink()) as mock_create:
             context = _build_invoice_context(db, invoice, include_card_payment=True)
 

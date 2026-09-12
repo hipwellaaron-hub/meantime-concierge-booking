@@ -25,8 +25,67 @@ from app.models import Invoice
 
 logger = logging.getLogger(__name__)
 
+# Hamilton's, and the DEFAULT name a venue points at. Read at import, which
+# is fine for a value that cannot change without a redeploy.
 STRIPE_SECRET_KEY = os.environ.get("STRIPE_SECRET_KEY")
 STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET")
+
+
+class StripeVenueMismatch(RuntimeError):
+    """The resolved credential does not belong to the venue it was resolved
+    for. Never caught and turned into a link: a payment link minted in the
+    wrong company's account is signed by that account, passes verification,
+    and records as a successful payment for the other company."""
+
+
+def secret_key_for(venue) -> str:
+    """This venue's Stripe secret, by the ENVIRONMENT VARIABLE NAME stored on
+    the venue row -- never a key stored in the database.
+
+    No fallback to STRIPE_SECRET_KEY when the venue names a variable that is
+    not set: falling back would mint the link in Hamilton's account for
+    whichever venue asked, which is the exact failure this exists to stop.
+    A venue with no name set at all is the un-migrated case and does fall
+    through, because that IS Hamilton today.
+    """
+    name = getattr(venue, "stripe_secret_key_env", None) or "STRIPE_SECRET_KEY"
+    key = os.environ.get(name)
+    if not key:
+        raise StripeNotConfigured(
+            f"{name} is not set, so no payment link can be created for "
+            f"{getattr(venue, 'slug', 'this venue')!r}"
+        )
+    return key
+
+
+def assert_key_belongs_to(venue, api_key: str) -> None:
+    """Check the resolved key against the account the venue says it should
+    be, and refuse if they differ.
+
+    Only checks when the venue HAS an expected account id. A venue that has
+    not been given one is not silently trusted -- it is simply not yet
+    checkable, and that gap is why stripe_account_id exists on the row.
+
+    One network call per link creation. Accepted: it is the only thing
+    standing between a mis-keyed credential and a payment recorded as
+    successful for the wrong company, and links are created per invoice
+    view, not per request.
+    """
+    expected = getattr(venue, "stripe_account_id", None)
+    if not expected:
+        return
+    try:
+        account = stripe.Account.retrieve(api_key=api_key)
+    except stripe.StripeError as exc:
+        raise StripeVenueMismatch(
+            f"could not confirm which Stripe account this key belongs to: {exc}"
+        ) from exc
+    if account.get("id") != expected:
+        raise StripeVenueMismatch(
+            f"the resolved Stripe key belongs to account {account.get('id')!r}, but "
+            f"{getattr(venue, 'slug', 'this venue')!r} expects {expected!r} -- refusing to "
+            "create a payment link that would take money into the wrong account"
+        )
 
 # Metadata key on the Stripe Payment Link / Checkout Session that carries
 # our own invoice ID -- the webhook uses this to find which invoice a
@@ -45,7 +104,22 @@ class StripeMode(str, enum.Enum):
 
 
 def is_configured() -> bool:
+    """Process-level: is ANY Stripe key set. Still used by the admin's
+    live/test badge, which has no venue in scope. Not the right question
+    for a payment link -- see is_configured_for."""
     return bool(STRIPE_SECRET_KEY)
+
+
+def is_configured_for(venue) -> bool:
+    """Whether a payment link can be created for THIS venue. One venue can
+    be configured while another is not, which a process-level check cannot
+    express -- and answering the wrong question here is how an unconfigured
+    venue would get Hamilton's key."""
+    try:
+        secret_key_for(venue)
+    except StripeNotConfigured:
+        return False
+    return True
 
 
 def get_mode() -> StripeMode:
@@ -73,7 +147,7 @@ def _to_cents(amount: Decimal) -> int:
     return int((amount * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
 
 
-def create_payment_link(invoice: Invoice, amount: Decimal) -> tuple[str, str]:
+def create_payment_link(invoice: Invoice, amount: Decimal) -> tuple[str, str, str]:
     """Create a Stripe Payment Link for `amount` against this invoice.
     Returns (url, payment_link_id). Raises StripeNotConfigured if no key
     is set -- failing loudly beats silently faking a working payment flow.
@@ -85,11 +159,9 @@ def create_payment_link(invoice: Invoice, amount: Decimal) -> tuple[str, str]:
     a link a client already has open, rather than just stopping new ones
     from being issued.
     """
-    if not is_configured():
-        raise StripeNotConfigured(
-            "STRIPE_SECRET_KEY is not set -- create a Stripe AU account and "
-            "set the key before enabling card payment links."
-        )
+    venue = invoice.booking.venue
+    api_key = secret_key_for(venue)
+    assert_key_belongs_to(venue, api_key)
 
     description = f"{invoice.type.value.capitalize()} invoice — {invoice.booking.event_name} ({invoice.booking.reference_code})"
 
@@ -111,12 +183,15 @@ def create_payment_link(invoice: Invoice, amount: Decimal) -> tuple[str, str]:
                 "custom_message": "Thanks — your payment has been received. We'll update your invoice shortly."
             },
         },
-        api_key=STRIPE_SECRET_KEY,
+        api_key=api_key,
     )
-    return payment_link.url, payment_link.id
+    # The ACCOUNT comes back with the id, because a link can only ever be
+    # deactivated through the account that minted it -- and once there are
+    # two, "whichever key is current" is not that account.
+    return payment_link.url, payment_link.id, (getattr(venue, "stripe_account_id", None) or "")
 
 
-def deactivate_payment_links(link_ids: list[str]) -> None:
+def deactivate_payment_links(invoice, link_ids: list[str] | None = None) -> None:
     """Best-effort: called whenever an invoice is cancelled (see
     invoicing.cancel_invoice), which itself fires whenever a booking moves
     to a terminal status (see app.services.booking.change_status) -- a
@@ -129,10 +204,20 @@ def deactivate_payment_links(link_ids: list[str]) -> None:
     into the caller -- cancelling an invoice has to succeed even when
     Stripe is unreachable. A failure here means a link stays live and
     payable; it is logged so that is visible, not silently lost."""
-    if not is_configured():
+    # Takes the INVOICE, not a bare list of ids, because deactivating a link
+    # needs the account that minted it and only the invoice knows its venue.
+    try:
+        api_key = secret_key_for(invoice.booking.venue)
+    except StripeNotConfigured:
         return
-    for link_id in link_ids:
+    for link_id in link_ids if link_ids is not None else (invoice.stripe_payment_link_ids or []):
+        # Stored entries may be a bare id (written before 2026-09-12) or
+        # {"id": ..., "account": ...}. A bare one is Hamilton's, which is the
+        # only account that existed when it was written.
+        ident = link_id.get("id") if isinstance(link_id, dict) else link_id
+        if not ident:
+            continue
         try:
-            stripe.PaymentLink.modify(link_id, active=False, api_key=STRIPE_SECRET_KEY)
+            stripe.PaymentLink.modify(ident, active=False, api_key=api_key)
         except stripe.StripeError:
-            logger.exception("Could not deactivate Stripe Payment Link %s -- it may still be payable", link_id)
+            logger.exception("Could not deactivate Stripe Payment Link %s -- it may still be payable", ident)

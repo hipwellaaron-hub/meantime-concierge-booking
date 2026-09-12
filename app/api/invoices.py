@@ -62,15 +62,23 @@ def _build_invoice_context(db: Session, invoice, *, include_card_payment: bool) 
 
     card_payment_url = None
     card_payment_amount = None
-    if include_card_payment and stripe_integration.is_configured() and not summary["is_fully_paid"]:
+    if include_card_payment and stripe_integration.is_configured_for(invoice.booking.venue) and not summary["is_fully_paid"]:
         # The balance itself, with nothing added. The 1.8% card surcharge
         # was removed on 2026-09-11 (see policy.py); a card payment now
         # costs exactly what the invoice says.
         card_payment_amount = summary["balance_due"]
         try:
-            card_payment_url, link_id = stripe_integration.create_payment_link(invoice, card_payment_amount)
-            invoicing.record_payment_link(db, invoice, link_id)
+            card_payment_url, link_id, account = stripe_integration.create_payment_link(
+                invoice, card_payment_amount
+            )
+            invoicing.record_payment_link(db, invoice, link_id, account=account)
         except stripe_integration.StripeNotConfigured:
+            card_payment_url = None
+        except stripe_integration.StripeVenueMismatch:
+            # Never a payment link. A link minted in the wrong company's
+            # account is signed by that account, passes verification, and
+            # records as a successful payment for the other company.
+            logger.exception("Refusing a payment link for invoice %s: venue/account mismatch", invoice.id)
             card_payment_url = None
         except stripe.StripeError:
             # A live API problem (network, auth, rate limit) must not take
