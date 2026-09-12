@@ -12,6 +12,8 @@ is used as the dedup key (the Stripe PaymentIntent ID, which is stable
 across redeliveries of the same event).
 """
 
+import logging
+import os
 import uuid
 from decimal import Decimal
 
@@ -21,18 +23,38 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import Invoice, Payment
+from app.models import BookingEvent, Invoice, Payment, Venue
 from app.models.payment import PaymentMethod
 from app.services import booking as booking_service
 from app.services import invoicing
 from app.services.stripe_integration import INVOICE_METADATA_KEY, STRIPE_WEBHOOK_SECRET
 
 router = APIRouter(tags=["webhooks"])
+logger = logging.getLogger(__name__)
 
 
-@router.post("/webhooks/stripe")
-async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
-    if not STRIPE_WEBHOOK_SECRET:
+def _signing_secret_for(db: Session, venue_slug: str | None) -> tuple[str | None, object | None]:
+    """(secret, venue). A venue names the environment variable holding its
+    own signing secret, the same way it names its secret key -- never the
+    secret itself on the row.
+
+    With no slug (the legacy path) the answer is the process-wide secret and
+    no venue, which is exactly today's behaviour.
+    """
+    if venue_slug is None:
+        return STRIPE_WEBHOOK_SECRET, None
+    venue = db.query(Venue).filter_by(slug=venue_slug).one_or_none()
+    if venue is None:
+        return None, None
+    name = getattr(venue, "stripe_webhook_secret_env", None) or "STRIPE_WEBHOOK_SECRET"
+    return os.environ.get(name), venue
+
+
+async def _handle_stripe_event(
+    request: Request, db: Session, *, venue_slug: str | None
+):
+    secret, venue = _signing_secret_for(db, venue_slug)
+    if not secret:
         # Not configured yet -- fail loudly rather than pretend to accept
         # events we can't verify the authenticity of.
         raise HTTPException(status_code=503, detail="Stripe webhook is not configured")
@@ -41,7 +63,7 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
     signature = request.headers.get("stripe-signature", "")
 
     try:
-        event = stripe.Webhook.construct_event(payload, signature, STRIPE_WEBHOOK_SECRET)
+        event = stripe.Webhook.construct_event(payload, signature, secret)
     except (ValueError, stripe.SignatureVerificationError) as exc:
         raise HTTPException(status_code=400, detail="Invalid webhook payload or signature") from exc
 
@@ -50,7 +72,7 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
         # not a plain dict -- it has no .get(), so .to_dict() first
         # (found by testing: this crashed with AttributeError on every
         # real event, not just malformed ones).
-        _handle_checkout_completed(db, event["data"]["object"].to_dict())
+        _handle_checkout_completed(db, event["data"]["object"].to_dict(), venue=venue)
 
     # Always 200 on anything we understood but didn't act on (event types
     # we don't handle, missing/malformed metadata) -- returning an error
@@ -59,7 +81,34 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
     return {"received": True}
 
 
-def _handle_checkout_completed(db: Session, session: dict) -> None:
+@router.post("/webhooks/stripe")
+async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
+    """The ORIGINAL path, unchanged and still live.
+
+    Stripe's dashboard points every existing account here and live payments
+    run through it daily. An interrupted webhook means a client pays and the
+    system never knows, so this is retired only when the per-venue path below
+    has been proven for an account and its dashboard moved -- deliberately,
+    one account at a time, not by deploying a rename (Aaron, 2026-09-12).
+    """
+    return await _handle_stripe_event(request, db, venue_slug=None)
+
+
+@router.post("/webhooks/stripe/{venue_slug}")
+async def stripe_webhook_for_venue(venue_slug: str, request: Request, db: Session = Depends(get_db)):
+    """One endpoint per venue, because construct_event verifies against
+    exactly ONE signing secret and two companies' accounts sign with two.
+
+    It is also what makes the venue assertion possible: the path says which
+    account this event came from, so the invoice it names can be checked
+    against it. Without that, a payment taken into the wrong company's
+    account still verifies (that account signs its own event) and still
+    records as a successful payment for the invoice.
+    """
+    return await _handle_stripe_event(request, db, venue_slug=venue_slug)
+
+
+def _handle_checkout_completed(db: Session, session: dict, *, venue=None) -> None:
     metadata = session.get("metadata") or {}
     invoice_id_str = metadata.get(INVOICE_METADATA_KEY)
     payment_intent_id = session.get("payment_intent")
@@ -75,6 +124,33 @@ def _handle_checkout_completed(db: Session, session: dict) -> None:
 
     invoice = db.get(Invoice, invoice_id)
     if invoice is None:
+        return
+
+    # THE ASSERTION. The path said which account this event came from; the
+    # invoice says which venue it belongs to. If they differ, the money went
+    # into the wrong company's account and recording it would report a
+    # successful payment for an invoice that has not been paid.
+    #
+    # Flagged, never recorded and never silently dropped: a client HAS paid,
+    # somebody has to unpick it, and a silent return is how that stays
+    # invisible until a reconciliation nobody ran.
+    if venue is not None and invoice.booking.venue_id != venue.id:
+        logger.error(
+            "Stripe event for invoice %s arrived on venue %s's endpoint but the invoice belongs to venue %s "
+            "-- NOT recording the payment; the money is in the wrong account and needs unpicking by hand",
+            invoice.id, venue.slug, invoice.booking.venue_id,
+        )
+        db.add(
+            BookingEvent(
+                booking_id=invoice.booking_id,
+                event_type="payment_venue_mismatch",
+                field_name=f"{invoice.type.value}_invoice",
+                old_value=str(venue.slug)[:500],
+                new_value=str(payment_intent_id)[:500],
+                actor="stripe_webhook",
+            )
+        )
+        db.commit()
         return
 
     already_recorded = db.execute(select(Payment.id).where(Payment.reference == payment_intent_id)).first()

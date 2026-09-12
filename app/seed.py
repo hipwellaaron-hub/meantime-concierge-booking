@@ -92,6 +92,7 @@ def seed(db=None) -> Venue:
         venue.bank_account_number = policy.BANK_ACCOUNT_NUMBER
         venue.reference_prefix = "HAM"
         venue.stripe_secret_key_env = "STRIPE_SECRET_KEY"
+        venue.stripe_webhook_secret_env = "STRIPE_WEBHOOK_SECRET"
 
         existing_names = {s.name for s in db.query(Space).filter_by(venue_id=venue.id)}
         for space_kwargs in HAMILTON_SPACES:

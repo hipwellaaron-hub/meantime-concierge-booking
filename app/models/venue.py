@@ -58,5 +58,10 @@ class Venue(Base):
     # downstream catches it (review, 2026-09-11).
     stripe_secret_key_env: Mapped[str | None] = mapped_column(String(64), nullable=True)
     stripe_account_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # And the variable holding this venue's WEBHOOK signing secret. Separate
+    # from the API key because Stripe issues one per endpoint, and each venue
+    # has its own endpoint -- construct_event verifies against exactly one
+    # secret, so one endpoint cannot serve two accounts.
+    stripe_webhook_secret_env: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     spaces: Mapped[list["Space"]] = relationship(back_populates="venue")

@@ -467,3 +467,118 @@ def test_a_client_is_shown_no_card_link_when_the_account_does_not_match(db, book
         assert "checkout.stripe.com" not in resp.text, "no payment link may be offered"
     finally:
         app.dependency_overrides.clear()
+
+
+# --- the per-venue webhook path, beside the old one ------------------------
+#
+# Aaron, 2026-09-12: "keep the current webhook path working while the
+# per-venue path goes in. Live payments run through it every day and an
+# interrupted webhook means a client pays and the system doesn't know."
+
+
+def test_the_original_webhook_path_still_records_a_payment(db, booking):
+    """The one Stripe's dashboard points at today. If this ever fails, a
+    client pays and the system never hears about it."""
+    invoice = _deposit(db, booking)
+    mark_sent(db, invoice, actor="test")
+    payload = _checkout_completed_event(invoice_id=invoice.id)
+
+    app.dependency_overrides[get_db] = lambda: db
+    try:
+        with patch("app.api.webhooks.STRIPE_WEBHOOK_SECRET", TEST_WEBHOOK_SECRET):
+            resp = TestClient(app).post(
+                "/webhooks/stripe", content=payload, headers={"stripe-signature": _sign(payload)}
+            )
+        assert resp.status_code == 200
+    finally:
+        app.dependency_overrides.clear()
+
+    assert get_payment_summary(db, invoice)["is_fully_paid"] is True
+
+
+def test_the_per_venue_path_records_a_payment_for_its_own_venue(db, booking, hamilton):
+    hamilton.stripe_webhook_secret_env = "STRIPE_WEBHOOK_SECRET_PROBE"
+    db.flush()
+    invoice = _deposit(db, booking)
+    mark_sent(db, invoice, actor="test")
+    payload = _checkout_completed_event(invoice_id=invoice.id)
+
+    app.dependency_overrides[get_db] = lambda: db
+    try:
+        with patch.dict(os.environ, {"STRIPE_WEBHOOK_SECRET_PROBE": TEST_WEBHOOK_SECRET}):
+            resp = TestClient(app).post(
+                "/webhooks/stripe/hamilton", content=payload, headers={"stripe-signature": _sign(payload)}
+            )
+        assert resp.status_code == 200, resp.text
+    finally:
+        app.dependency_overrides.clear()
+
+    assert get_payment_summary(db, invoice)["is_fully_paid"] is True
+
+
+def test_a_payment_arriving_on_the_wrong_venues_endpoint_is_not_recorded(db, booking, hamilton):
+    """THE assertion. The path says which account the money went into; the
+    invoice says which venue it belongs to. If they differ, the money is in
+    the wrong company's account and recording it would report a paid invoice
+    that has not been paid."""
+    from decimal import Decimal as _D
+
+    from app.models import Space, Venue
+
+    other = Venue(
+        name="Meantime The Entrance", slug="entrance",
+        stripe_webhook_secret_env="STRIPE_WEBHOOK_SECRET_ENTRANCE",
+    )
+    db.add(other)
+    db.flush()
+    db.add(Space(
+        venue_id=other.id, name="Private Bar Function", capacity=80,
+        standard_min_adults=40, min_food_spend=_D("1000"), is_bookable=True,
+    ))
+    db.flush()
+
+    invoice = _deposit(db, booking)          # Hamilton's booking
+    mark_sent(db, invoice, actor="test")
+    payload = _checkout_completed_event(invoice_id=invoice.id)
+
+    app.dependency_overrides[get_db] = lambda: db
+    try:
+        with patch.dict(os.environ, {"STRIPE_WEBHOOK_SECRET_ENTRANCE": TEST_WEBHOOK_SECRET}):
+            resp = TestClient(app).post(
+                "/webhooks/stripe/entrance", content=payload, headers={"stripe-signature": _sign(payload)}
+            )
+        # 200, because Stripe must not retry forever on something a human
+        # has to unpick -- but nothing is recorded.
+        assert resp.status_code == 200
+    finally:
+        app.dependency_overrides.clear()
+
+    assert get_payment_summary(db, invoice)["is_fully_paid"] is False, "the payment must NOT be recorded"
+
+    from app.models import BookingEvent
+
+    flagged = [
+        e for e in db.query(BookingEvent).filter_by(booking_id=invoice.booking_id).all()
+        if e.event_type == "payment_venue_mismatch"
+    ]
+    assert len(flagged) == 1, "a client HAS paid -- silence is the one unacceptable answer"
+
+
+def test_an_unknown_venue_in_the_path_is_refused(db, booking):
+    invoice = _deposit(db, booking)
+    payload = _checkout_completed_event(invoice_id=invoice.id)
+
+    app.dependency_overrides[get_db] = lambda: db
+    try:
+        # The process-wide secret must be SET for this to prove anything.
+        # Without it, a mutation making an unknown venue fall back to that
+        # secret has nothing to fall back to, and the 503 arrives for the
+        # ordinary "not configured" reason instead -- the exact shape Aaron
+        # named on 2026-09-12 and the third time tonight.
+        with patch("app.api.webhooks.STRIPE_WEBHOOK_SECRET", TEST_WEBHOOK_SECRET):
+            resp = TestClient(app).post(
+                "/webhooks/stripe/not-a-venue", content=payload, headers={"stripe-signature": _sign(payload)}
+            )
+        assert resp.status_code == 503, "an unknown venue must not borrow another venue's secret"
+    finally:
+        app.dependency_overrides.clear()
