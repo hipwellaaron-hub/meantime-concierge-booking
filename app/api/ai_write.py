@@ -51,13 +51,33 @@ class FoodLineIn(BaseModel):
 
 
 def _booking_by_reference(ctx: AiContext, reference: str) -> Booking:
+    """The booking this reference names, if this credential may touch it.
+
+    Scoped to the PERMITTED SET, not to ctx.venue. ctx.venue is
+    ai_venues(db)[0] -- the first venue by name -- which was the whole
+    story while AI_VENUE_SLUG held one slug and became wrong the moment it
+    held two: every proposal for a booking at the alphabetically-later
+    venue answered "No booking ... at this venue", for a booking that
+    exists and that the same credential can read.
+
+    No venue ARGUMENT here, unlike the list reads. A reference names one
+    booking, so the only question is authorisation; and reference_prefix is
+    unique per venue, so the reference already says which building it is.
+    Requiring an argument would be friction with no safety gain.
+    """
     booking = ctx.db.scalars(
         select(Booking)
         .join(Space, Booking.space_id == Space.id)
-        .where(Space.venue_id == ctx.venue.id, Booking.reference_code == reference.strip())
+        .where(
+            Space.venue_id.in_([v.id for v in (ctx.venues or [ctx.venue])]),
+            Booking.reference_code == reference.strip(),
+        )
     ).first()
     if booking is None:
-        raise HTTPException(status_code=404, detail=f"No booking {reference.strip()!r} at this venue")
+        raise HTTPException(
+            status_code=404,
+            detail=f"No booking {reference.strip()!r} at any venue this credential can reach",
+        )
     return booking
 
 

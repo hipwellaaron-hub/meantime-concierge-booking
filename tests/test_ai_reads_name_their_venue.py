@@ -222,3 +222,71 @@ def test_a_by_id_read_still_refuses_a_booking_outside_the_credential(
     resp = bare_client.get(f"/api/ai/bookings/{booking.id}/events")
 
     assert resp.status_code == 404
+
+
+# --- the one WRITE, which was left behind ----------------------------------
+#
+# When AI_VENUE_SLUG became a list, every READ was updated to resolve
+# against the permitted set. The single write kept filtering on
+# ctx.venue.id, which is ai_venues(db)[0] -- the first venue by name. With
+# two venues permitted, every Event Order proposal for a booking at the
+# alphabetically-later one answered "No booking ... at this venue", for a
+# booking that exists and that the same credential can read.
+#
+# Loud, so not the dangerous class -- but the message reads as "no such
+# booking", which sends you looking for the wrong thing.
+
+
+def _entrance_booking(db, entrance, name="ZZENTWRITE"):
+    import datetime as dt
+
+    from app.services.booking import create_booking
+
+    booking = create_booking(
+        db, space_id=entrance.spaces[0].id, contact_id=None,
+        event_date=dt.date.today() + dt.timedelta(days=30), start_time=dt.time(18, 0),
+        end_time=dt.time(23, 0), event_name=name, event_type="birthday",
+        adult_count=40, child_count=0, notes=None, actor="test",
+    )
+    db.flush()
+    return booking
+
+
+def test_a_proposal_reaches_a_booking_at_either_permitted_venue(
+    bare_client, db, hamilton, entrance, monkeypatch
+):
+    """THE regression. Not asserting the proposal SUCCEEDS -- it has house
+    rules of its own and may well refuse on their merits -- only that it
+    stops answering "no such booking" for a booking that is right there."""
+    monkeypatch.setattr(settings, "ai_venue_slug", f"{hamilton.slug},{entrance.slug}")
+    booking = _entrance_booking(db, entrance)
+
+    resp = bare_client.post(
+        f"/api/ai/bookings/{booking.reference_code}/event-order-proposal",
+        json={"fields": {"run_sheet": "Doors 6pm, speeches 8pm."}, "source": "test"},
+    )
+
+    # 201 (created), or 422 if the house rules refuse the proposal on its
+    # merits -- either proves the booking was FOUND. Asserting only
+    # "not 404" would pass if the write were disabled outright and answered
+    # 403, which would prove nothing about scoping at all.
+    assert resp.status_code in (201, 422), (
+        f"the write could not reach a booking the same credential can read: "
+        f"{resp.status_code} {resp.text}"
+    )
+
+
+def test_a_booking_outside_the_credential_is_still_refused(
+    bare_client, db, hamilton, entrance
+):
+    """The authorisation half. AI_VENUE_SLUG lists hamilton only here, so
+    the Entrance booking must stay unreachable -- widening the write to the
+    permitted SET must not widen it past that set."""
+    booking = _entrance_booking(db, entrance, name="ZZFORBIDDENWRITE")
+
+    resp = bare_client.post(
+        f"/api/ai/bookings/{booking.reference_code}/event-order-proposal",
+        json={"fields": {"run_sheet": "Doors 6pm."}, "source": "test"},
+    )
+
+    assert resp.status_code == 404
