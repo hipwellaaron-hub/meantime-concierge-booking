@@ -59,17 +59,31 @@ def include_object(object_, name, type_, reflected, compare_to):
     return True
 
 
-# OUTSTANDING, NOT YET DONE -- three MORE objects have the same hazard and are
+# OUTSTANDING, NOT YET DONE -- FOUR more objects have the same hazard and are
 # NOT protected here, because they are pre-existing (introduced by ed35a74 and
 # the Event Order proposals work) rather than part of the venue change, and
 # each needs its migration read to declare it correctly:
 #
-#     ck_beo_proposal_field_state             CheckConstraint on beo_proposal_fields
-#     ck_beo_proposal_status                  CheckConstraint on beo_proposals
-#     uq_beo_proposal_one_pending_per_booking UNIQUE index on beo_proposals.booking_id
-#                                             (probably PARTIAL -- it needs its
-#                                             postgresql_where to match exactly)
-#     ix_bookings_parent_booking_id           Index on bookings.parent_booking_id
+# Read out of both the migration and the live catalogue on 2026-09-12; the two
+# agree, so these are the exact definitions to declare, not a starting point:
+#
+#   uq_beo_proposal_one_pending_per_booking  (a3f6e1c7d094)
+#       Index("uq_beo_proposal_one_pending_per_booking", "booking_id",
+#             unique=True, postgresql_where=text("status = 'pending'"))
+#       PARTIAL -- confirmed, not assumed. THIS IS THE DANGEROUS ONE:
+#       autogenerate proposes dropping it, and accepting that proposal would
+#       silently retire "one pending Event Order proposal per booking". The
+#       database would begin accepting two, on a path used on live bookings,
+#       with nothing raised anywhere.
+#
+#   ck_beo_proposal_status  (a3f6e1c7d094) on beo_proposals
+#       status IN ('pending', 'rules_blocked', 'resolved', 'superseded')
+#
+#   ck_beo_proposal_field_state  (a3f6e1c7d094) on beo_proposal_fields
+#       state IN ('pending', 'approved', 'rejected', 'superseded', 'blocked')
+#
+#   ix_bookings_parent_booking_id  (c1a8f3b02e77) on bookings
+#       Index("ix_bookings_parent_booking_id", "parent_booking_id")  -- plain
 #
 # The right fix for these is to DECLARE them on their models (unlike the venue
 # constraints above, none of them creates a second FK path, so none has the
@@ -77,19 +91,29 @@ def include_object(object_, name, type_, reflected, compare_to):
 # done, autogenerate proposes dropping all four. Check with:
 #
 #     .venv/Scripts/python.exe -c "
+#     import pathlib
 #     from sqlalchemy import create_engine
 #     from alembic.migration import MigrationContext
 #     from alembic.autogenerate import compare_metadata
 #     from app.config import settings
 #     from app.database import Base
 #     import app.models
+#     src = pathlib.Path('alembic/env.py').read_text(encoding='utf-8')
+#     ns = {}
+#     exec(src[src.index('DB_ONLY_OBJECTS'):src.index('# OUTSTANDING')], ns)
 #     engine = create_engine(settings.test_database_url)
 #     with engine.connect() as conn:
-#         for d in compare_metadata(MigrationContext.configure(conn), Base.metadata):
+#         ctx = MigrationContext.configure(conn, opts={'include_object': ns['include_object']})
+#         for d in compare_metadata(ctx, Base.metadata):
 #             print(repr(d)[:200])
 #     "
 #
-# A zero-diff run of that snippet is what "done" looks like.
+# THE include_object IS THE POINT. An earlier version of this snippet built
+# the context without it and so reported the three shielded objects as
+# removals as well -- 8 differences that could never go down, no matter what
+# was fixed. Today it prints 5: the four above, plus the add_fk below.
+#
+# "Done" is when only the add_fk remains.
 
 # KNOWN, AND DELIBERATELY NOT FILTERED: autogenerate also proposes ADDING an
 # FK bookings.venue_id -> venues.id, because Booking declares one on the
