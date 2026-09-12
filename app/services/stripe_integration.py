@@ -38,6 +38,18 @@ class StripeVenueMismatch(RuntimeError):
     and records as a successful payment for the other company."""
 
 
+# The one venue whose row may still be blank and still mean STRIPE_SECRET_KEY.
+# Hamilton was taking card payments before venues had a column to name their
+# own key in, so its row can legitimately be NULL during the rollback window
+# and the process-wide variable is genuinely its key.
+#
+# NAMED, not inferred from absence. "No key named" used to fall through for
+# ANY venue, on the reasoning that the only un-migrated venue is Hamilton --
+# which stops being true the moment a second row exists, and a second row
+# with this column NULL is exactly what the setup sequence produces.
+LEGACY_STRIPE_VENUE_SLUG = "hamilton"
+
+
 def secret_key_for(venue) -> str:
     """This venue's Stripe secret, by the ENVIRONMENT VARIABLE NAME stored on
     the venue row -- never a key stored in the database.
@@ -45,10 +57,25 @@ def secret_key_for(venue) -> str:
     No fallback to STRIPE_SECRET_KEY when the venue names a variable that is
     not set: falling back would mint the link in Hamilton's account for
     whichever venue asked, which is the exact failure this exists to stop.
-    A venue with no name set at all is the un-migrated case and does fall
-    through, because that IS Hamilton today.
+
+    And no fallback when the venue names NOTHING either, unless that venue
+    is Hamilton. A second company's invoice minting a link inside Meantime
+    Pty Ltd's Stripe account is not a visible error -- that account signs
+    its own completion event, so it verifies, and it records as a successful
+    payment against an invoice that has not been paid. Refusing costs a
+    card button on a venue nobody has finished setting up.
     """
-    name = getattr(venue, "stripe_secret_key_env", None) or "STRIPE_SECRET_KEY"
+    name = getattr(venue, "stripe_secret_key_env", None)
+    if not name:
+        slug = getattr(venue, "slug", None)
+        if slug != LEGACY_STRIPE_VENUE_SLUG:
+            raise StripeNotConfigured(
+                f"venue {slug!r} names no Stripe key environment variable "
+                "(venues.stripe_secret_key_env is empty), and there is no key to fall "
+                "back to -- another venue's key would take this venue's money into "
+                "another company's account"
+            )
+        name = "STRIPE_SECRET_KEY"
     key = os.environ.get(name)
     if not key:
         raise StripeNotConfigured(
