@@ -47,7 +47,31 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
+def _hamilton_id(conn):
+    """The venue every existing floor account and device belongs to.
+
+    Checked BEFORE either UPDATE, because a subquery that finds nothing
+    returns NULL rather than failing -- and `SET venue_id = NULL` matches
+    every row and succeeds. That is not a migration that did nothing; it is
+    a migration that quietly emptied the column it was adding, locking out
+    every phone and leaving every floor account venueless.
+    """
+    venue_id = conn.execute(
+        sa.text("SELECT id FROM venues WHERE slug = 'hamilton'")
+    ).scalar()
+    if venue_id is None:
+        raise RuntimeError(
+            "no venue with slug 'hamilton' -- refusing to backfill staff_users.venue_id "
+            "and staff_app_tokens.venue_id, because the subquery would resolve to NULL "
+            "and null EVERY row rather than fail. Seed the venue first (python -m app.seed)."
+        )
+    return venue_id
+
+
 def upgrade() -> None:
+    conn = op.get_bind()
+    hamilton_id = _hamilton_id(conn)
+
     # --- the person ---------------------------------------------------------
     op.add_column('staff_users', sa.Column('venue_id', UUID(as_uuid=True), nullable=True))
     op.create_foreign_key(
@@ -55,9 +79,9 @@ def upgrade() -> None:
     )
     # Floor staff get Hamilton; ADMINS ARE LEFT NULL on purpose -- that is
     # "every venue", which is what an admin is.
-    op.execute(
-        "UPDATE staff_users SET venue_id = (SELECT id FROM venues WHERE slug = 'hamilton') "
-        "WHERE role = 'floor'"
+    conn.execute(
+        sa.text("UPDATE staff_users SET venue_id = :venue_id WHERE role = 'floor'"),
+        {"venue_id": hamilton_id},
     )
 
     # --- the device ---------------------------------------------------------
@@ -68,8 +92,9 @@ def upgrade() -> None:
     # EVERY row, revoked included. Aaron, 2026-09-12: "every existing floor
     # device is Hamilton" -- confirmed rather than assumed, so this states it
     # as a fact rather than leaving it to a default.
-    op.execute(
-        "UPDATE staff_app_tokens SET venue_id = (SELECT id FROM venues WHERE slug = 'hamilton')"
+    conn.execute(
+        sa.text("UPDATE staff_app_tokens SET venue_id = :venue_id"),
+        {"venue_id": hamilton_id},
     )
     op.create_index(
         'ix_staff_app_tokens_venue', 'staff_app_tokens', ['venue_id']

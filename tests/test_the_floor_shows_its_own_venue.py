@@ -10,7 +10,7 @@ Both halves are answered here by running them rather than by reasoning:
   * an EXISTING device keeps working, because migration d6b4e9f2a831
     backfilled every token to Hamilton including revoked ones; and
   * a device signed into another venue was showing HAMILTON's bookings,
-    because get_staff_by_app_token returns the staff user and DISCARDS the
+    because the token lookup then returned the staff user and DISCARDED the
     token, so the token's venue never reached the request and
     staff_app._venue was still a hardcoded lookup.
 
@@ -103,7 +103,7 @@ def test_a_device_signed_into_another_venue_does_not_show_hamiltons_bookings(
 ):
     """THE one that matters, and the one that was broken.
 
-    get_staff_by_app_token returns the staff USER and discards the token, so
+    the token lookup returned the staff USER and discarded the token, so
     the token's venue never reached the request -- and staff_app._venue was
     a hardcoded Hamilton lookup. A phone signed into The Entrance showed
     Hamilton's run sheets, with no way for the person holding it to tell.

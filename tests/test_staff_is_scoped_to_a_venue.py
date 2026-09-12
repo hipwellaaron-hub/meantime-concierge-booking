@@ -134,7 +134,11 @@ def test_a_venueless_token_is_refused_rather_than_guessed(db, hamilton, staff_us
     token.venue_id = None
     db.flush()
 
-    assert staff_auth.get_staff_by_app_token(db, raw) is None
+    # get_token, not the old get_staff_by_app_token. These two tests used to
+    # assert on that one, which production had stopped calling -- so the
+    # refusal that actually runs had nothing behind it, and deleting it left
+    # the whole suite green.
+    assert staff_auth.get_token(db, raw) is None
 
 
 def test_a_normal_token_still_resolves(db, hamilton, staff_user):
@@ -142,7 +146,85 @@ def test_a_normal_token_still_resolves(db, hamilton, staff_user):
     test above while locking every phone out."""
     raw = staff_auth.issue_app_token(db, staff_user, hamilton)
 
-    assert staff_auth.get_staff_by_app_token(db, raw) is not None
+    assert staff_auth.get_token(db, raw) is not None
+
+
+# --- a floor account with no venue -----------------------------------------
+#
+# create_or_update_staff_user's docstring states this as a rule: "a floor
+# account with no venue cannot sign into the floor app at all --
+# venue_for_token has nothing to give it and no right to guess."
+#
+# venue_for_token did not implement it. The branch read
+# `if staff.venue_id is not None`, which asks "does this account have a
+# venue", not "is this an admin" -- so a FLOOR account with a NULL venue
+# fell into the admin branch and was handed the full picker: every building
+# in the database, on a casual's phone.
+#
+# The row is reachable. The staff/token migration plans for a rollback in
+# its own docstring, and a floor account created on the old build during
+# that window writes no venue_id at all.
+
+
+def test_a_floor_account_with_no_venue_is_refused_not_offered_every_building(
+    db, hamilton, entrance
+):
+    """THE one. NULL means "every venue" for an admin, because that is what
+    an admin is. It cannot also mean "a floor account nobody finished
+    setting up"."""
+    casual = staff_auth.create_or_update_staff_user(
+        db, email="casual.noven@test", name="Casual", password="floorpassword1",
+        role="floor", venue=hamilton,
+    )
+    casual.venue_id = None  # the rollback-window row
+    db.flush()
+
+    with pytest.raises(staff_auth.VenueRequired) as exc:
+        staff_auth.venue_for_token(db, casual, None)
+
+    assert "no venue recorded" in str(exc.value.args[0]), exc.value.args
+    assert not exc.value.choices, (
+        f"a floor account with no venue was offered a choice of buildings: {exc.value.choices}"
+    )
+
+
+def test_naming_a_venue_does_not_let_a_venueless_floor_account_in_either(
+    db, hamilton, entrance
+):
+    """The refusal has to hold when the request supplies a slug, which is
+    the shape the app actually sends after the picker."""
+    casual = staff_auth.create_or_update_staff_user(
+        db, email="casual.noven2@test", name="Casual", password="floorpassword1",
+        role="floor", venue=hamilton,
+    )
+    casual.venue_id = None
+    db.flush()
+
+    with pytest.raises(staff_auth.VenueRequired):
+        staff_auth.venue_for_token(db, casual, entrance.slug)
+
+
+def test_an_admin_is_still_asked_which_venue(db, hamilton, entrance, staff_user):
+    """The other direction, and the reason the branch is on ROLE. An admin
+    legitimately carries NULL and must be offered the choice -- a fix that
+    refused every NULL would lock the only person who can create accounts
+    out of the floor app."""
+    with pytest.raises(staff_auth.VenueRequired) as exc:
+        staff_auth.venue_for_token(db, staff_user, None)
+
+    assert set(exc.value.choices) == {hamilton.slug, entrance.slug}
+
+
+def test_a_floor_account_with_its_venue_still_signs_in(db, hamilton, entrance):
+    """And the ordinary path, so a refusal that refused everything could not
+    pass the tests above on its own."""
+    ruby = staff_auth.create_or_update_staff_user(
+        db, email="ruby.ok@test", name="Ruby", password="floorpassword1",
+        role="floor", venue=entrance,
+    )
+    db.flush()
+
+    assert staff_auth.venue_for_token(db, ruby, None) is entrance
 
 
 # --- the admin staff page --------------------------------------------------
@@ -283,3 +365,125 @@ def test_a_floor_account_created_that_way_can_actually_sign_in(admin_client, db,
         assert resp.json()["venue"] == (hamilton.trading_name or hamilton.name)
     finally:
         app.dependency_overrides.clear()
+
+
+# --- the by-id writes, which the LIST being scoped said nothing about ------
+#
+# staff_list scopes both its queries, so Hamilton's page never RENDERS an
+# Entrance casual or an Entrance device. Four POSTs then took a bare id:
+# resend-welcome, deactivate, reactivate and token revoke. A device not on
+# the page at all was revocable from that page's URL.
+#
+# Not a privilege escalation while staff_may_use is `role == "admin"` -- but
+# that function exists as the one place that changes on the day it is not,
+# and these bypassed the scope rather than passing it. booking_in_scope was
+# deliberately made a DEPENDENCY for exactly this reason.
+
+
+def _csrf_in(html: str) -> str:
+    import re
+
+    return re.search(r'name="csrf_token" value="([^"]+)"', html).group(1)
+
+
+def _token_for(db, staff, venue):
+    raw = staff_auth.issue_app_token(db, staff, venue)
+    return db.scalars(
+        select(StaffAppToken).where(StaffAppToken.token_hash == staff_auth._hash_token(raw))
+    ).one()
+
+
+def test_one_venues_page_cannot_deactivate_another_venues_casual(
+    admin_client, db, hamilton, entrance
+):
+    ruby = staff_auth.create_or_update_staff_user(
+        db, email="ruby.byid@test", name="Ruby", password="floorpassword1",
+        role="floor", venue=entrance,
+    )
+    db.flush()
+    token = _csrf_in(admin_client.get("/admin/hamilton/staff", follow_redirects=True).text)
+
+    resp = admin_client.post(
+        f"/admin/hamilton/staff/{ruby.id}/deactivate",
+        data={"csrf_token": token}, follow_redirects=False,
+    )
+
+    assert resp.status_code == 404, resp.status_code
+    db.refresh(ruby)
+    assert ruby.is_active is True, "another venue's casual was deactivated"
+
+
+def test_one_venues_page_cannot_revoke_another_venues_device(
+    admin_client, db, hamilton, entrance
+):
+    """The one that is least visible: the token is not rendered on this page
+    at all, so there is nothing on screen to have clicked."""
+    ruby = staff_auth.create_or_update_staff_user(
+        db, email="ruby.dev@test", name="Ruby", password="floorpassword1",
+        role="floor", venue=entrance,
+    )
+    db.flush()
+    device = _token_for(db, ruby, entrance)
+    page = admin_client.get("/admin/hamilton/staff", follow_redirects=True).text
+    assert str(device.id) not in page, "the device IS on the page; this test proves nothing"
+
+    resp = admin_client.post(
+        f"/admin/hamilton/staff/tokens/{device.id}/revoke",
+        data={"csrf_token": _csrf_in(page)}, follow_redirects=False,
+    )
+
+    assert resp.status_code == 404
+    db.refresh(device)
+    assert device.revoked_at is None, "another venue's device was revoked"
+
+
+def test_a_venue_can_still_act_on_its_own_people_and_devices(
+    admin_client, db, hamilton, entrance
+):
+    """The other direction, so a check that refused everything could not
+    pass the tests above on its own."""
+    karly = staff_auth.create_or_update_staff_user(
+        db, email="karly.byid@test", name="Karly", password="floorpassword1",
+        role="floor", venue=hamilton,
+    )
+    db.flush()
+    device = _token_for(db, karly, hamilton)
+    page = admin_client.get("/admin/hamilton/staff", follow_redirects=True).text
+    token = _csrf_in(page)
+
+    assert admin_client.post(
+        f"/admin/hamilton/staff/{karly.id}/deactivate",
+        data={"csrf_token": token}, follow_redirects=False,
+    ).status_code == 303
+    assert admin_client.post(
+        f"/admin/hamilton/staff/tokens/{device.id}/revoke",
+        data={"csrf_token": token}, follow_redirects=False,
+    ).status_code == 303
+
+    db.refresh(karly)
+    db.refresh(device)
+    assert karly.is_active is False
+    assert device.revoked_at is not None
+
+
+def test_an_admin_is_reachable_from_every_venues_page(admin_client, db, hamilton, entrance, staff_user):
+    """StaffUser.venue_id NULL means EVERY venue -- the one place NULL means
+    that in this codebase. An admin appears on both pages because they work
+    at both, so a scoping fix that keyed on "has a venue" would have made
+    them unreachable from either."""
+    other = staff_auth.create_or_update_staff_user(
+        db, email="second.admin@test", name="Second Admin", password="adminpassword1",
+        role="admin",
+    )
+    db.flush()
+    assert other.venue_id is None
+
+    page = admin_client.get("/admin/entrance/staff", follow_redirects=True).text
+    resp = admin_client.post(
+        f"/admin/entrance/staff/{other.id}/deactivate",
+        data={"csrf_token": _csrf_in(page)}, follow_redirects=False,
+    )
+
+    assert resp.status_code == 303, resp.status_code
+    db.refresh(other)
+    assert other.is_active is False

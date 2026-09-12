@@ -116,12 +116,30 @@ def venue_for_token(db: Session, staff: StaffUser, venue_slug: str | None):
     An ADMIN carries no venue (NULL means every venue), so they must say
     which building this phone is in. No default: picking one for them is how
     a device ends up showing the wrong venue's run sheets all night.
+
+    THE BRANCH IS ON ROLE, NOT ON WHETHER A VENUE HAPPENS TO BE SET. It used
+    to read `if staff.venue_id is not None`, which is a different question:
+    a FLOOR account with a NULL venue fell through to the admin branch and
+    was offered every building in the database. NULL here means "every
+    venue" because that is what an admin is -- it cannot also mean "a floor
+    account nobody finished setting up", so that case is refused with
+    something a person can act on.
+
+    The row is reachable: the staff/token migration plans for a rollback in
+    its own docstring, and a floor account created on the old build during
+    that window writes no venue_id at all.
     """
     from sqlalchemy import select
 
     from app.models import Venue
 
-    if staff.venue_id is not None:
+    if staff.role == "floor":
+        if staff.venue_id is None:
+            raise VenueRequired(
+                "this account has no venue recorded -- ask for it to be set on the "
+                "staff page before signing in",
+                [],
+            )
         if venue_slug and venue_slug != staff.venue.slug:
             raise VenueRequired(
                 "this account is not at that venue", [staff.venue.slug]
@@ -165,8 +183,9 @@ def get_token(db: Session, raw: str):
 
     Callers need the token and not just its owner, because the token is what
     carries the venue -- which building this particular phone was signed
-    into. get_staff_by_app_token below discards it, which is exactly how a
-    phone signed into The Entrance ended up showing Hamilton's run sheets.
+    into. The function this replaced returned only the staff user and
+    discarded the token, which is exactly how a phone signed into The
+    Entrance ended up showing Hamilton's run sheets.
     """
     import datetime as dt
 
@@ -188,36 +207,16 @@ def get_token(db: Session, raw: str):
     return token
 
 
-def get_staff_by_app_token(db: Session, raw: str) -> StaffUser | None:
-    """Resolve a bearer token to its (active) staff user. None for a
-    revoked token or a deactivated account -- deactivating a person kills
-    every token they hold without touching the token rows.
-
-    A token with NO VENUE is refused. That means it predates
-    staff_app_tokens.venue_id or was minted by a rolled-back build, and a
-    device holding one cannot be told which venue's run sheets to show. The
-    honest answer is to make it sign in again rather than pick a venue for
-    it -- the app already handles a 401 by clearing the token and showing
-    the sign-in screen.
-    """
-    import datetime as dt
-
-    from app.models.staff_app_token import StaffAppToken
-
-    token = db.execute(
-        select(StaffAppToken).where(StaffAppToken.token_hash == _hash_token(raw))
-    ).scalar_one_or_none()
-    if token is None or token.revoked_at is not None:
-        return None
-    if token.venue_id is None:
-        # Pre-venue or rolled-back token: refuse, do not guess.
-        return None
-    staff = db.get(StaffUser, token.staff_user_id)
-    if staff is None or not staff.is_active:
-        return None
-    token.last_used_at = dt.datetime.now(dt.timezone.utc)
-    db.commit()
-    return staff
+# get_staff_by_app_token lived here: it resolved a bearer token to its staff
+# USER and threw the token away, which is exactly how a phone signed into
+# The Entrance ended up showing Hamilton's run sheets. require_app_token
+# went through get_token instead and nothing in the app called this again.
+#
+# Deleted rather than left, because it carried its OWN copy of the
+# venueless-token refusal -- and the only tests of that behaviour were
+# pointed at this copy, not the live one. Removing the four real lines from
+# get_token left the entire suite green. A duplicated guard in dead code
+# does not just fail to help; it reads as coverage.
 
 
 def revoke_app_token(db: Session, token_id) -> None:

@@ -33,6 +33,24 @@ def _redirect(request: Request) -> RedirectResponse:
     return RedirectResponse(url=f"{request.state.venue_base}/staff", status_code=303)
 
 
+def _staff_in_scope(db: Session, request: Request, user_id: uuid.UUID) -> StaffUser:
+    """A staff row this venue's page may act on, or 404.
+
+    The same rule the list renders by: a FLOOR account belongs to one
+    building; an ADMIN carries NULL, which here means every venue, so they
+    are reachable from any venue's page.
+
+    404 rather than 403 -- another venue's casual is not this page's to
+    deactivate, and saying "forbidden" would confirm the account exists.
+    """
+    user = db.get(StaffUser, user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="No such staff user")
+    if user.venue_id is not None and user.venue_id != request.state.venue.id:
+        raise HTTPException(status_code=404, detail="No such staff user")
+    return user
+
+
 @router.get("", response_class=HTMLResponse)
 def staff_list(
     request: Request,
@@ -136,9 +154,7 @@ def resend_floor_welcome(
 ):
     """Re-send the Floor setup-and-usage email -- for a new phone, a lost
     email, etc. Floor accounts only (admins don't use /floor)."""
-    user = db.get(StaffUser, user_id)
-    if user is None:
-        raise HTTPException(status_code=404, detail="No such staff user")
+    user = _staff_in_scope(db, request, user_id)
     if user.role != "floor":
         raise HTTPException(status_code=422, detail="Only floor accounts use the Meantime Floor app")
     sent = notifications.notify_floor_welcome(name=user.name, email=user.email)
@@ -159,9 +175,7 @@ def deactivate_staff(
         # Locking every admin out of the admin is one misclick away
         # otherwise; someone else has to deactivate you.
         raise HTTPException(status_code=422, detail="You can't deactivate your own account")
-    user = db.get(StaffUser, user_id)
-    if user is None:
-        raise HTTPException(status_code=404, detail="No such staff user")
+    user = _staff_in_scope(db, request, user_id)
     user.is_active = False
     db.commit()
     return _redirect(request)
@@ -174,9 +188,7 @@ def reactivate_staff(
     db: Session = Depends(get_db),
     staff: StaffUser = Depends(require_staff),
 ):
-    user = db.get(StaffUser, user_id)
-    if user is None:
-        raise HTTPException(status_code=404, detail="No such staff user")
+    user = _staff_in_scope(db, request, user_id)
     user.is_active = True
     db.commit()
     return _redirect(request)
@@ -189,6 +201,15 @@ def revoke_token(
     db: Session = Depends(get_db),
     staff: StaffUser = Depends(require_staff),
 ):
+    # A token carries its OWN venue -- which building that phone was signed
+    # into -- so it is checked against the URL directly rather than through
+    # its owner. An admin's phone signed into The Entrance is The
+    # Entrance's device to revoke, even though the admin works everywhere.
+    token = db.get(StaffAppToken, token_id)
+    if token is None or (
+        token.venue_id is not None and token.venue_id != request.state.venue.id
+    ):
+        raise HTTPException(status_code=404, detail="No such device token")
     try:
         staff_auth.revoke_app_token(db, token_id)
     except ValueError as exc:

@@ -28,7 +28,7 @@ class StaffAppToken(Base):
     # WHICH VENUE THIS DEVICE IS FOR. A phone is in one building, so unlike
     # StaffUser.venue_id a NULL here means nothing useful -- it means the
     # token predates this column or was minted by a rolled-back build, and
-    # get_staff_by_app_token REFUSES it so the device signs in again.
+    # get_token REFUSES it so the device signs in again.
     #
     # Nullable in the schema purely for rollback safety: NOT NULL with no
     # default would stop the previous build issuing tokens at all, locking

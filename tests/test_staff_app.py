@@ -466,8 +466,8 @@ def test_admin_revokes_single_token(db, admin_client, floor_user, hamilton):
         f"/admin/staff/tokens/{token_a.id}/revoke", data={"csrf_token": csrf}, follow_redirects=False
     )
     assert resp.status_code == 303
-    assert staff_auth.get_staff_by_app_token(db, raw_a) is None
-    assert staff_auth.get_staff_by_app_token(db, raw_b) is not None  # only that token died
+    assert staff_auth.get_token(db, raw_a) is None
+    assert staff_auth.get_token(db, raw_b) is not None  # only that token died
 
 
 # ---------------------------------------------------------------- shell routes
