@@ -40,14 +40,47 @@ def _signing_secret_for(db: Session, venue_slug: str | None) -> tuple[str | None
 
     With no slug (the legacy path) the answer is the process-wide secret and
     no venue, which is exactly today's behaviour.
+
+    NO FALLBACK on the per-venue path, matching secret_key_for. A venue that
+    has not named its own variable must NOT borrow the process-wide secret:
+    its own account signs with its own secret, so every real event would
+    fail verification, return 400, be retried by Stripe for about three days
+    and then be dropped -- a client charged, an invoice that still says
+    unpaid, and nothing raised on either side. Refusing is the loud version
+    of the same outcome (review, 2026-09-12).
+
+    Both refusals are LOGGED and distinguished. The refusal is loud to
+    Stripe, whose delivery history the operator is not watching; without
+    this, a slug mistyped into the Stripe dashboard and a variable not yet
+    set on Railway look identical from inside Concierge.
     """
     if venue_slug is None:
         return STRIPE_WEBHOOK_SECRET, None
     venue = db.query(Venue).filter_by(slug=venue_slug).one_or_none()
     if venue is None:
+        logger.error(
+            "Stripe webhook refused: no venue with slug %r -- check the endpoint URL in "
+            "the Stripe dashboard against the venue's slug",
+            venue_slug,
+        )
         return None, None
-    name = getattr(venue, "stripe_webhook_secret_env", None) or "STRIPE_WEBHOOK_SECRET"
-    return os.environ.get(name), venue
+    name = getattr(venue, "stripe_webhook_secret_env", None)
+    if not name:
+        logger.error(
+            "Stripe webhook refused: venue %r has not named its signing-secret variable "
+            "(venues.stripe_webhook_secret_env is empty), and borrowing another venue's "
+            "secret would fail verification on every event",
+            venue_slug,
+        )
+        return None, venue
+    secret = os.environ.get(name)
+    if not secret:
+        logger.error(
+            "Stripe webhook refused: venue %r names %s, which is not set in this "
+            "environment",
+            venue_slug, name,
+        )
+    return secret, venue
 
 
 async def _handle_stripe_event(

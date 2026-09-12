@@ -80,9 +80,16 @@ def assert_key_belongs_to(venue, api_key: str) -> None:
         raise StripeVenueMismatch(
             f"could not confirm which Stripe account this key belongs to: {exc}"
         ) from exc
-    if account.get("id") != expected:
+    # getattr, NOT .get(): stripe 15.4.0's StripeObject is not a dict
+    # subclass and defines no .get(), so .get("id") raises AttributeError on
+    # a REAL Stripe response -- and AttributeError is caught by none of the
+    # three handlers on the invoice page, so a healthy, correctly-keyed
+    # account 500s the client's own invoice. The tests missed it because a
+    # dict stand-in for the account cannot fail that way (review, 2026-09-12).
+    actual = getattr(account, "id", None)
+    if actual != expected:
         raise StripeVenueMismatch(
-            f"the resolved Stripe key belongs to account {account.get('id')!r}, but "
+            f"the resolved Stripe key belongs to account {actual!r}, but "
             f"{getattr(venue, 'slug', 'this venue')!r} expects {expected!r} -- refusing to "
             "create a payment link that would take money into the wrong account"
         )

@@ -416,6 +416,20 @@ def test_an_unset_variable_refuses_rather_than_falling_back(db, booking, hamilto
                 stripe_integration.create_payment_link(invoice, Decimal("500.00"))
 
 
+def _real_account(account_id: str):
+    """What stripe.Account.retrieve ACTUALLY returns -- a StripeObject, which
+    in stripe 15.4.0 is NOT a dict subclass and has no .get().
+
+    A plain dict stand-in here let `account.get("id")` ship: it passed 7/7
+    mutation checks over a function that could not succeed against a real
+    response, and would have 500'd the first invoice page after anyone armed
+    the guard (review, 2026-09-12). Build the real shape, always.
+    """
+    return stripe_integration.stripe.Account.construct_from(
+        {"id": account_id, "object": "account"}, "sk_test"
+    )
+
+
 def test_a_key_belonging_to_another_account_is_refused(db, booking, hamilton):
     """THE guard. The venue says which Stripe account it banks into; if the
     resolved key belongs to a different one, no link is created at all."""
@@ -424,7 +438,7 @@ def test_a_key_belonging_to_another_account_is_refused(db, booking, hamilton):
     invoice = _deposit(db, booking)
 
     with patch.dict(os.environ, {"STRIPE_SECRET_KEY": "sk_test_someone_elses"}):
-        with patch.object(stripe_integration.stripe.Account, "retrieve", return_value={"id": "acct_SOMEONE_ELSE"}):
+        with patch.object(stripe_integration.stripe.Account, "retrieve", return_value=_real_account("acct_SOMEONE_ELSE")):
             with patch.object(stripe_integration.stripe.PaymentLink, "create") as mock_create:
                 with pytest.raises(stripe_integration.StripeVenueMismatch, match="acct_SOMEONE_ELSE"):
                     stripe_integration.create_payment_link(invoice, Decimal("500.00"))
@@ -442,7 +456,7 @@ def test_a_matching_account_is_allowed_through(db, booking, hamilton):
         id = "plink_ok"
 
     with patch.dict(os.environ, {"STRIPE_SECRET_KEY": "sk_test_hamiltons"}):
-        with patch.object(stripe_integration.stripe.Account, "retrieve", return_value={"id": "acct_hamilton"}):
+        with patch.object(stripe_integration.stripe.Account, "retrieve", return_value=_real_account("acct_hamilton")):
             with patch.object(stripe_integration.stripe.PaymentLink, "create", return_value=FakeLink()):
                 url, link_id, account = stripe_integration.create_payment_link(invoice, Decimal("500.00"))
 
@@ -461,7 +475,7 @@ def test_a_client_is_shown_no_card_link_when_the_account_does_not_match(db, book
     app.dependency_overrides[get_db] = lambda: db
     try:
         with patch.dict(os.environ, {"STRIPE_SECRET_KEY": "sk_test_someone_elses"}):
-            with patch.object(stripe_integration.stripe.Account, "retrieve", return_value={"id": "acct_OTHER"}):
+            with patch.object(stripe_integration.stripe.Account, "retrieve", return_value=_real_account("acct_OTHER")):
                 resp = TestClient(app).get(f"/i/{invoice.access_token}")
         assert resp.status_code == 200, "a refusal must not take the invoice page down"
         assert "checkout.stripe.com" not in resp.text, "no payment link may be offered"
@@ -582,3 +596,52 @@ def test_an_unknown_venue_in_the_path_is_refused(db, booking):
         assert resp.status_code == 503, "an unknown venue must not borrow another venue's secret"
     finally:
         app.dependency_overrides.clear()
+
+
+def test_a_venue_that_has_not_named_its_secret_does_not_borrow_hamiltons(db, hamilton):
+    """The fallback that had to go. The Entrance's account signs with its own
+    secret; if its row is missing the variable name and the path quietly used
+    the process-wide one, every real event would fail verification, 400, be
+    retried for three days and then dropped -- a client charged and an invoice
+    that still says unpaid.
+
+    A venue with no named variable must refuse, not borrow.
+    """
+    from app.api import webhooks
+
+    hamilton.stripe_webhook_secret_env = None
+    db.flush()
+
+    with patch.dict(os.environ, {"STRIPE_WEBHOOK_SECRET": "whsec_hamiltons"}):
+        with patch.object(webhooks, "STRIPE_WEBHOOK_SECRET", "whsec_hamiltons"):
+            secret, venue = webhooks._signing_secret_for(db, "hamilton")
+
+    assert secret is None, "the venue borrowed another venue's signing secret"
+    assert venue is hamilton, "the venue itself was still found -- only its secret is missing"
+
+
+def test_a_venue_that_names_its_own_secret_gets_it(db, hamilton):
+    """The other half: the no-fallback rule must not refuse everything."""
+    from app.api import webhooks
+
+    hamilton.stripe_webhook_secret_env = "STRIPE_WEBHOOK_SECRET_HAMILTON"
+    db.flush()
+
+    with patch.dict(os.environ, {"STRIPE_WEBHOOK_SECRET_HAMILTON": "whsec_its_own"}):
+        secret, venue = webhooks._signing_secret_for(db, "hamilton")
+
+    assert secret == "whsec_its_own"
+    assert venue is hamilton
+
+
+def test_the_legacy_path_still_uses_the_process_wide_secret(db):
+    """Aaron, 2026-09-12: parallel paths. The no-fallback rule applies to the
+    per-venue path only -- the path Stripe's dashboard points at today must
+    keep resolving exactly the secret it resolves now."""
+    from app.api import webhooks
+
+    with patch.object(webhooks, "STRIPE_WEBHOOK_SECRET", "whsec_the_live_one"):
+        secret, venue = webhooks._signing_secret_for(db, None)
+
+    assert secret == "whsec_the_live_one"
+    assert venue is None, "the legacy path asserts no venue, as it always has"

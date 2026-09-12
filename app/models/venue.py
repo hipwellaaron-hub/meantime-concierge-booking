@@ -56,6 +56,16 @@ class Venue(Base):
     # mis-keyed payment link is minted inside the wrong company's Stripe
     # account, and that account signs its own completion event, so nothing
     # downstream catches it (review, 2026-09-11).
+    #
+    # FILLING stripe_account_id CLOSES THE ROLLBACK WINDOW. While it is NULL,
+    # create_payment_link returns no account and record_payment_link stores a
+    # bare link id, which the previous build can still read. From the first
+    # link minted after it is set, entries are {"id":…, "account":…} dicts --
+    # and the previous build's deactivation loop hands a dict straight to
+    # stripe.PaymentLink.modify, which raises TypeError (not a StripeError,
+    # so it is not caught) and abandons the rest of that invoice's links
+    # undeactivated. Fill it once this build is settled, not during the
+    # window where a rollback is still on the table (review, 2026-09-12).
     stripe_secret_key_env: Mapped[str | None] = mapped_column(String(64), nullable=True)
     stripe_account_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     # And the variable holding this venue's WEBHOOK signing secret. Separate

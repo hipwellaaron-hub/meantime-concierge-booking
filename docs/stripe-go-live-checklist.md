@@ -152,6 +152,77 @@ dashboard). Neither has a fallback or default — if either is unset, the
 relevant code path fails loudly (`StripeNotConfigured` / a `503` from the
 webhook route) rather than silently pretending to work.
 
+## A second company: the per-venue webhook path
+
+Everything above describes `/webhooks/stripe`, the single endpoint Hamilton
+uses. It still works and is still what Stripe's dashboard points at — it has
+not changed and is not going to change by being deployed over.
+
+The Entrance is a **different company** (Nice Try Events Pty Ltd) with its
+own Stripe account, so it cannot share that endpoint.
+`stripe.Webhook.construct_event()` verifies against exactly **one** signing
+secret, and two accounts sign with two. One endpoint physically cannot serve
+both. So there is now a second route beside the first:
+
+    /webhooks/stripe                 — the original. Unchanged. Still live.
+    /webhooks/stripe/{venue_slug}    — one per venue, e.g. /webhooks/stripe/the-entrance
+
+**These run in parallel on purpose.** Live payments go through the original
+every day, and an interrupted webhook means a client pays and the system
+never finds out. The original is retired only when an account's dashboard
+has been deliberately moved to its own path and proven there — one account
+at a time, never by deploying a rename.
+
+### Adding a venue's endpoint
+
+1. **Set the venue's own signing-secret variable on Railway.** Pick a name
+   per venue, e.g. `STRIPE_WEBHOOK_SECRET_THE_ENTRANCE`, and set it to the
+   signing secret Stripe gives you when you create that account's endpoint.
+2. **Record the NAME of that variable on the venue row**, in
+   `venues.stripe_webhook_secret_env`. The row stores the variable's name,
+   never the secret itself — the same way `stripe_secret_key_env` works.
+3. **Create the endpoint in that account's Stripe Dashboard**, pointing at
+   `https://<production-domain>/webhooks/stripe/<venue-slug>`, sending
+   `checkout.session.completed`.
+4. **Send a test event from the Stripe dashboard** and confirm a `200`.
+
+**There is no fallback, deliberately.** A venue whose
+`stripe_webhook_secret_env` is empty does **not** quietly borrow
+`STRIPE_WEBHOOK_SECRET` — it refuses the event with a `503` and writes a
+line to the service log naming the venue. Borrowing would be worse than
+refusing: that account signs with its own secret, so verification would fail
+on every event, Stripe would retry for three days and then give up, and the
+result is the primary risk at the top of this document — the client charged,
+the invoice still saying unpaid. Both refusals (`no venue with slug X` and
+`venue X names Y, which is not set`) are logged distinctly, so a slug
+mistyped in the Stripe dashboard is distinguishable from a variable not yet
+set on Railway.
+
+### The mis-keyed payment, and the account id
+
+The failure a shared deployment makes possible is not a mis-*routed* event —
+it is a mis-*keyed* one. If a payment link is minted using the wrong
+company's secret key, that link really does belong to that account, so the
+completion event it sends is **correctly signed by that account** and passes
+verification. Nothing in the signature says the money went to the wrong
+company. Two things catch it:
+
+- `venues.stripe_account_id` — when set, the resolved key is checked against
+  the account the venue says it banks into *before* any link is created, and
+  a mismatch refuses to create the link at all.
+- The venue assertion in the webhook handler — an event arriving on venue
+  A's endpoint for an invoice belonging to venue B is **not recorded**, is
+  logged as an error, and is written to the booking's history as
+  `payment_venue_mismatch`. A client has paid and somebody has to unpick it
+  by hand; a silent return is how that stays invisible.
+
+**Filling in `stripe_account_id` closes the rollback window.** While it is
+NULL, payment link ids are stored as bare strings that the previous build can
+still read. From the first link minted after it is set, they are stored as
+`{"id": …, "account": …}`, and the previous build's deactivation loop chokes
+on the first one. Set it once the deploy is settled — not while a rollback is
+still on the table.
+
 ## Also worth knowing
 
 - **Stripe's own retry policy on a failing webhook**: up to roughly 3 days
