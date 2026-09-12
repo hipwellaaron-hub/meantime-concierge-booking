@@ -1,0 +1,4 @@
+# The published MCP tool schemas, fingerprinted, and the version that
+# describes them. Regenerate ONLY together with a SERVER_VERSION bump.
+version=1.2.0
+schemas=00721ea17b3f2ac155a5894d01e729f72a4b8bd612255af952f6866fbdca15d9

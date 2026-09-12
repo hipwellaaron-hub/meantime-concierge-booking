@@ -30,10 +30,21 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 SERVER_NAME = "meantime-concierge"
+# 1.2.0: `venue` became a REQUIRED argument on the four read tools
+# (availability, bookings, pipeline, catalogue). That is a breaking change
+# for a caller, so it is a version, and the version is what tells you which
+# build the connector is actually talking to.
+#
+# THE VERSION MUST MOVE WITH A SCHEMA CHANGE. The venue argument shipped in
+# 25b9671 with this number left at 1.1.0, which made /health useless for the
+# one thing it is for: confirming the redeploy landed before the web service
+# starts requiring the argument. Deploying those two out of order locks out
+# every AI read, Hamilton's included.
+#
 # 1.1.0: the Event Order proposal tools (one read, one write). The version
 # is reported by /health and by initialize, so a redeploy can be verified
 # from the connector side without guessing.
-SERVER_VERSION = "1.1.0"
+SERVER_VERSION = "1.2.0"
 SUPPORTED_PROTOCOLS = ("2025-06-18", "2025-03-26", "2024-11-05")
 DEFAULT_PROTOCOL = "2025-06-18"
 

@@ -119,7 +119,12 @@ TOOLS: list[dict] = [
                 "to": {**_DATE, "description": "End of a date range (max 120 days)."},
                 "space": {
                     "type": "string",
-                    "description": "Limit to one room: loft, mezzanine or lounge. Omit for all rooms.",
+                    "description": (
+                        "Limit to one room, by name. THE ROOMS DIFFER BY VENUE -- omit "
+                        "this to get every room at the venue you named, which is also "
+                        "how to find out what they are called. Do not carry a room name "
+                        "from one venue to another."
+                    ),
                 },
             },
             "required": ["venue"],
@@ -163,7 +168,10 @@ TOOLS: list[dict] = [
                 "date": {**_DATE, "description": "All bookings on this date."},
                 "space": {
                     "type": "string",
-                    "description": "With 'date', limit to one room: loft, mezzanine or lounge.",
+                    "description": (
+                        "With 'date', limit to one room by name. THE ROOMS DIFFER BY "
+                        "VENUE -- omit this for every room at the venue you named."
+                    ),
                 },
             },
             "required": ["venue"],
