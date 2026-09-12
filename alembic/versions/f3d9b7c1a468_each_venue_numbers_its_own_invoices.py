@@ -219,7 +219,18 @@ def upgrade() -> None:
                 NEW.invoice_number := v_number;
             END IF;
 
-            NEW.invoice_reference := v_prefix || '-' || NEW.invoice_number;
+            -- Only BUILD a reference when the row does not already carry
+            -- one. A pg_restore re-fires this trigger, and overwriting
+            -- here would rebuild every historical reference from the
+            -- venue's CURRENT prefix -- silently rewriting what clients
+            -- hold, which is the exact thing storing the reference rather
+            -- than deriving it exists to prevent.
+            --
+            -- Symmetrical with invoice_number above: a row that arrives
+            -- carrying its own identity keeps it.
+            IF NEW.invoice_reference IS NULL THEN
+                NEW.invoice_reference := v_prefix || '-' || NEW.invoice_number;
+            END IF;
             RETURN NEW;
         END;
         $$ LANGUAGE plpgsql;
@@ -277,6 +288,22 @@ def downgrade() -> None:
     op.alter_column(
         "invoices", "invoice_number",
         server_default=sa.text("nextval('invoice_number_seq')"),
+    )
+    # AND MOVE THE SEQUENCE PAST EVERYTHING THE COUNTER ISSUED.
+    #
+    # Nothing has called nextval since the upgrade ran -- the column
+    # default was dropped, so the sequence stood still while
+    # venue_invoice_counters climbed. Restoring the default without this
+    # hands out numbers that are already taken: the insert path then raises
+    # UniqueViolation once per invoice issued since the cutover, on the
+    # public deposit-invoice route, while the downgrade itself exits 0 and
+    # looks like a clean rollback.
+    #
+    # GLOBAL max, because the constraint restored above is global.
+    op.execute(
+        "SELECT setval('invoice_number_seq', "
+        "GREATEST((SELECT COALESCE(MAX(invoice_number), 1000) FROM invoices), "
+        "(SELECT last_value FROM invoice_number_seq)), true)"
     )
     op.drop_constraint("fk_invoices_venue", "invoices", type_="foreignkey")
     op.drop_column("invoices", "invoice_reference")
