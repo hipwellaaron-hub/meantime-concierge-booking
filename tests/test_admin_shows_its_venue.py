@@ -406,3 +406,96 @@ def test_a_legacy_link_to_a_booking_that_does_not_exist_does_not_404_the_operato
     resp = raw_admin_client.get(f"/admin/bookings/{missing}", follow_redirects=True)
 
     assert resp.status_code == 200, "a stale link to a deleted booking dead-ended"
+
+
+# --- the compat layer's OWN query string ----------------------------------
+#
+# The fix for "a redirect rebuilt from a literal drops the query string" was
+# applied to four in-router redirects. THE COMPAT LAYER BUILDS ITS URL THE
+# SAME WAY and was never touched -- and then d3c4919 added the bookings list
+# to MOVED_LIST_PATHS, putting every bookings filter behind it.
+#
+# The test above (test_no_moved_router_redirects_to_its_own_legacy_path) is
+# structural: it stops a ROUTER pointing at a legacy path. It says nothing
+# about what the legacy path then does with what it was given, which is
+# where the bug actually lived.
+
+
+def test_a_bookmarked_filtered_list_keeps_its_filter(raw_admin_client, db, hamilton):
+    """THE one. /admin/bookings?status=enquiry lands on an UNFILTERED list,
+    showing exactly the bookings the filter was there to exclude, with
+    nothing on the page saying the filter was dropped."""
+    resp = raw_admin_client.get(
+        "/admin/bookings?status=enquiry&q=smith", follow_redirects=False
+    )
+
+    assert resp.status_code == 303
+    location = resp.headers["location"]
+    assert location.startswith("/admin/hamilton/bookings"), location
+    assert "status=enquiry" in location, f"the status filter was dropped: {location}"
+    assert "q=smith" in location, f"the search term was dropped: {location}"
+
+
+def test_an_emailed_link_keeps_what_was_on_it(raw_admin_client, db, hamilton, loft, contact):
+    """The by-id redirect, which every emailed link goes through.
+    ?saved=1 is the confirmation banner and ?tab=documents is which tab
+    opens -- both silently lost."""
+    import datetime as dt
+
+    from app.services.booking import create_booking
+
+    booking = create_booking(
+        db, space_id=loft.id, contact_id=contact.id, event_date=dt.date(2027, 6, 6),
+        start_time=dt.time(18, 0), end_time=dt.time(23, 0), event_name="Query Carrier",
+        event_type="birthday", adult_count=40, child_count=0, notes=None, actor="test",
+    )
+    db.flush()
+
+    resp = raw_admin_client.get(
+        f"/admin/bookings/{booking.id}?saved=1&tab=documents", follow_redirects=False
+    )
+
+    assert resp.status_code == 303
+    location = resp.headers["location"]
+    assert "saved=1" in location and "tab=documents" in location, location
+
+
+def test_a_bare_legacy_url_does_not_gain_a_dangling_question_mark(raw_admin_client, db, hamilton):
+    """The other direction. A trailing '?' on every legacy redirect is the
+    sort of thing that turns up in an access log and in somebody's
+    bookmark."""
+    resp = raw_admin_client.get("/admin/bookings", follow_redirects=False)
+
+    assert resp.headers["location"] == "/admin/hamilton/bookings"
+
+
+def test_the_venue_chooser_carries_the_query_onto_every_choice(
+    raw_admin_client, db, hamilton, staff_user
+):
+    """With two venues the legacy URL renders a chooser instead of
+    redirecting, and each choice is a link built the same way -- so it drops
+    the filter just as silently, one click later."""
+    from decimal import Decimal
+
+    from app.models import Space, Venue
+
+    entrance = Venue(
+        name="The Entrance", slug="entrance", trading_name="Meantime The Entrance",
+        reference_prefix="ENT",
+    )
+    db.add(entrance)
+    db.flush()
+    db.add(Space(
+        venue_id=entrance.id, name="Private Bar Function", capacity=80,
+        standard_min_adults=40, min_food_spend=Decimal("1000"), is_bookable=True,
+    ))
+    db.flush()
+
+    resp = raw_admin_client.get("/admin/bookings?status=enquiry", follow_redirects=False)
+
+    assert resp.status_code == 200, "two venues should offer a choice, not redirect"
+    # Jinja escapes & to &amp; inside an href, which is correct HTML and what
+    # a browser follows -- so accept either spelling rather than pinning one.
+    body = resp.text.replace("&amp;", "&")
+    assert "/admin/hamilton/bookings?status=enquiry" in body, body[:400]
+    assert "/admin/entrance/bookings?status=enquiry" in body

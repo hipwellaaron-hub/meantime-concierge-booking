@@ -39,6 +39,12 @@ from app.venue_scope import staff_may_use, venues_for
 router = APIRouter(prefix="/admin", tags=["admin-compat"], dependencies=[Depends(require_staff)])
 
 
+def _with_query(path: str, request: Request) -> str:
+    """`path` with this request's own query string on the end, if it had one."""
+    query = request.url.query
+    return f"{path}?{query}" if query else path
+
+
 def _chooser_or_redirect(
     request: Request, db: Session, staff: StaffUser, *, then: str = ""
 ):
@@ -47,8 +53,20 @@ def _chooser_or_redirect(
     `then` is the path WITHIN a venue to land on, e.g. "/bookings". It is
     built from a fixed set of literals at the call sites below and never from
     anything the caller supplies, so it cannot become an open redirect.
+
+    THE QUERY STRING RIDES ALONG. A destination rebuilt from a literal drops
+    `?status=enquiry`, `?week=`, `?saved=1` -- and the page that arrives is
+    an UNFILTERED list that looks exactly like a filtered one. That is the
+    same failure four in-router redirects were fixed for; the fix went into
+    the routers and this layer, which builds its URL the same way, was left
+    alone. Then the bookings list moved behind it.
+
+    Only the query is appended -- the path is still literal, so this is
+    still not an open redirect, and a fragment cannot appear because a
+    browser never sends one to the server.
     """
     usable = venues_for(db, staff)
+    then = _with_query(then, request)
 
     if not usable:
         # Not a 404: the operator is signed in and there is genuinely nowhere
@@ -113,6 +131,7 @@ for _legacy, _then in MOVED_LIST_PATHS:
 @router.get("/bookings/{booking_id}", include_in_schema=False)
 def legacy_booking(
     booking_id: uuid.UUID,
+    request: Request,
     db: Session = Depends(get_db),
     staff: StaffUser = Depends(require_staff),
 ):
@@ -141,5 +160,6 @@ def legacy_booking(
         # the honest answer in both cases to somebody who cannot see it.
         return RedirectResponse(url="/admin/", status_code=303)
     return RedirectResponse(
-        url=f"/admin/{booking.venue.slug}/bookings/{booking.id}", status_code=303
+        url=_with_query(f"/admin/{booking.venue.slug}/bookings/{booking.id}", request),
+        status_code=303,
     )
