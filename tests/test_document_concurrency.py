@@ -14,10 +14,23 @@ from app.models.document import DocumentStatus, DocumentType
 from app.services.booking import create_booking
 from app.services.document_generation import generate_agreement_content
 from app.services.documents import create_new_version, get_by_token, mark_sent, sign
-from tests.conftest import TestSessionLocal
+import pytest
+
+from tests.conftest import TestSessionLocal, purge_venue
 
 
-def test_concurrent_signs_cannot_both_succeed():
+@pytest.fixture()
+def signable_document():
+    """Committed for real -- concurrent transactions are the whole point, so
+    the savepoint-based `db` fixture cannot be used here.
+
+    Which means these rows SURVIVE the test, and until 2026-09-12 nothing
+    removed them: this module alone had leaked 41 venues into the shared test
+    database. A fixture rather than a cleanup block at the end of the test,
+    so it also runs when an assertion fails -- a test that leaks only when it
+    fails is the worst version, because the leak then arrives with a red
+    suite and gets blamed on whatever is being built at the time.
+    """
     setup = TestSessionLocal()
     venue = Venue(name="Sign Concurrency Test Venue", slug=f"sign-concurrency-test-{uuid.uuid4().hex[:8]}", reference_prefix=uuid.uuid4().hex[:5].upper())
     space = Space(
@@ -50,7 +63,17 @@ def test_concurrent_signs_cannot_both_succeed():
     document = create_new_version(setup, booking, DocumentType.agreement, generate_agreement_content(booking), actor="test")
     document = mark_sent(setup, document, actor="test")
     token = document.access_token
+    venue_id, contact_id = venue.id, contact.id
     setup.close()
+
+    try:
+        yield token
+    finally:
+        purge_venue(venue_id, contact_ids=[contact_id])
+
+
+def test_concurrent_signs_cannot_both_succeed(signable_document):
+    token = signable_document
 
     barrier = threading.Barrier(2)
     results = {}

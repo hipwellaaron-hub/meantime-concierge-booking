@@ -19,7 +19,7 @@ from app.models.booking import BLOCKING_STATUSES, Booking, BookingStatus
 from app.services import calendar as calendar_service
 from app.services.availability import is_space_free
 from app.services.booking import change_status, create_booking, create_hold, set_hold_expiry
-from tests.conftest import TestSessionLocal
+from tests.conftest import TestSessionLocal, purge_venue
 
 
 def _csrf(html: str) -> str:
@@ -236,7 +236,12 @@ def test_calendar_shows_actual_guest_count_not_space_standard(db, hamilton, loft
 # --- concurrency: the constraint stops it, not application logic ------------
 
 
-def test_concurrent_confirmations_same_space_time_only_one_succeeds():
+@pytest.fixture()
+def committed_calendar_space():
+    """Committed for real -- concurrent transactions are the point. The
+    cleanup that used to sit after the assertion ran only on a pass and
+    could not remove a booking that had audit events (booking_events is
+    append-only), which is why this module leaked 9 venues."""
     setup_session = TestSessionLocal()
     venue = Venue(name="Calendar Concurrency Venue", slug=f"cal-conc-{uuid.uuid4().hex[:8]}", reference_prefix=uuid.uuid4().hex[:5].upper())
     space = Space(
@@ -247,6 +252,15 @@ def test_concurrent_confirmations_same_space_time_only_one_succeeds():
     setup_session.commit()
     space_id, venue_id = space.id, venue.id
     setup_session.close()
+
+    try:
+        yield space_id, venue_id
+    finally:
+        purge_venue(venue_id)
+
+
+def test_concurrent_confirmations_same_space_time_only_one_succeeds(committed_calendar_space):
+    space_id, venue_id = committed_calendar_space
 
     barrier = threading.Barrier(2)
     results = {}
@@ -287,13 +301,6 @@ def test_concurrent_confirmations_same_space_time_only_one_succeeds():
         t.join()
 
     assert sorted(results.values()) == ["failed", "success"], results
-
-    cleanup = TestSessionLocal()
-    cleanup.query(Booking).filter(Booking.space_id == space_id).delete()
-    cleanup.query(Space).filter(Space.id == space_id).delete()
-    cleanup.query(Venue).filter(Venue.id == venue_id).delete()
-    cleanup.commit()
-    cleanup.close()
 
 
 # --- the empty week ------------------------------------------------------------

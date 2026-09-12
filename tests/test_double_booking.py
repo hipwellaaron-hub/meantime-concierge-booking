@@ -14,10 +14,21 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 
 from app.models import Space, Venue
 from app.models.booking import Booking, BookingStatus
-from tests.conftest import TestSessionLocal
+import pytest
+
+from tests.conftest import TestSessionLocal, purge_venue
 
 
-def test_concurrent_overlapping_inserts_cannot_both_succeed():
+@pytest.fixture()
+def committed_space():
+    """Committed for real -- concurrent transactions are the point.
+
+    This module DID clean up, but the block sat after the assertion, so a
+    failing run leaked, and it deleted bookings directly -- which cannot
+    work once a booking has audit events, because booking_events is
+    append-only at the database level. Hence 9 leaked venues. purge_venue
+    goes through delete_booking_and_dependents, the one sanctioned hard
+    delete, which holds the flagged escape hatch."""
     setup_session = TestSessionLocal()
     venue = Venue(name="Concurrency Test Venue", slug=f"concurrency-test-{uuid.uuid4().hex[:8]}", reference_prefix=uuid.uuid4().hex[:5].upper())
     space = Space(
@@ -33,6 +44,17 @@ def test_concurrent_overlapping_inserts_cannot_both_succeed():
     setup_session.commit()
     space_id, venue_id = space.id, venue.id
     setup_session.close()
+
+    try:
+        yield space_id, venue_id
+    finally:
+        purge_venue(venue_id)
+
+
+def test_concurrent_overlapping_inserts_cannot_both_succeed(committed_space):
+    # Both ids: the thread body builds a Booking directly and sets venue_id
+    # explicitly, because bookings carry their venue as a column now.
+    space_id, venue_id = committed_space
 
     barrier = threading.Barrier(2)
     results = {}
@@ -84,10 +106,3 @@ def test_concurrent_overlapping_inserts_cannot_both_succeed():
         t.join()
 
     assert sorted(results.values()) == ["failed", "success"], results
-
-    cleanup = TestSessionLocal()
-    cleanup.query(Booking).filter(Booking.space_id == space_id).delete()
-    cleanup.query(Space).filter(Space.id == space_id).delete()
-    cleanup.query(Venue).filter(Venue.id == venue_id).delete()
-    cleanup.commit()
-    cleanup.close()

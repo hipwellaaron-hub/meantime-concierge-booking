@@ -18,10 +18,17 @@ from app.models.payment import PaymentMethod
 from app.services.booking import create_booking
 from app.services.invoicing import create_invoice, get_by_token, get_total_paid, mark_sent, record_payment
 from app.models.invoice import InvoiceType
-from tests.conftest import TestSessionLocal
+import pytest
+
+from tests.conftest import TestSessionLocal, purge_venue
 
 
-def test_concurrent_split_payments_correctly_flip_invoice_to_paid():
+@pytest.fixture()
+def payable_invoice():
+    """Committed for real -- concurrent transactions are the point, so the
+    savepoint-based `db` fixture cannot be used. A fixture rather than a
+    cleanup block at the end, so the rows go even when an assertion fails
+    (this module had leaked 40 venues into the shared test database)."""
     setup = TestSessionLocal()
     venue = Venue(name="Payment Concurrency Test Venue", slug=f"payment-concurrency-test-{uuid.uuid4().hex[:8]}", reference_prefix=uuid.uuid4().hex[:5].upper())
     space = Space(
@@ -55,7 +62,17 @@ def test_concurrent_split_payments_correctly_flip_invoice_to_paid():
     invoice = create_invoice(setup, booking, InvoiceType.final, line_items, dt.date(2027, 3, 1), actor="test")
     invoice = mark_sent(setup, invoice, actor="test")
     token = invoice.access_token
+    venue_id, contact_id = venue.id, contact.id
     setup.close()
+
+    try:
+        yield token
+    finally:
+        purge_venue(venue_id, contact_ids=[contact_id])
+
+
+def test_concurrent_split_payments_correctly_flip_invoice_to_paid(payable_invoice):
+    token = payable_invoice
 
     barrier = threading.Barrier(2)
     results = {}

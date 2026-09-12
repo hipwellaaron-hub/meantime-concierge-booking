@@ -174,3 +174,111 @@ def _background_work_uses_the_test_session(db, monkeypatch):
     from app.services import documents as documents_service
 
     monkeypatch.setattr(documents_service, "background_db", lambda: nullcontext(db))
+
+
+# --- cleanup for the tests that deliberately COMMIT -------------------------
+#
+# Four test modules exercise real concurrent transactions, so they cannot use
+# the `db` fixture (which rolls everything back inside one savepoint) and have
+# to commit against their own sessions. Until 2026-09-12 none of them cleaned
+# up, and the shared test database had accumulated 99 leaked venues, 351
+# contacts, 81 bookings, 34 documents and 33 invoices.
+#
+# That is not tidiness. The leaked rows made `Venue`/`Contact` lookups that
+# expect one row raise MultipleResultsFound in UNRELATED tests, and any query
+# that counts or lists across the table reads as a bug in whatever is being
+# built at the time -- which is exactly the shape of question the venue switch
+# asks ("does this list contain another venue's rows?").
+
+def purge_venue(venue_id, *, contact_ids=()):
+    """Delete a committed test venue and everything hanging off it.
+
+    Call from a fixture's `finally` so a failing assertion still cleans up --
+    a test that leaks only when it fails is the worst version, because the
+    leak then arrives with a red suite and gets blamed on the change under
+    test.
+
+    Uses `delete_booking_and_dependents`, which is the codebase's ONE
+    sanctioned hard delete, rather than a second delete graph that would
+    drift from it. It already knows the FK-safe order, and it already sets
+    `app.allow_booking_purge` transaction-locally -- `booking_events` is
+    append-only at the database level (a trigger from the phase-1 schema,
+    given this deliberate escape hatch by c4f1a9d2e6b8), so nothing else can
+    remove a booking at all.
+
+    Contacts are passed in explicitly: `contacts` has no venue_id -- a person
+    is not owned by a venue -- so nothing in the graph can reach them.
+    """
+    from sqlalchemy import select, text
+
+    from app.models import Booking, Space, Venue
+    from app.services.booking import delete_booking_and_dependents
+
+    session = TestSessionLocal()
+    try:
+        bookings = session.scalars(
+            select(Booking).join(Space, Space.id == Booking.space_id)
+            .where(Space.venue_id == venue_id)
+            # Parents first: the helper refuses a linked child directly and
+            # removes it via its parent, so a child reached first would raise.
+            .where(Booking.parent_booking_id.is_(None))
+        ).all()
+        for booking in bookings:
+            delete_booking_and_dependents(session, booking, actor="test-cleanup")
+
+        # Anything left is a linked child whose parent was already removed,
+        # or a booking created by a direct INSERT with no parent link.
+        for booking in session.scalars(
+            select(Booking).join(Space, Space.id == Booking.space_id).where(Space.venue_id == venue_id)
+        ).all():
+            session.execute(text("SET LOCAL app.allow_booking_purge = 'on'"))
+            session.delete(booking)
+        session.commit()
+
+        session.execute(text("DELETE FROM spaces WHERE venue_id = :v"), {"v": venue_id})
+        session.execute(text("DELETE FROM venues WHERE id = :v"), {"v": venue_id})
+        if contact_ids:
+            session.execute(
+                text("DELETE FROM contacts WHERE id = ANY(:ids)"), {"ids": list(contact_ids)}
+            )
+        session.commit()
+    finally:
+        session.close()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _sweep_committed_leftovers():
+    """Last line of defence for the tests that COMMIT.
+
+    Contacts get swept rather than owned: `contacts` has no venue_id and no
+    booking ownership -- a person is not owned by a booking, so
+    delete_booking_and_dependents correctly leaves them behind, and there is
+    no single place a per-test fixture could hang. Only ORPHANS go: a contact
+    with no bookings is referenced by nothing, by definition.
+
+    Leaked VENUES are only REPORTED, never swept. A venue has an owner -- the
+    fixture that created it -- so quietly deleting one would hide a test that
+    forgot to clean up, and the next person would rediscover the same 99-row
+    pile-up. Loud and left alone beats tidy and invisible.
+    """
+    yield
+
+    from sqlalchemy import text
+
+    with test_engine.begin() as conn:
+        orphans = conn.execute(
+            text("DELETE FROM contacts WHERE id NOT IN "
+                 "(SELECT contact_id FROM bookings WHERE contact_id IS NOT NULL)")
+        ).rowcount
+        leaked = [
+            r[0] for r in conn.execute(text("SELECT slug FROM venues WHERE slug <> 'hamilton'"))
+        ]
+    if orphans:
+        print(f"\n[cleanup] swept {orphans} orphaned contact(s) left by committing tests")
+    if leaked:
+        print(
+            f"\n[cleanup] WARNING: {len(leaked)} venue(s) leaked into the test database and were "
+            f"NOT swept: {', '.join(leaked[:10])}"
+            "\n           A committing test is missing its purge_venue() cleanup. Left in place "
+            "deliberately so it stays visible."
+        )
