@@ -111,7 +111,14 @@ def admin_ctx(request: Request, staff: StaffUser | None = None, **extra) -> dict
         # Every admin page gets this automatically, not just the ones that
         # touch payments -- the risk this guards against ("staff assumes
         # real money is moving") isn't confined to the invoice screen.
-        "stripe_mode": stripe_integration.get_mode(),
+        #
+        # THIS VENUE's key, not the process's. Two companies means two keys
+        # and one of them can be live while the other is not; a
+        # process-wide answer on a venue-scoped page is how somebody takes
+        # a deposit through a sandbox key and waits for money that is never
+        # coming. Falls back to the process key only where there is no
+        # venue in scope at all (the chooser, the login).
+        "stripe_mode": stripe_integration.mode_for(getattr(request.state, "venue", None)),
     }
     ctx.update(extra)
     return ctx

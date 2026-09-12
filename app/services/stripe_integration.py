@@ -156,8 +156,40 @@ def is_configured_for(venue) -> bool:
     return True
 
 
+def _mode_of(key: str | None) -> StripeMode:
+    if not key:
+        return StripeMode.not_configured
+    if key.startswith(("sk_test_", "rk_test_")):
+        return StripeMode.test
+    return StripeMode.live
+
+
+def mode_for(venue) -> StripeMode:
+    """Live/test for THIS venue's own key.
+
+    The badge this feeds is on every admin page, and every admin page is
+    now scoped to a venue -- so a process-wide answer there says "Stripe
+    live" over a venue whose links charge nothing, or "no real charges"
+    over a venue whose links charge real cards. Two companies, two keys,
+    and the badge exists precisely to stop somebody assuming which.
+
+    A venue with no key of its own reports not_configured rather than
+    borrowing the answer from whichever key the process happens to hold --
+    the same rule as secret_key_for, for the same reason.
+    """
+    if venue is None:
+        return get_mode()
+    try:
+        return _mode_of(secret_key_for(venue))
+    except StripeNotConfigured:
+        return StripeMode.not_configured
+
+
 def get_mode() -> StripeMode:
-    """Derived from the secret key's own prefix, never from a separate
+    """The PROCESS-wide key's mode, for a page with no venue in scope --
+    the venue chooser and the login. A venue-scoped page asks mode_for().
+
+    Derived from the secret key's own prefix, never from a separate
     setting -- a separate "is this live?" flag can silently disagree with
     which key is actually loaded (wrong env var set, a stale value left
     over from a previous config), and that's exactly the mistake this
@@ -170,11 +202,7 @@ def get_mode() -> StripeMode:
     hasn't seen before) is reported as "live". Money is the one place
     where an unrecognized case must fail toward "assume this is real",
     never toward "assume it's safe to ignore"."""
-    if not STRIPE_SECRET_KEY:
-        return StripeMode.not_configured
-    if STRIPE_SECRET_KEY.startswith(("sk_test_", "rk_test_")):
-        return StripeMode.test
-    return StripeMode.live
+    return _mode_of(STRIPE_SECRET_KEY)
 
 
 def _to_cents(amount: Decimal) -> int:
@@ -225,6 +253,34 @@ def create_payment_link(invoice: Invoice, amount: Decimal) -> tuple[str, str, st
     return payment_link.url, payment_link.id, (getattr(venue, "stripe_account_id", None) or "")
 
 
+def _venue_that_minted(invoice, account: str):
+    """Which venue's key can close a link that was minted in `account`.
+
+    No account recorded means the entry predates the account being stored,
+    and create_payment_link has always minted with the INVOICE's own venue's
+    key -- so that venue is the answer, not a guess.
+
+    A recorded account that no venue row claims is the dangerous one: the
+    venue's key has been repointed since, and the link can no longer be
+    closed from here at all. None, so the caller says so out loud.
+    """
+    venue = invoice.booking.venue
+    if not account:
+        return venue
+    if account == (getattr(venue, "stripe_account_id", None) or ""):
+        return venue
+
+    from sqlalchemy import select
+    from sqlalchemy.orm import object_session
+
+    from app.models import Venue
+
+    session = object_session(invoice)
+    if session is None:
+        return None
+    return session.scalars(select(Venue).where(Venue.stripe_account_id == account)).one_or_none()
+
+
 def deactivate_payment_links(invoice, link_ids: list[str] | None = None) -> None:
     """Best-effort: called whenever an invoice is cancelled (see
     invoicing.cancel_invoice), which itself fires whenever a booking moves
@@ -240,16 +296,40 @@ def deactivate_payment_links(invoice, link_ids: list[str] | None = None) -> None
     payable; it is logged so that is visible, not silently lost."""
     # Takes the INVOICE, not a bare list of ids, because deactivating a link
     # needs the account that minted it and only the invoice knows its venue.
-    try:
-        api_key = secret_key_for(invoice.booking.venue)
-    except StripeNotConfigured:
-        return
+    #
+    # PER LINK, not per invoice. This used to resolve one key up front and
+    # present it for every link -- ignoring the account recorded beside each
+    # id, which exists for exactly this. A link minted in another account
+    # then got "No such payment link", which is caught, logged, and leaves
+    # the link live and payable.
     for link_id in link_ids if link_ids is not None else (invoice.stripe_payment_link_ids or []):
         # Stored entries may be a bare id (written before 2026-09-12) or
-        # {"id": ..., "account": ...}. A bare one is Hamilton's, which is the
-        # only account that existed when it was written.
+        # {"id": ..., "account": ...}.
         ident = link_id.get("id") if isinstance(link_id, dict) else link_id
         if not ident:
+            continue
+        account = (link_id.get("account") or "") if isinstance(link_id, dict) else ""
+        venue = _venue_that_minted(invoice, account)
+        if venue is None:
+            # Refused rather than attempted with a key we already know is
+            # wrong: "could not deactivate" would read as Stripe being
+            # flaky, when the truth is there is no key here that can close
+            # this link and somebody has to do it in the dashboard.
+            logger.error(
+                "Stripe Payment Link %s was minted in account %r and no venue row claims that "
+                "account, so no key here can close it -- THE LINK IS STILL PAYABLE and must be "
+                "deactivated in the Stripe dashboard by hand",
+                ident, account,
+            )
+            continue
+        try:
+            api_key = secret_key_for(venue)
+        except StripeNotConfigured:
+            logger.error(
+                "Stripe Payment Link %s belongs to venue %r, which has no key configured -- "
+                "THE LINK IS STILL PAYABLE",
+                ident, getattr(venue, "slug", None),
+            )
             continue
         try:
             stripe.PaymentLink.modify(ident, active=False, api_key=api_key)
