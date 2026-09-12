@@ -38,7 +38,7 @@ def test_invoices_list_shows_invoices(admin_client, db, loft):
 
     page = admin_client.get("/admin/invoices")
     assert page.status_code == 200
-    assert f"#{invoice.invoice_number}" in page.text
+    assert invoice.invoice_reference in page.text
     assert "Listed Event" in page.text
 
 
@@ -48,8 +48,8 @@ def test_invoices_list_filters_by_status(admin_client, db, loft):
     sent = _invoice(db, _booking(db, loft, name="Second"), sent=True, amount="200.00")
 
     page = admin_client.get("/admin/invoices?status=sent")
-    assert f"#{sent.invoice_number}" in page.text
-    assert f"#{draft.invoice_number}" not in page.text
+    assert sent.invoice_reference in page.text
+    assert draft.invoice_reference not in page.text
 
 
 def test_invoices_list_rejects_an_unknown_status(admin_client):
@@ -67,12 +67,12 @@ def test_default_shows_active_hides_paid(admin_client, db, loft):
 
     default = admin_client.get("/admin/invoices")
     assert default.status_code == 200
-    assert f"#{draft.invoice_number}" in default.text
-    assert f"#{paid.invoice_number}" not in default.text  # paid is done -- hidden by default
+    assert draft.invoice_reference in default.text
+    assert paid.invoice_reference not in default.text  # paid is done -- hidden by default
 
     all_view = admin_client.get("/admin/invoices?status=all")
-    assert f"#{paid.invoice_number}" in all_view.text  # ...but reachable via "All"
-    assert f"#{draft.invoice_number}" in all_view.text
+    assert paid.invoice_reference in all_view.text  # ...but reachable via "All"
+    assert draft.invoice_reference in all_view.text
 
 
 def test_unpaid_tile_count_matches_the_list_it_links_to(admin_client, db, loft, hamilton):

@@ -2,7 +2,7 @@
 {% block title %}Edit invoice{% endblock %}
 {% block content %}
 <p><a href="{{ venue_base }}/bookings/{{ booking.id }}">&larr; {{ booking.event_name }}</a></p>
-<h1>Edit invoice #{{ invoice.invoice_number }}</h1>
+<h1>Edit invoice {{ invoice.invoice_reference }}</h1>
 <p class="muted">
   {{ invoice.type.value | capitalize }} invoice &middot; {{ booking.reference_code }} &middot; draft.
   Change line amounts, add or remove lines, or add a <b>discount</b> line (enter a negative unit price,

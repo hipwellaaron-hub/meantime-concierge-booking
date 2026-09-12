@@ -101,6 +101,11 @@ def test_healthz_is_degraded_when_there_is_no_venue_at_all(db):
     """
     from sqlalchemy import text as sql_text
 
+    # The invoice registers go first: venue_invoice_counters holds a
+    # foreign key to venues (f3d9b7c1a468), opened automatically the first
+    # time a venue raises an invoice, so leaving it would make this DELETE
+    # fail rather than empty the table.
+    db.execute(sql_text("DELETE FROM venue_invoice_counters"))
     db.execute(sql_text("DELETE FROM spaces"))
     db.execute(sql_text("DELETE FROM venues"))
     db.flush()

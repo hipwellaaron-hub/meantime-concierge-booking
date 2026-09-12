@@ -3,7 +3,7 @@ import enum
 import uuid
 from decimal import Decimal
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, LargeBinary, Numeric, String, func, text
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, LargeBinary, Numeric, String, UniqueConstraint, func, text
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -35,18 +35,45 @@ def generate_access_token() -> str:
 
 class Invoice(Base):
     __tablename__ = "invoices"
+    # Declared so autogenerate does not propose dropping it. The
+    # integer is unique WITHIN a venue; the reference above is unique
+    # across all of them.
+    __table_args__ = (UniqueConstraint("venue_id", "invoice_number", name="uq_invoices_venue_number"),)
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     booking_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("bookings.id"), nullable=False)
-    # A short, human-readable reference for a client to quote back ("my
-    # invoice number is 1004") -- the UUID id/access_token are never fit
-    # for that. Assigned by a Postgres sequence (invoice_number_seq, see
-    # the migration) starting fresh at 1001: this is Concierge's own
-    # numbering, not a continuation of the prior iVvy sequence, since
-    # there's no reliable source for exactly where that one left off.
-    invoice_number: Mapped[int] = mapped_column(
-        Integer, nullable=False, unique=True, server_default=text("nextval('invoice_number_seq')")
+    # WHICH COMPANY'S INVOICE THIS IS. Two legal entities share this table,
+    # and each keeps its own register.
+    #
+    # Never written by the application: a BEFORE INSERT trigger takes it
+    # from the booking, whatever the caller supplied, and a second trigger
+    # refuses to let it change afterwards (migration f3d9b7c1a468). So it
+    # cannot disagree with the booking it belongs to -- the same guarantee
+    # fk_bookings_space_venue gives bookings, by a different mechanism.
+    venue_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("venues.id"), nullable=False
     )
+
+    # This venue's own running number. Unique PER VENUE, not globally:
+    # HAM-1004 and ENT-1004 are two different companies' invoices and both
+    # are correct. Starts at 1001 for each register.
+    #
+    # Assigned by the same trigger, from venue_invoice_counters, with one
+    # UPDATE ... RETURNING -- a row lock, so two invoices raised at the
+    # same instant for one venue take consecutive numbers, and a
+    # rolled-back transaction gives its number back rather than burning it.
+    invoice_number: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    # WHAT THE CLIENT READS AND QUOTES BACK: "HAM-1004". The venue's
+    # reference_prefix and its number, the same shape as the booking
+    # reference printed beside it.
+    #
+    # STORED, not derived, for the reason bookings.reference_code is
+    # stored: a client holds it, so editing a venue row must not change
+    # what is on an invoice already sent. It carries the GLOBAL unique that
+    # invoice_number used to carry, which is what makes a quoted reference
+    # resolve to exactly one invoice across both companies.
+    invoice_reference: Mapped[str] = mapped_column(String(32), nullable=False, unique=True)
     type: Mapped[InvoiceType] = mapped_column(invoice_type_enum, nullable=False)
     line_items: Mapped[list] = mapped_column(JSONB, nullable=False)
     subtotal: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)

@@ -16,6 +16,7 @@ from app.models.space import Space  # noqa: F401
 from app.models.staff_app_token import StaffAppToken  # noqa: F401
 from app.models.staff_user import StaffUser  # noqa: F401
 from app.models.venue import Venue  # noqa: F401
+from app.models.venue_invoice_counter import VenueInvoiceCounter
 from app.models.wizard_session import WizardSession, WizardSessionStatus, WizardStep  # noqa: F401
 
 __all__ = [
@@ -52,6 +53,7 @@ __all__ = [
     "StaffAppToken",
     "StaffUser",
     "Venue",
+    "VenueInvoiceCounter",
     "WizardSession",
     "WizardSessionStatus",
     "WizardStep",

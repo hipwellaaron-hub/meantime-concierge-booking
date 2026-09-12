@@ -108,7 +108,11 @@
         <div class="box">
           <div class="box-title-row"><span class="box-title">Invoice Details</span> <span class="status status-{{ invoice.status.value }}">{{ invoice.status.value }}</span></div>
           <table class="kv">
-            <tr><td class="label">Invoice #</td><td>{{ invoice.invoice_number }}</td></tr>
+            {# The reference, not the bare integer: two companies share this
+                   table and each numbers its own register, so 1004 alone is
+                   ambiguous between them. Stored on the row, so it cannot
+                   change under a client who already has this page. #}
+            <tr><td class="label">Invoice</td><td>{{ invoice.invoice_reference }}</td></tr>
             <tr><td class="label">Date of issue</td><td>{{ invoice.created_at | sydney_time("%d %b %Y") }}</td></tr>
             <tr><td class="label">Currency</td><td>AUD</td></tr>
             <tr><td class="label">Due Date</td><td>{{ invoice.due_date | aus_date }}</td></tr>
@@ -200,7 +204,7 @@
             <tr><th>Invoice #</th><th>Type</th><th>Status</th><th class="num">Total</th></tr>
             {% for inv in other_invoices %}
             <tr>
-              <td>{{ inv.invoice_number }}</td>
+              <td>{{ inv.invoice_reference }}</td>
               <td>{{ "Deposit" if inv.type.value == "deposit" else "Final" }}</td>
               <td><span class="status status-{{ inv.status.value }}">{{ inv.status.value }}</span></td>
               <td class="num">${{ inv.total }}</td>

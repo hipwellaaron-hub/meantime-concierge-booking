@@ -32,7 +32,7 @@
     <tbody>
     {% for invoice in invoices %}
       <tr onclick="window.location='{{ venue_base }}/bookings/{{ invoice.booking_id }}'" style="cursor:pointer;">
-        <td>#{{ invoice.invoice_number }}</td>
+        <td>{{ invoice.invoice_reference }}</td>
         <td>
           {{ invoice.booking.event_name }}
           <div class="muted" style="font-size:0.72rem;">{{ invoice.booking.reference_code }}</div>

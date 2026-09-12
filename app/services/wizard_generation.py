@@ -557,11 +557,11 @@ def generate_beo_and_invoice(db: Session, session: WizardSession, *, actor: str)
         )
         ordered_total = compute_food_order_total(food_line_items) or Decimal("0.00")
         outstanding_items.append(
-            f"Final invoice #{existing_invoice.invoice_number} already exists and was NOT rebuilt from this "
+            f"Final invoice {existing_invoice.invoice_reference} already exists and was NOT rebuilt from this "
             f"submission: it bills {billed_total:.2f} for food that is not what the client has now chosen "
             f"({ordered_total:.2f}). Refresh or reissue it before sending."
             if billed != ordered_lines
-            else f"Final invoice #{existing_invoice.invoice_number} already exists -- not creating a duplicate; "
+            else f"Final invoice {existing_invoice.invoice_reference} already exists -- not creating a duplicate; "
             "its food lines are the same as this submission's."
         )
         invoice = db.execute(

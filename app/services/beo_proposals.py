@@ -493,12 +493,12 @@ def sync_final_invoice_from_food(db: Session, booking: Booking, lines: list[dict
                 outcome = "no final invoice built: the booking has no event date for it to fall due against"
             else:
                 invoice = invoicing.create_final_invoice(db, booking, line_items=invoice_lines, due_date=due, actor=actor)
-                outcome = f"draft final invoice #{invoice.invoice_number} built from the approved food order (total {invoice.total})"
+                outcome = f"draft final invoice {invoice.invoice_reference} built from the approved food order (total {invoice.total})"
         elif existing.is_legacy:
-            outcome = f"final invoice #{existing.invoice_number} is a legacy record and was left alone"
+            outcome = f"final invoice {existing.invoice_reference} is a legacy record and was left alone"
         elif existing.status != InvoiceStatus.draft:
             outcome = (
-                f"final invoice #{existing.invoice_number} is already {existing.status.value} and was left alone -- "
+                f"final invoice {existing.invoice_reference} is already {existing.status.value} and was left alone -- "
                 + (
                     "cancel and reissue it if the food order changed"
                     if existing.status == InvoiceStatus.paid
@@ -507,12 +507,12 @@ def sync_final_invoice_from_food(db: Session, booking: Booking, lines: list[dict
             )
         elif not _is_catalogue_built(existing):
             outcome = (
-                f"draft final invoice #{existing.invoice_number} carries lines this Event Order did not put there, "
+                f"draft final invoice {existing.invoice_reference} carries lines this Event Order did not put there, "
                 "so it was left alone -- check its food lines against the approved order by hand"
             )
         else:
             invoicing.update_invoice(db, existing, line_items=invoice_lines, due_date=existing.due_date, actor=actor)
-            outcome = f"draft final invoice #{existing.invoice_number} refreshed from the approved food order (total {existing.total})"
+            outcome = f"draft final invoice {existing.invoice_reference} refreshed from the approved food order (total {existing.total})"
     except Exception as exc:  # noqa: BLE001 -- an invoice problem must never undo an approved food order
         db.rollback()
         logger.exception("Final invoice sync failed for booking %s", booking.id)
@@ -556,7 +556,13 @@ def latest_food_invoice_notice(booking: Booking) -> str | None:
             acted_after = True
     if raised is None or acted_after:
         return None
-    if (raised.new_value or "").startswith("draft final invoice #") and "left alone" not in (raised.new_value or ""):
+    # Matched against the text the outcome strings above build, which is a
+    # coupling worth naming: it read "draft final invoice #" until invoice
+    # numbers gained their venue prefix (HAM-1001), and the "#" vanishing
+    # silently un-suppressed this banner on every built draft. Caught by
+    # tests/test_beo_proposals.py, which is why the string is asserted
+    # there rather than only here.
+    if (raised.new_value or "").startswith("draft final invoice ") and "left alone" not in (raised.new_value or ""):
         return None
     return raised.new_value
 

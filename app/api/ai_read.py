@@ -533,6 +533,11 @@ def booking_invoices(
         "invoices": [
             {
                 "id": str(i.id),
+                # What a client quotes, and what resolves to exactly one
+                # invoice across both companies. The bare integer is kept
+                # beside it because it is the register position, which is a
+                # different question and is unique only within a venue.
+                "invoice_reference": i.invoice_reference,
                 "invoice_number": i.invoice_number,
                 "type": i.type.value,
                 "status": i.status.value,

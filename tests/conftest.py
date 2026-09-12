@@ -322,6 +322,15 @@ def purge_venue(venue_id, *, contact_ids=()):
         session.commit()
 
         session.execute(text("DELETE FROM spaces WHERE venue_id = :v"), {"v": venue_id})
+        # A venue's invoice register. Opened automatically by the insert
+        # trigger the first time that venue raises an invoice
+        # (f3d9b7c1a468), so nothing in the test wrote it and nothing in
+        # the booking delete graph reaches it -- and its foreign key then
+        # refuses to let the venue go, which turns one leaked venue into a
+        # failing DELETE and a cascade of unrelated red tests.
+        session.execute(
+            text("DELETE FROM venue_invoice_counters WHERE venue_id = :v"), {"v": venue_id}
+        )
         session.execute(text("DELETE FROM venues WHERE id = :v"), {"v": venue_id})
         if contact_ids:
             session.execute(

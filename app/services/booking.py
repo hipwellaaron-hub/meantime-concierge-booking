@@ -1487,7 +1487,7 @@ def _summarise_for_deletion(db: Session, booking: "Booking") -> str:
     for inv in invoices:
         paid = db.scalars(select(Payment.amount).where(Payment.invoice_id == inv.id)).all()
         inv_bits.append(
-            f"#{inv.invoice_number} {inv.type.value} {inv.status.value} total={inv.total} "
+            f"{inv.invoice_reference} {inv.type.value} {inv.status.value} total={inv.total} "
             f"payments={[str(p) for p in paid]}"
         )
     return (

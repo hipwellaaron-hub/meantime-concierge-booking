@@ -221,7 +221,7 @@ def _handle_checkout_completed(db: Session, session: dict, *, venue=None) -> Non
             db, invoice.booking,
             note=(
                 f"Stripe payment of ${amount} (reference {payment_intent_id}) landed on invoice "
-                f"{invoice.invoice_number} after it was closed ({exc}). Needs a manual refund."
+                f"{invoice.invoice_reference} after it was closed ({exc}). Needs a manual refund."
             ),
             actor="stripe_webhook",
         )

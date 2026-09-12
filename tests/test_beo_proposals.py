@@ -3058,7 +3058,7 @@ def test_a_sent_final_invoice_is_left_alone_and_the_booking_page_says_so(admin_c
     assert [ln["description"] for ln in sent.line_items] == ["Original"] and sent.status.value == "sent"
     assert document.content["food_order"]["line_items"][0]["description"] == "Grazing Platter", "the Event Order still took the lines"
     outcome = _invoice_events(db, booking)[-1].new_value
-    assert f"#{sent.invoice_number} is already sent and was left alone" in outcome
+    assert f"{sent.invoice_reference} is already sent and was left alone" in outcome
     page = admin_client.get(f"/admin/bookings/{booking.id}").text
     assert "did not reach the final invoice" in page and "left alone" in page
 

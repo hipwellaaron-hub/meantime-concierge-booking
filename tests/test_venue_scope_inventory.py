@@ -115,6 +115,15 @@ VENUE_SCOPED = {
                       # a rolled-back build, and is REFUSED rather than
                       # guessed. Nullable only so a rolled-back build can
                       # still issue tokens at all.
+    # Two legal entities keep separate tax-invoice registers (f3d9b7c1a468),
+    # so this stopped being reachable-through-booking and became a fact
+    # about the row. NOT NULL, written only by a BEFORE INSERT trigger that
+    # takes it from the booking, and frozen by a second trigger -- so it
+    # cannot disagree with the booking it belongs to, and cannot move.
+    "Invoice",
+    # A venue's own running number. One row per venue; it IS the venue's
+    # register.
+    "VenueInvoiceCounter",
 }
 
 # Rows that do NOT carry a venue, each with the reason. A reason of the form
@@ -130,7 +139,6 @@ VENUE_FREE = {
     "BookingEvent": "reached through booking_id",
     "BookingVendor": "reached through booking_id",
     "Document": "reached through booking_id",
-    "Invoice": "reached through booking_id",
     "EnquiryDraft": "reached through booking_id",
     "WizardSession": "reached through booking_id",
     "AiRequestLog": "reached through booking_id",
