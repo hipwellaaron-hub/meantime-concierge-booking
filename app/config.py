@@ -62,7 +62,16 @@ class Settings(BaseSettings):
     # notification, staff digest) links back into -- a single place to
     # change it rather than the same literal duplicated in
     # app.services.notifications and app.send_digest.
-    dashboard_base_url: str = "https://meantime-concierge-booking-production.up.railway.app"
+    # The host an operator is actually SIGNED IN to. The admin session cookie
+    # is host-only, so a link to a different host -- even one that serves the
+    # same app -- arrives with no cookie and lands on the login screen. The
+    # digest exists to be tapped on a phone first thing in the morning, and
+    # every one of its links was pointing at the Railway host because
+    # DASHBOARD_BASE_URL is set on the web service but NOT on the separate
+    # cron service that sends the digest (verified against Railway,
+    # 2026-09-12). This default is what makes those links work whether or not
+    # the variable is ever set.
+    dashboard_base_url: str = "https://book.meantime.com.au"
 
     # Public web-measurement identifiers for the enquiry funnel. Both PUBLIC
     # (not secrets) and both default EMPTY so local/dev/test never loads a

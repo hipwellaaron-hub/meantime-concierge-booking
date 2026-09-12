@@ -110,17 +110,26 @@ def _send_via_gmail_smtp(message: EmailMessage) -> None:
         raise GmailSendRejected(f"Gmail rejected the email: {exc}") from exc
 
 
-def send_digest_email(subject: str, text_body: str) -> None:
+def send_digest_email(subject: str, text_body: str, *, recipient: str | None = None) -> None:
     """Sends the staff digest via Gmail's own SMTP. Raises
-    GmailSendNotConfigured if the shared credentials aren't set, or if
-    DIGEST_RECIPIENT_EMAIL specifically isn't -- failing loudly beats
-    silently skipping a digest that was never sent."""
-    if not DIGEST_RECIPIENT_EMAIL:
-        raise GmailSendNotConfigured("DIGEST_RECIPIENT_EMAIL must be set before the digest can send.")
+    GmailSendNotConfigured if the shared credentials aren't set, or if there
+    is no recipient at all -- failing loudly beats silently skipping a digest
+    that was never sent.
+
+    `recipient` is the venue's own digest_recipient_email where it has one.
+    It falls back to the process-wide DIGEST_RECIPIENT_EMAIL, which is where
+    every venue's digest goes today; a venue that names its own address is
+    grouped separately by the sender and arrives as its own email."""
+    to = recipient or DIGEST_RECIPIENT_EMAIL
+    if not to:
+        raise GmailSendNotConfigured(
+            "No digest recipient: set DIGEST_RECIPIENT_EMAIL, or venues.digest_recipient_email "
+            "for the venues in this group, before the digest can send."
+        )
 
     message = EmailMessage()
     message["From"] = DIGEST_GMAIL_ADDRESS
-    message["To"] = DIGEST_RECIPIENT_EMAIL
+    message["To"] = to
     message["Subject"] = subject
     message.set_content(text_body)
     _send_via_gmail_smtp(message)

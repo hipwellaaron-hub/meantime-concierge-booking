@@ -55,6 +55,17 @@ class Venue(Base):
     # Hamilton and The Entrance are both Wed-Sun (Aaron, 2026-09-12).
     trading_days: Mapped[list[int] | None] = mapped_column(ARRAY(SmallInteger), nullable=True)
 
+    # Who receives THIS venue's share of the staff digest. NULL means "the
+    # process-wide DIGEST_RECIPIENT_EMAIL", which is today's behaviour; there
+    # is no address to put here that is not already in that variable, and
+    # copying it in would give one fact two sources.
+    #
+    # The sender groups venues BY recipient, so two venues pointing at the
+    # same address stay ONE email with a section each (Aaron reads it on a
+    # phone first thing; two emails means one gets skimmed), and pointing one
+    # venue elsewhere splits them with no code change.
+    digest_recipient_email: Mapped[str | None] = mapped_column(String(320), nullable=True)
+
     # Five characters, because reference_code is String(20) and the date and
     # suffix take the rest. Unique: two venues sharing a prefix would make
     # references ambiguous, and a reference never changes once a client

@@ -82,14 +82,11 @@ def build_digest(db: Session, venue: Venue, *, as_of: dt.date | None = None) -> 
     )
 
 
-def render_digest_text(content: DigestContent, *, dashboard_base_url: str) -> tuple[str, str]:
-    """Returns (subject, plain-text body). Plain text, not HTML -- this is
-    an internal operational email read in an inbox, not a client-facing
-    document; it always renders correctly everywhere and needs no template."""
-    total = len(content.wizard_eligible) + len(content.overdue_invoices)
-    subject = f"Meantime Concierge: {total} item{'s' if total != 1 else ''} need attention" if total else "Meantime Concierge: all clear"
-
-    lines = []
+def _item_lines(content: DigestContent, *, dashboard_base_url: str) -> list[str]:
+    """One venue's worth of items. The single implementation of what an item
+    looks like -- both the one-venue and the combined renderers go through
+    it, so they cannot drift."""
+    lines: list[str] = []
 
     if content.wizard_eligible:
         lines.append(f"READY FOR THE GUIDED WIZARD ({len(content.wizard_eligible)})")
@@ -106,8 +103,70 @@ def render_digest_text(content: DigestContent, *, dashboard_base_url: str) -> tu
             )
         lines.append("")
 
+    return lines
+
+
+def render_digest_text(content: DigestContent, *, dashboard_base_url: str) -> tuple[str, str]:
+    """Returns (subject, plain-text body) for a SINGLE venue, with no venue
+    heading -- the shape the digest had before there were two venues.
+
+    Plain text, not HTML -- this is an internal operational email read in an
+    inbox, not a client-facing document; it always renders correctly
+    everywhere and needs no template."""
+    total = len(content.wizard_eligible) + len(content.overdue_invoices)
+    subject = f"Meantime Concierge: {total} item{'s' if total != 1 else ''} need attention" if total else "Meantime Concierge: all clear"
+
+    lines = _item_lines(content, dashboard_base_url=dashboard_base_url)
     if not lines:
         lines.append("Nothing needs attention right now.")
 
-    body = "\n".join(lines)
-    return subject, body
+    return subject, "\n".join(lines)
+
+
+def render_combined_digest(
+    per_venue: list[tuple[Venue, DigestContent]], *, dashboard_base_url: str
+) -> tuple[str, str]:
+    """One email covering several venues, a section each.
+
+    Aaron, 2026-09-12: "one email with the venues sectioned, since I read it
+    on a phone first thing and two emails means one gets skimmed." The length
+    is one line per item under two headings per venue, and the item count is
+    bounded by what is actually actionable -- functions inside the 14-day
+    wizard window that still need theirs, plus overdue invoices -- so two
+    venues stays short.
+
+    A venue with nothing outstanding still gets a heading saying so, rather
+    than being omitted. An absent section is ambiguous: it reads as "nothing
+    to do" and "that venue was not checked" identically, and the second is
+    the one that matters after a venue is added and something fails to wire
+    up.
+    """
+    totals = {
+        venue.id: len(content.wizard_eligible) + len(content.overdue_invoices)
+        for venue, content in per_venue
+    }
+    total = sum(totals.values())
+    subject = (
+        f"Meantime Concierge: {total} item{'s' if total != 1 else ''} need attention"
+        if total else "Meantime Concierge: all clear"
+    )
+
+    # With one venue the body is exactly what it has always been -- no
+    # heading, no separator -- so nothing changes for a single-venue business.
+    if len(per_venue) == 1:
+        return render_digest_text(per_venue[0][1], dashboard_base_url=dashboard_base_url)
+
+    lines: list[str] = []
+    for venue, content in per_venue:
+        heading = (venue.trading_name or venue.name).upper()
+        count = totals[venue.id]
+        lines.append(f"=== {heading} ({count}) ===")
+        lines.append("")
+        section = _item_lines(content, dashboard_base_url=dashboard_base_url)
+        if section:
+            lines.extend(section)
+        else:
+            lines.append("Nothing needs attention right now.")
+            lines.append("")
+
+    return subject, "\n".join(lines).rstrip() + "\n"
