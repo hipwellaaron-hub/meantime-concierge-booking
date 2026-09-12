@@ -41,6 +41,28 @@ def require_staff(request: Request, db: Session = Depends(get_db)) -> StaffUser:
     return staff
 
 
+def current_venue(request: Request, db: Session = Depends(get_db)):
+    """The venue every page under /admin is about, stashed on request.state
+    so admin_ctx can read it without 17 call sites passing it by hand.
+
+    A ROUTER-level dependency rather than a per-route argument: a new route
+    added to an admin router gets it without anyone remembering, which is the
+    property that matters -- app/api/admin_drafts.py contains no mention of a
+    venue at all today, and that is exactly how a page ends up outside the
+    scoping.
+
+    STILL HARDCODED. This is the seam, not the switch: when the venue switch
+    lands, only this function changes and every admin page follows. Keeping
+    the hardcode in ONE function rather than eight is the point of doing it
+    before the switch rather than during it.
+    """
+    from app.models import Venue
+
+    venue = db.query(Venue).filter_by(slug="hamilton").one()
+    request.state.venue = venue
+    return venue
+
+
 def start_session(request: Request, staff: StaffUser) -> None:
     """Full session reset on login -- not just adding a key -- to avoid
     session fixation (a pre-login csrf_token or any other stale session
@@ -69,6 +91,17 @@ def admin_ctx(request: Request, staff: StaffUser | None = None, **extra) -> dict
         "request": request,
         "staff": staff,
         "csrf_token": ensure_csrf_token(request),
+        # Which venue this page is about, put on request.state by the
+        # router-level `current_venue` dependency above. A caller may still
+        # override it by passing `venue=...`, which `extra` applies below.
+        #
+        # Every admin page shows it, not just the ones where it is
+        # ambiguous. The failure a venue switch actually has is not a wrong
+        # query -- the predicates and the composite FK handle that -- it is a
+        # correct page read as the other one. A band that appears only
+        # sometimes is one nobody learns to read, so it is here rather than
+        # on the pages that happen to feel risky.
+        "venue": getattr(request.state, "venue", None),
         # Every admin page gets this automatically, not just the ones that
         # touch payments -- the risk this guards against ("staff assumes
         # real money is moving") isn't confined to the invoice screen.

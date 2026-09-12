@@ -12,13 +12,13 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.admin_auth import admin_ctx, require_csrf, require_staff
+from app.admin_auth import admin_ctx, current_venue, require_csrf, require_staff
 from app.database import get_db
 from app.models import StaffAppToken, StaffUser
 from app.services import notifications, staff_auth
 from app.templating import templates
 
-router = APIRouter(prefix="/admin/staff", tags=["admin-staff"], dependencies=[Depends(require_staff)])
+router = APIRouter(prefix="/admin/staff", tags=["admin-staff"], dependencies=[Depends(require_staff), Depends(current_venue)])
 
 
 def _redirect() -> RedirectResponse:

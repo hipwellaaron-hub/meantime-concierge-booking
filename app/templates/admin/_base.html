@@ -82,6 +82,13 @@
   .stripe-banner.mode-test { background: var(--ember); color: #ffffff; }
   .stripe-banner.mode-not_configured { background: var(--wine); color: #f5e2e5; }
   .stripe-banner .detail { font-weight: 500; text-transform: none; letter-spacing: normal; }
+  /* The venue band. Deliberately quiet -- it is a persistent orientation
+     cue, not an alert -- but always in the same place, so it is read by
+     position rather than by noticing it. */
+  .venue-band { display: inline-flex; align-items: center; margin-left: 12px; padding: 3px 10px;
+    border: 1px solid var(--gold-dim); border-radius: 999px; font-size: 0.72rem;
+    font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase;
+    color: var(--gold); white-space: nowrap; }
   nav.primary { display: flex; gap: 18px; align-items: center; justify-content: center; }
   nav.primary a { font-size: 0.85rem; font-weight: 600; text-decoration: none; color: var(--muted); }
   nav.primary a.active, nav.primary a:hover { color: var(--gold); }
@@ -192,6 +199,9 @@
 <header class="top">
   <div class="header-top">
     <a class="brand" href="/admin/">Meantime Concierge</a>
+    {#- Which venue you are looking at. Hidden entirely when the page has no
+        venue behind it (login, the error page) rather than guessing one. -#}
+    {% if venue %}<span class="venue-band" title="Everything on this page belongs to this venue.">{{ venue.trading_name or venue.name }}</span>{% endif %}
     <div class="header-right">
       <div class="status-cluster">
         <span class="badge" id="db-status" title="Checking database…">Database</span>

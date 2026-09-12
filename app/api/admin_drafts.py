@@ -17,7 +17,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
-from app.admin_auth import admin_ctx, require_csrf, require_staff
+from app.admin_auth import admin_ctx, current_venue, require_csrf, require_staff
 from app.database import get_db
 from app.models import Booking
 from app.models.enquiry_draft import (
@@ -31,7 +31,7 @@ from app.models.staff_user import StaffUser
 from app.services import ai_access, drafting
 from app.templating import templates
 
-router = APIRouter(prefix="/admin/drafts", tags=["admin-drafts"], dependencies=[Depends(require_staff)])
+router = APIRouter(prefix="/admin/drafts", tags=["admin-drafts"], dependencies=[Depends(require_staff), Depends(current_venue)])
 
 
 @router.get("", response_class=HTMLResponse)

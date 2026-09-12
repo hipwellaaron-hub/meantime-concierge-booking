@@ -148,10 +148,23 @@ def safe_event_type(value: str | None) -> str:
 
 
 def _venue_slug(booking: Booking) -> str:
-    try:
-        return booking.space.venue.slug
-    except AttributeError:
-        return "hamilton"
+    """Which venue an analytics event is attributed to.
+
+    Reads booking.venue, not booking.space.venue. Both answer the same thing
+    -- the composite FK (space_id, venue_id) -> spaces(id, venue_id) makes
+    disagreement unwritable -- but the booking's own column is the
+    authoritative one and needs no join.
+
+    NO "hamilton" FALLBACK. It used to return that from an `except
+    AttributeError`, which would have credited a second company's booking to
+    Hamilton in GA4 and Meta: revenue attributed to the wrong business, in
+    the numbers used to decide where to spend. An empty string is the honest
+    answer to "I could not tell", and an attribution dashboard shows a blank
+    rather than a lie. In practice it cannot happen -- bookings.venue_id is
+    NOT NULL -- but a defaulting line outlives the reason it was safe.
+    """
+    venue = getattr(booking, "venue", None)
+    return getattr(venue, "slug", "") or ""
 
 
 # --- enablement ----------------------------------------------------------------

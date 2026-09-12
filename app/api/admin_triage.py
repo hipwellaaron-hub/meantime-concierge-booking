@@ -3,7 +3,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.admin_auth import admin_ctx, require_csrf, require_staff
+from app.admin_auth import admin_ctx, current_venue, require_csrf, require_staff
 from app.database import get_db
 from app.models import Space, Venue
 from app.models.staff_user import StaffUser
@@ -13,7 +13,7 @@ from app.services import enquiry_classification, ivvy_import, reconciliation
 from app.services import wizard as wizard_service
 from app.templating import templates
 
-router = APIRouter(prefix="/admin/triage", tags=["admin-triage"], dependencies=[Depends(require_staff)])
+router = APIRouter(prefix="/admin/triage", tags=["admin-triage"], dependencies=[Depends(require_staff), Depends(current_venue)])
 
 
 def _venue(db: Session) -> Venue:

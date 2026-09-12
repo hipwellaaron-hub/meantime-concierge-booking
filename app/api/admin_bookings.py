@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.admin_auth import admin_ctx, require_csrf, require_staff
+from app.admin_auth import admin_ctx, current_venue, require_csrf, require_staff
 from app.database import get_db
 from app.models import (
     BeoProposal,
@@ -63,7 +63,7 @@ from app.services.document_generation import (
 from app.templating import templates, venue_identity
 from app.utils import is_valid_email, truncate
 
-router = APIRouter(prefix="/admin/bookings", tags=["admin-bookings"], dependencies=[Depends(require_staff)])
+router = APIRouter(prefix="/admin/bookings", tags=["admin-bookings"], dependencies=[Depends(require_staff), Depends(current_venue)])
 
 BOOKING_EVENT_ACTOR_MAX_LENGTH = 255
 
