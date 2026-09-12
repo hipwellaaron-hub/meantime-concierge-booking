@@ -82,9 +82,21 @@ _CANCELLATION_POLICY_CLAUSE = (
 # agreement generated from here can describe an event that would attract
 # it. See policy.SURCHARGE_END_DATE for why the calculation is sunset
 # rather than deleted even though this clause is gone.
-_TRADING_HOURS_CLAUSE = (
-    "Your function is licensed to run until midnight, any night of the week, with music off by 11:30pm."
-)
+# _TRADING_HOURS_CLAUSE lived here: "Your function is licensed to run until
+# midnight, any night of the week, with music off by 11:30pm." Deleted
+# outright rather than made per-venue (Aaron, 2026-09-13).
+#
+# The agreement already states this event's own start and finish times, and
+# those are the binding terms; a general sentence about licence hours is
+# decoration next to them. It was also already wrong -- The Entrance closes
+# at 10pm Sundays, and "any night of the week" was never true of Hamilton.
+#
+# Music-off was not moved, because it is already in the Event Order
+# timeline (build_event_timeline), which is the document the floor works
+# from on the night. An agreement signed months out is not where an
+# instruction about when the music stops belongs.
+#
+# Nothing replaces it. Two fewer per-venue facts frozen into a contract.
 
 def _minimum_spend_clause(min_food_spend, bar_credit=None) -> str:
     """Minimum Spend, stated ONCE, from the same value the agreement's fact
@@ -199,7 +211,6 @@ def _terms_sections(booking: Booking) -> list[dict]:
         {"heading": "Booking Agreement", "body": _BOOKING_AGREEMENT_CLAUSE},
         {"heading": "Decorations", "body": _DECORATIONS_CLAUSE},
         {"heading": "Cancellation Policy", "body": _CANCELLATION_POLICY_CLAUSE},
-        {"heading": "Trading Hours", "body": _TRADING_HOURS_CLAUSE},
     ]
 
     if looks_like_18th(booking.event_type or "", booking.event_name, booking.notes):
@@ -317,10 +328,17 @@ def build_event_timeline(booking: Booking, vendors: list[dict] | None = None) ->
 
 
 def build_av_block(booking: Booking, av_response: dict | None) -> dict | None:
-    """The Loft-only AV/Screen section. None for every other space -- the
-    screen is physically in The Loft, so the section must not exist at all
-    elsewhere, not render empty."""
-    if booking.space.name != "The Loft" or not av_response:
+    """The AV/Screen section, for a room that HAS a screen. None for every
+    other room -- the section must not exist at all where there is nothing
+    to connect to, rather than render empty.
+
+    Keyed on spaces.has_screen, not on the room's name. It used to read
+    `booking.space.name != "The Loft"`, which is a Hamilton room name
+    standing in for a capability: a room at another venue with a screen
+    could never have this section, and any room anywhere called "The Loft"
+    inherited it whether or not it had one.
+    """
+    if not getattr(booking.space, "has_screen", False) or not av_response:
         return None
     deadline_display = None
     if booking.event_date is not None:

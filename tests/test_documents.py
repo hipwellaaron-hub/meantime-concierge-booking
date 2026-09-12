@@ -73,8 +73,13 @@ def test_trading_hours_clause_covers_functions_to_midnight(db, booking):
     # Restaurant trading hours (12pm-9pm Wed/Thu) must not read as the
     # client's function curfew -- functions are licensed to midnight.
     terms = generate_agreement_content(booking)["terms_text"]
-    assert "licensed to run until midnight" in terms
-    assert "music off by 11:30pm" in terms
+    # The Trading Hours clause was DELETED (2026-09-13), not made
+    # per-venue: the agreement already carries this event's own start and
+    # finish times, which are the binding terms, and the sentence was
+    # already wrong for both venues. Music-off lives in the Event Order
+    # timeline, which is what the floor reads on the night.
+    assert "licensed to run until midnight" not in terms
+    assert "music off by 11:30pm" not in terms
     assert "12pm to 9pm" not in terms
 
 
@@ -483,7 +488,7 @@ def test_lounge_gets_standard_terms_without_a_guest_minimum(db, lounge):
     assert "minimum requirement" not in content["terms_text"]
     assert "per person will apply" not in content["terms_text"]
     assert "[REVIEW]" not in content["terms_text"]
-    for expected in ("Deposits", "Minimum Spend", "Booking Agreement", "Cancellation Policy", "Trading Hours"):
+    for expected in ("Deposits", "Minimum Spend", "Booking Agreement", "Cancellation Policy"):
         assert expected in headings
     assert f"${lounge.min_food_spend:,.0f} minimum spend" in content["terms_text"]
 
@@ -982,14 +987,22 @@ def test_agreement_pdf_fits_one_page_worst_case(db, loft):
     every standard clause plus the conditions appendix. If that fits on
     one page, everything shorter does.
 
-    Eight standard clauses, not the ten there used to be: the Credit Card
-    Surcharges and Public Holidays clauses were removed on 2026-09-11 with
-    the surcharges themselves.
+    Seven standard clauses, not the ten there used to be. Credit Card
+    Surcharges and Public Holidays went on 2026-09-11 with the surcharges
+    themselves; Trading Hours went on 2026-09-13, because the agreement
+    already carries this event's own start and finish times and a general
+    sentence about licence hours was decoration beside them -- decoration
+    that was wrong for both venues.
+
+    The count is asserted as well as the page fit: a clause silently
+    vanishing is a term a client did not agree to, and the page-fit
+    assertion below would happily pass with half the contract missing.
     """
     booking = _booking_in(db, loft, event_type="18th Birthday", adult_count=60)
     content = generate_agreement_content(booking)
     headings = [s["heading"] for s in content["terms_sections"]]
-    assert len(headings) == 9, headings  # 8 standard + the 18th appendix
+    assert len(headings) == 8, headings  # 7 standard + the 18th appendix
+    assert "Trading Hours" not in headings
     assert "Credit Card Surcharges" not in headings
     assert "Public Holidays" not in headings
     assert _agreement_pdf_pages(db, booking) == 1
