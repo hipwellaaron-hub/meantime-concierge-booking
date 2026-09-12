@@ -39,7 +39,7 @@ def test_status_change_appends_rather_than_overwrites(db, loft):
     change_status(db, booking, BookingStatus.tentative, actor="aaron@meantime.com.au")
     change_status(db, booking, BookingStatus.confirmed, actor="aaron@meantime.com.au")
 
-    events = db.query(BookingEvent).filter_by(booking_id=booking.id).order_by(BookingEvent.created_at).all()
+    events = db.query(BookingEvent).filter_by(booking_id=booking.id).order_by(BookingEvent.seq).all()
     assert [e.event_type for e in events] == ["created", "status_changed", "status_changed"]
     assert (events[1].old_value, events[1].new_value) == ("enquiry", "tentative")
     assert (events[2].old_value, events[2].new_value) == ("tentative", "confirmed")

@@ -76,7 +76,7 @@ def test_audit_trail_records_the_previous_status_and_a_reason(db, loft):
     events = (
         db.query(BookingEvent)
         .filter_by(booking_id=booking.id, event_type="status_changed")
-        .order_by(BookingEvent.created_at)
+        .order_by(BookingEvent.seq)
         .all()
     )
     # The booking already went enquiry -> confirmed when _booking() set it

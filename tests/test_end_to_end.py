@@ -136,24 +136,19 @@ def test_full_journey_enquiry_to_paid_invoice_with_intact_audit_trail(db, loft):
 
         # 5. Audit trail reconstructs the whole story without re-reading any email
         #
-        # KNOWN SOFT SPOT, recorded rather than papered over. Every event
-        # below shares one created_at: the column is server_default now(),
-        # Postgres now() is transaction start time, and the db fixture runs
-        # the whole test in one transaction whose commits are savepoint
-        # releases. So this ORDER BY is on a fully tied column and the
-        # sequence asserted underneath is really heap order.
+        # This ORDER BY used to be on `created_at`, which is
+        # server_default now() -- transaction start time -- so every event
+        # below shared one value and the sequence asserted underneath was
+        # really heap order. The note here said it was not guaranteed, and on
+        # 2026-09-12 it failed once in four full-suite runs, on a day that
+        # had inserted and deleted enough rows to shift the plan.
         #
-        # It holds today because booking_events is append-only -- nothing
-        # in app/ ever UPDATEs one, so no row moves and the heap keeps
-        # insertion order. The same assertion over Bookings DID flake
-        # (test_tracking_completion), because booking rows are updated.
-        #
-        # It is not guaranteed: a plan change to an index scan on
-        # ix_booking_events_booking_created would return tied rows in
-        # whatever order the index holds them. The real fix is a monotonic
-        # ordering column on booking_events, which is a migration and
-        # Aaron's call -- see the note on that table.
-        events = db.query(BookingEvent).filter_by(booking_id=booking.id).order_by(BookingEvent.created_at).all()
+        # booking_events.seq (migration c5f8a1d3e720) is assigned per INSERT
+        # and cannot tie, so this is now an ordering rather than a
+        # coincidence. Aaron's call to do the migration before finishing the
+        # venue switch: an intermittent failure here looks exactly like a
+        # venue bug during the week everything is a venue bug.
+        events = db.query(BookingEvent).filter_by(booking_id=booking.id).order_by(BookingEvent.seq).all()
         event_types = [e.event_type for e in events]
         assert event_types == [
             "created",

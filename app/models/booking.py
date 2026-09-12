@@ -395,7 +395,7 @@ class Booking(Base):
     # in the composite FK, which SQLAlchemy would otherwise find ambiguous.
     venue: Mapped["Venue"] = relationship(foreign_keys=[venue_id])
     contact: Mapped["Contact"] = relationship(back_populates="bookings")
-    events: Mapped[list["BookingEvent"]] = relationship(back_populates="booking", order_by="BookingEvent.created_at")
+    events: Mapped[list["BookingEvent"]] = relationship(back_populates="booking", order_by="BookingEvent.seq")
     documents: Mapped[list["Document"]] = relationship(back_populates="booking", order_by="Document.version")
     invoices: Mapped[list["Invoice"]] = relationship(back_populates="booking", order_by="Invoice.created_at")
     wizard_session: Mapped["WizardSession | None"] = relationship(back_populates="booking", uselist=False)

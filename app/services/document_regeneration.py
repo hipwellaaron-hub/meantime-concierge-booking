@@ -406,7 +406,7 @@ def was_hand_edited(db: Session, document: Document) -> BookingEvent | None:
             BookingEvent.field_name == f"{document.type.value}_version",
             BookingEvent.new_value == str(document.version),
         )
-        .order_by(BookingEvent.created_at.desc())
+        .order_by(BookingEvent.seq.desc())
         .limit(1)
     ).first()
 
@@ -436,7 +436,7 @@ def _last_hand_edit_at(db: Session, document: Document) -> dt.datetime | None:
             BookingEvent.event_type == "document_edited",
             BookingEvent.field_name == f"{document.type.value}_version",
         )
-        .order_by(BookingEvent.created_at.desc())
+        .order_by(BookingEvent.seq.desc())
         .limit(1)
     ).first()
 

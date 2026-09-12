@@ -1076,7 +1076,7 @@ def _latest_outcome(db: Session, booking_id: uuid.UUID, *, sent_type: str, not_s
     rows = db.execute(
         select(BookingEvent.event_type, BookingEvent.new_value, BookingEvent.created_at)
         .where(BookingEvent.booking_id == booking_id, BookingEvent.event_type.in_((sent_type, not_sent_type)))
-        .order_by(BookingEvent.created_at)
+        .order_by(BookingEvent.seq)
     ).all()
     if not rows:
         return None, None
