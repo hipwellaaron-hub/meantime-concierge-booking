@@ -123,6 +123,42 @@ def seed(db=None) -> Venue:
             db.close()
 
 
+# Columns a CLIENT reads. A blank here is a blank on an invoice, an
+# agreement or an Event Order -- venue_identity supplies no fallback on
+# purpose, so nothing substitutes another company's details. That is the
+# right trade only if somebody finds out, and until 2026-09-12 preDeploy's
+# entire output was "Seeded Hamilton venue and spaces".
+#
+# stripe_account_id is deliberately NOT here: it is expected to be NULL
+# until somebody arms the credential guard by hand, which is its own
+# numbered step in docs/stripe-go-live-checklist.md.
+CLIENT_FACING_COLUMNS = (
+    "trading_name", "legal_name", "abn", "address", "phone",
+    "contact_name", "contact_email",
+    "bank_account_name", "bank_bsb", "bank_account_number",
+    "reference_prefix", "trading_days",
+    "stripe_secret_key_env", "stripe_webhook_secret_env",
+)
+
+
+def unfilled_columns(venue) -> list[str]:
+    """Which of the above this venue has not been given."""
+    return [c for c in CLIENT_FACING_COLUMNS if not getattr(venue, c, None)]
+
+
+def report_gaps(venue) -> str:
+    """One line for the deploy log, naming the venue and what is missing."""
+    label = venue.trading_name or venue.name
+    missing = unfilled_columns(venue)
+    if not missing:
+        return f"{label}: every client-facing column is filled."
+    return (
+        f"{label}: WARNING -- {len(missing)} client-facing column(s) unfilled and no fallback "
+        f"exists, so these print BLANK on client documents: {', '.join(missing)}"
+    )
+
+
 if __name__ == "__main__":
-    seed()
+    seeded = seed()
     print("Seeded Hamilton venue and spaces.")
+    print(report_gaps(seeded))

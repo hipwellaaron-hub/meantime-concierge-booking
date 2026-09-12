@@ -1,19 +1,25 @@
 """CLI entry point for the iVvy parallel-run reconciliation report.
 
-Usage: python -m app.run_ivvy_reconcile "path/to/fresh_export.csv"
+Usage: python -m app.run_ivvy_reconcile --venue <slug> "path/to/fresh_export.csv"
+
+--venue is REQUIRED. Read-only, but a reconciliation run against the wrong
+venue reports every booking as missing and every export row as new, which
+reads as a catastrophe rather than as a mistyped argument.
 """
 
 import sys
 
 from app.database import SessionLocal
-from app.models import Venue
 from app.services.ivvy_reconciliation import reconcile
+from app.venue_arg import resolve_venue, take_venue_arg
+
+USAGE = 'Usage: python -m app.run_ivvy_reconcile --venue <slug> <csv_path>'
 
 
-def main(path: str) -> None:
+def main(path: str, venue_slug: str | None) -> None:
     db = SessionLocal()
     try:
-        venue = db.query(Venue).filter_by(slug="hamilton").one()
+        venue = resolve_venue(db, venue_slug, usage=USAGE)
         report = reconcile(db, path, venue=venue)
 
         print(f"Matched and clean: {report.matched_clean}")
@@ -37,7 +43,8 @@ def main(path: str) -> None:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        print("Usage: python -m app.run_ivvy_reconcile <csv_path>")
+    venue_slug, paths = take_venue_arg(sys.argv[1:])
+    if len(paths) != 1:
+        print(USAGE)
         sys.exit(1)
-    main(sys.argv[1])
+    main(paths[0], venue_slug)

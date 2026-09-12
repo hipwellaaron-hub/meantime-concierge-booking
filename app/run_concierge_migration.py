@@ -1,24 +1,32 @@
 """CLI entry point for the one-time iVvy -> Concierge migration.
 
 Usage (runs against whatever DATABASE_URL points at):
-    python -m app.run_concierge_migration --report "concierge-import.csv"   # READ-ONLY preview, writes nothing
-    python -m app.run_concierge_migration "concierge-import.csv"            # the real import
+    python -m app.run_concierge_migration --venue <slug> --report "import.csv"   # READ-ONLY preview
+    python -m app.run_concierge_migration --venue <slug> "import.csv"            # the real import
 
 Always run --report first (safe to run against production) and eyeball the
 "would create" and "possible duplicate" sections before the real import.
+
+--venue is REQUIRED on both. This is the script that CREATES bookings in
+bulk, and venue_id is immutable by database trigger once written -- a run
+against the wrong venue is not fixed by an UPDATE, it is fixed by deleting
+and re-importing every booking it made, after clients already hold their
+reference codes.
 """
 
 import sys
 
 from app.database import SessionLocal
-from app.models import Venue
 from app.services.concierge_migration import import_migration_csv, report_migration_csv
+from app.venue_arg import resolve_venue, take_venue_arg
+
+USAGE = 'Usage: python -m app.run_concierge_migration --venue <slug> [--report] <csv_path>'
 
 
-def report(path: str) -> None:
+def report(path: str, venue_slug: str | None) -> None:
     db = SessionLocal()
     try:
-        venue = db.query(Venue).filter_by(slug="hamilton").one()
+        venue = resolve_venue(db, venue_slug, usage=USAGE)
         rep = report_migration_csv(db, path, venue=venue)
     finally:
         db.close()
@@ -48,10 +56,11 @@ def report(path: str) -> None:
     print("\nREAD-ONLY report -- nothing was written.")
 
 
-def main(path: str) -> None:
+def main(path: str, venue_slug: str | None) -> None:
     db = SessionLocal()
     try:
-        venue = db.query(Venue).filter_by(slug="hamilton").one()
+        venue = resolve_venue(db, venue_slug, usage=USAGE)
+        print(f"Importing into venue: {venue.trading_name or venue.name} ({venue.slug})")
         result = import_migration_csv(db, path, venue=venue)
     finally:
         db.close()
@@ -94,11 +103,11 @@ def main(path: str) -> None:
 
 
 if __name__ == "__main__":
-    args = sys.argv[1:]
+    venue_slug, args = take_venue_arg(sys.argv[1:])
     if len(args) == 2 and args[0] == "--report":
-        report(args[1])
+        report(args[1], venue_slug)
     elif len(args) == 1:
-        main(args[0])
+        main(args[0], venue_slug)
     else:
-        print("Usage: python -m app.run_concierge_migration [--report] <csv_path>")
+        print(USAGE)
         sys.exit(1)
