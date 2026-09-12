@@ -125,6 +125,126 @@ def test_each_venues_own_booking_does_appear(admin_client, db, hamilton, loft, e
     assert "ZZHAMONLY" not in ent
 
 
+# --- the drafts page, which had no venue in it at all -----------------------
+#
+# admin_drafts moved onto /admin/{venue_slug}/ and gained venue_scope, and
+# then nothing inside it was scoped: a bare select(EnquiryDraft) for the list
+# and a bare db.get() for the review POST. So Hamilton's URL listed The
+# Entrance's drafts -- including its clients' own enquiry text -- and could
+# mark another venue's draft reviewed.
+#
+# It was PREDICTED. app/admin_auth.py says, in a comment: "app/api/
+# admin_drafts.py contains no mention of a venue at all today, and that is
+# exactly how a page ends up outside the scoping." The structural check
+# below missed it precisely because there was no hardcoded lookup to find --
+# the failure was an ABSENT predicate, not a wrong one.
+
+
+def _csrf(html: str) -> str:
+    """The token, taken from the page the form lives on.
+
+    Without it the POST is refused 422 by require_csrf BEFORE the venue
+    check runs -- so a test that omitted it would pass while proving nothing
+    about scoping at all.
+    """
+    import re
+
+    return re.search(r'name="csrf_token" value="([^"]+)"', html).group(1)
+
+
+def _draft(db, booking, text):
+    from app.models.enquiry_draft import STATUS_GENERATED, EnquiryDraft
+
+    draft = EnquiryDraft(
+        booking_id=booking.id, status=STATUS_GENERATED, trigger="enquiry_received",
+        draft_text=text,
+    )
+    db.add(draft)
+    db.flush()
+    return draft
+
+
+def test_the_drafts_page_shows_only_its_own_venues_drafts(
+    admin_client, db, hamilton, loft, entrance
+):
+    ham_booking = _book(db, loft, "Ham Draft Booking")
+    ent_booking = _book(db, entrance.space, "Ent Draft Booking")
+    _draft(db, ham_booking, "ZZHAMDRAFT sentinel body")
+    _draft(db, ent_booking, "ZZENTDRAFT sentinel body")
+    db.flush()
+
+    own = admin_client.get("/admin/hamilton/drafts", follow_redirects=True)
+    assert "ZZHAMDRAFT" in own.text, (
+        "the sentinel is not on Hamilton's own drafts page, so this test could "
+        "not detect a leak onto the other venue either"
+    )
+
+    other = admin_client.get("/admin/entrance/drafts", follow_redirects=True)
+
+    assert other.status_code == 200
+    assert "ZZHAMDRAFT" not in other.text, (
+        "The Entrance's drafts page listed a HAMILTON draft -- and a draft "
+        "carries the client's own words"
+    )
+    assert "ZZENTDRAFT" in other.text, "it showed nothing at all, which is not the fix"
+
+
+def test_one_venues_url_cannot_review_another_venues_draft(
+    admin_client, db, hamilton, loft, entrance
+):
+    """Reading the wrong list is bad; WRITING to the wrong venue's row from
+    a venue-scoped URL is worse. 404, not 403 -- saying 'forbidden' would
+    confirm the draft exists."""
+    ent_booking = _book(db, entrance.space, "Ent Draft Booking")
+    draft = _draft(db, ent_booking, "ZZENTDRAFT sentinel body")
+    db.flush()
+
+    token = _csrf(admin_client.get("/admin/hamilton/drafts", follow_redirects=True).text)
+
+    resp = admin_client.post(
+        f"/admin/hamilton/drafts/{draft.id}/review",
+        data={"csrf_token": token, "outcome": "discarded", "discard_reason": "not mine to discard"},
+        follow_redirects=False,
+    )
+
+    assert resp.status_code == 404, resp.status_code
+    db.refresh(draft)
+    assert draft.outcome is None, "another venue's draft was marked reviewed"
+    assert draft.reviewed_by is None
+
+
+def test_a_venue_can_still_review_its_own_draft(admin_client, db, hamilton, loft, entrance):
+    """The other direction, so a check that refused everything could not
+    pass the test above on its own."""
+    booking = _book(db, loft, "Ham Draft Booking")
+    draft = _draft(db, booking, "ZZHAMDRAFT sentinel body")
+    db.flush()
+
+    token = _csrf(admin_client.get("/admin/hamilton/drafts", follow_redirects=True).text)
+
+    resp = admin_client.post(
+        f"/admin/hamilton/drafts/{draft.id}/review",
+        data={"csrf_token": token, "outcome": "discarded", "discard_reason": "wrong tone"},
+        follow_redirects=False,
+    )
+
+    assert resp.status_code == 303, resp.text
+    db.refresh(draft)
+    assert draft.outcome == "discarded"
+
+
+def test_the_page_says_the_switches_are_not_per_venue(admin_client, db, hamilton):
+    """AiSettings is one process-wide row with no venue_id, so turning
+    drafting off here turns it off for every venue. That needs a column and
+    a decision; until then the page has to SAY so, because a global switch
+    inside a venue-scoped URL is the same trap as a global list."""
+    body = admin_client.get("/admin/hamilton/drafts", follow_redirects=True).text
+
+    assert "apply to every venue" in body, (
+        "the switch block does not say it reaches beyond this venue"
+    )
+
+
 # --- the structural half ---------------------------------------------------
 
 
@@ -181,4 +301,32 @@ def test_the_ast_check_can_actually_see_a_hardcoded_lookup():
 
     assert [slug for _, slug in found] == ["hamilton"], (
         f"the walker found {found} in a sample that plainly has exactly one"
+    )
+
+
+def test_every_moved_router_mentions_the_venue_it_is_scoped_to():
+    """The check that would have caught admin_drafts, which the one above
+    could not.
+
+    That router had no hardcoded `filter_by(slug=...)` to find -- it had no
+    venue ANYWHERE. A missing predicate leaves no trace for a check that
+    looks for a wrong one. So: a module mounted under /admin/{venue_slug}/
+    must at least refer to the venue the URL gave it.
+
+    Deliberately crude. It cannot prove a query is scoped; it can prove a
+    router is not ignoring the segment entirely, which is the state five
+    routers and then a sixth were found in.
+    """
+    silent = []
+    for name in sorted(MOVED_ROUTERS):
+        source = pathlib.Path(f"app/api/{name}.py").read_text(encoding="utf-8")
+        stripped = "\n".join(
+            line for line in source.splitlines() if not line.strip().startswith("#")
+        )
+        if "request.state.venue" not in stripped:
+            silent.append(f"app/api/{name}.py")
+
+    assert not silent, (
+        "these routers are mounted under /admin/{venue_slug}/ but never read the "
+        f"venue the URL named, so every query in them spans every venue: {silent}"
     )

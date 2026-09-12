@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session, selectinload
 from app.admin_auth import admin_ctx, require_csrf, require_staff
 from app.database import get_db
 from app.venue_scope import venue_scope
-from app.models import Booking
+from app.models import Booking, Venue
 from app.models.enquiry_draft import (
     OUTCOME_DISCARDED,
     OUTCOME_EDITED,
@@ -35,10 +35,23 @@ from app.templating import templates
 router = APIRouter(prefix="/admin/{venue_slug}/drafts", tags=["admin-drafts"], dependencies=[Depends(require_staff), Depends(venue_scope)])
 
 
+def _venue(request: Request) -> Venue:
+    """The venue named in the URL, resolved by the router-level venue_scope
+    dependency and stashed on request.state."""
+    return request.state.venue
+
+
 @router.get("", response_class=HTMLResponse)
 def review_drafts(request: Request, db: Session = Depends(get_db), staff: StaffUser = Depends(require_staff)):
+    venue = _venue(request)
     drafts = db.scalars(
         select(EnquiryDraft)
+        .join(Booking, EnquiryDraft.booking_id == Booking.id)
+        # Scoped through the booking's own venue column. Without this the
+        # page listed every venue's drafts under one venue's URL and band --
+        # a confidently mislabelled list, which is worse than a mixed one
+        # because nothing about it looks wrong.
+        .where(Booking.venue_id == venue.id)
         .options(selectinload(EnquiryDraft.booking).selectinload(Booking.contact))
         .order_by(EnquiryDraft.created_at.desc())
         .limit(100)
@@ -81,7 +94,10 @@ def record_review(
     if outcome not in (OUTCOME_SENT_UNCHANGED, OUTCOME_EDITED, OUTCOME_DISCARDED):
         raise HTTPException(status_code=422, detail="Unknown outcome")
     draft = db.get(EnquiryDraft, draft_id)
-    if draft is None:
+    # Not found rather than forbidden, and checked against the URL's venue:
+    # a draft belonging to another venue is not this page's to mark
+    # reviewed, and saying "forbidden" would confirm it exists.
+    if draft is None or draft.booking is None or draft.booking.venue_id != _venue(request).id:
         raise HTTPException(status_code=404, detail="Draft not found")
     if outcome == OUTCOME_DISCARDED and not discard_reason.strip():
         raise HTTPException(status_code=422, detail="Say why it was discarded -- that is the signal")
@@ -106,7 +122,14 @@ def set_switches(
 ):
     """The Phase 2 switches. Both default off; Stage 1 is drafting on with
     visibility off. A single form so the two cannot be confused for each
-    other."""
+    other.
+
+    PROCESS-WIDE, NOT PER VENUE. AiSettings is a single row with no
+    venue_id, so turning drafting off from /admin/entrance/drafts turns it
+    off for Hamilton too. That is a column and a decision, not a filter;
+    until it exists the template says so above the form, because a
+    venue-scoped URL around a global switch is the same trap as a
+    venue-scoped URL around a global list."""
     row = ai_access.get_settings_row(db)
     row.drafting_enabled = drafting_enabled == "on"
     row.drafts_visible = drafts_visible == "on"

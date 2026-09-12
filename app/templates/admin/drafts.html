@@ -6,6 +6,12 @@
 
 <div class="card">
   <h2>Switches</h2>
+  {# These two are one process-wide row (AiSettings has no venue_id), so
+     they reach every venue however this page is reached. Said out loud
+     because the URL and the band around it say "this venue", and a global
+     switch inside a venue-scoped page is exactly the sort of thing that
+     gets turned off for one venue and quietly turned off for both. #}
+  <p class="muted" style="font-size:0.85rem; margin:0 0 10px;"><strong>These two switches apply to every venue</strong>, not just this one.</p>
   <form method="post" action="{{ venue_base }}/drafts/switches" class="field-row" style="align-items:center; gap:18px; flex-wrap:wrap;">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <label><input type="checkbox" name="drafting_enabled" {% if drafting_enabled %}checked{% endif %}> Drafting on <span class="muted">(generate drafts for new enquiries)</span></label>
