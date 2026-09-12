@@ -9,7 +9,7 @@ from app.services import documents as documents_service
 from app.services import policy
 from app.services.booking import VOIDED_STATUSES
 from app.services.pdf import render_html_to_pdf
-from app.templating import templates
+from app.templating import templates, venue_identity
 from app.utils import looks_like_a_token, truncate
 
 router = APIRouter(tags=["documents"])
@@ -118,7 +118,9 @@ def view_document(token: str, request: Request, db: Session = Depends(get_db)):
     document = documents_service.record_view(db, document)
 
     return templates.TemplateResponse(
-        request, "document.html", {"document": document, "booking": document.booking}
+        request, "document.html",
+        {"document": document, "booking": document.booking,
+         **venue_identity(document.booking.venue)}
     )
 
 
@@ -137,7 +139,10 @@ def download_document_pdf(token: str, request: Request, db: Session = Depends(ge
     if not _is_live(document):
         return _unavailable_response(request, document, being_updated=_being_updated(db, document))
 
-    html = templates.get_template("document.html").render(document=document, booking=document.booking, is_pdf=True)
+    html = templates.get_template("document.html").render(
+        document=document, booking=document.booking, is_pdf=True,
+        **venue_identity(document.booking.venue),
+    )
     pdf_bytes = render_html_to_pdf(html)
     doc_label = "Agreement" if document.type.value == "agreement" else "BEO"
     filename = f"{document.booking.reference_code}-{doc_label}-v{document.version}.pdf"

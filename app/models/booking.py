@@ -387,6 +387,13 @@ class Booking(Base):
     )
 
     space: Mapped["Space"] = relationship(back_populates="bookings")
+    # Read the venue from HERE, not through `space`. The composite foreign
+    # key guarantees the two agree, so this is not a second source of
+    # truth -- it is the booking's own answer, one join shorter, and it
+    # keeps working if the space is ever lazy-loaded somewhere it is not
+    # wanted. foreign_keys is spelled out because venue_id also takes part
+    # in the composite FK, which SQLAlchemy would otherwise find ambiguous.
+    venue: Mapped["Venue"] = relationship(foreign_keys=[venue_id])
     contact: Mapped["Contact"] = relationship(back_populates="bookings")
     events: Mapped[list["BookingEvent"]] = relationship(back_populates="booking", order_by="BookingEvent.created_at")
     documents: Mapped[list["Document"]] = relationship(back_populates="booking", order_by="Document.version")

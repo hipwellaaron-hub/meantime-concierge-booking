@@ -82,21 +82,32 @@ def test_the_event_order_a_client_opens_names_the_venue(db, loft, contact, hamil
 
 
 def test_the_event_order_pdf_names_the_venue(db, loft, contact, hamilton):
-    """The PDF path renders through get_template().render() and skips the
-    request context entirely, so it can drift from the screen version."""
+    """Through the real ROUTE, and read back out of the PDF.
+
+    The first version of this rendered the template by hand. That passed
+    while identity came from process-wide globals and then failed the
+    moment it moved onto the render, because rendering by hand bypasses
+    exactly the thing under test -- the route supplying the venue. A test
+    that calls the template directly cannot see a route that forgot."""
+    import io
+
+    from pypdf import PdfReader
+
     booking = _booking(db, loft, contact)
     document = documents_service.create_new_version(
         db, booking, DocumentType.beo, generate_beo_content(booking), actor="test"
     )
     documents_service.mark_sent(db, document, actor="test")
 
-    from app.templating import templates
+    try:
+        resp = _client(db).get(f"/d/{document.access_token}/pdf")
+        assert resp.status_code == 200
+        text = "".join(page.extract_text() for page in PdfReader(io.BytesIO(resp.content)).pages)
+    finally:
+        app.dependency_overrides.clear()
 
-    html = templates.get_template("document.html").render(
-        document=document, booking=booking, is_pdf=True
-    )
     for value in (TRADING_NAME, ABN, ADDRESS):
-        assert value in html, f"the Event Order PDF no longer prints {value!r}"
+        assert value in text, f"the Event Order PDF no longer prints {value!r}"
 
 
 # --- the invoice: live by design ------------------------------------------
@@ -199,3 +210,98 @@ def test_the_internal_label_and_the_trading_name_stay_different(db, hamilton):
     assert hamilton.name == "Hamilton"
     assert hamilton.trading_name == "Meantime Hamilton"
     assert hamilton.name != hamilton.trading_name
+
+
+# --- the move itself: the VENUE is the source now --------------------------
+
+
+def test_the_invoice_follows_the_venue_row_not_the_constants(db, loft, contact, hamilton):
+    """The assertion that proves the move happened. Every test above would
+    pass equally well if identity still came from module constants -- they
+    check the VALUE, and the value is the same either way. This changes the
+    venue ROW and watches the client's invoice follow it."""
+    hamilton.trading_name = "Nice Try Events Trading"
+    hamilton.abn = "28 647 750 892"
+    hamilton.bank_bsb = "062-808"
+    hamilton.bank_account_number = "10401032"
+    db.flush()
+
+    booking = _booking(db, loft, contact, name="Follows The Row")
+    invoice = create_deposit_invoice(db, booking, due_date=dt.date(2027, 8, 1), actor="test")
+    mark_invoice_sent(db, invoice, actor="test")
+
+    try:
+        resp = _client(db).get(f"/i/{invoice.access_token}")
+        assert resp.status_code == 200
+        for value in ("Nice Try Events Trading", "28 647 750 892", "062-808", "10401032"):
+            assert value in resp.text, f"the invoice did not follow the venue row for {value!r}"
+        # And the old values are GONE, which is the half that matters: a
+        # second company's invoice showing the first company's bank account
+        # is the failure this whole layer exists to prevent.
+        for value in (TRADING_NAME, ABN, BSB, ACCOUNT_NUMBER):
+            assert value not in resp.text, f"the invoice still prints Hamilton's {value!r}"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_the_event_order_follows_the_venue_row(db, loft, contact, hamilton):
+    hamilton.trading_name = "Nice Try Events Trading"
+    hamilton.phone = "0478 029 612"
+    db.flush()
+
+    booking = _booking(db, loft, contact, name="Run Sheet Follows")
+    document = documents_service.create_new_version(
+        db, booking, DocumentType.beo, generate_beo_content(booking), actor="test"
+    )
+    documents_service.mark_sent(db, document, actor="test")
+
+    try:
+        resp = _client(db).get(f"/d/{document.access_token}")
+        assert resp.status_code == 200
+        assert "Nice Try Events Trading" in resp.text
+        assert "0478 029 612" in resp.text
+        assert TRADING_NAME not in resp.text
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_the_agreement_freezes_the_venue_it_was_generated_under(db, loft, contact, hamilton):
+    """The agreement takes its identity from the booking's venue at
+    generation, then keeps it. Changing the row afterwards must not rewrite
+    a contract somebody signed."""
+    hamilton.trading_name = "Nice Try Events Trading"
+    hamilton.abn = "28 647 750 892"
+    db.flush()
+
+    booking = _booking(db, loft, contact, name="Frozen Under")
+    content = generate_agreement_content(booking)
+    assert content["venue"] == "Nice Try Events Trading"
+    assert content["venue_abn"] == "28 647 750 892"
+
+    hamilton.trading_name = "Changed Again Pty Ltd"
+    db.flush()
+    assert content["venue"] == "Nice Try Events Trading", "a generated agreement must not follow a later change"
+
+
+def test_a_venue_with_no_identity_prints_nothing_rather_than_hamiltons(db, loft, contact, hamilton):
+    """No fallback, deliberately. A venue nobody has finished setting up
+    renders blank, which somebody notices. Falling back would print another
+    company's real bank details on this company's invoice, which nobody
+    notices until the money lands in the wrong account."""
+    hamilton.trading_name = None
+    hamilton.abn = None
+    hamilton.bank_bsb = None
+    hamilton.bank_account_number = None
+    db.flush()
+
+    booking = _booking(db, loft, contact, name="Unfilled Venue")
+    invoice = create_deposit_invoice(db, booking, due_date=dt.date(2027, 8, 1), actor="test")
+    mark_invoice_sent(db, invoice, actor="test")
+
+    try:
+        resp = _client(db).get(f"/i/{invoice.access_token}")
+        assert resp.status_code == 200, "a blank venue must not take the page down"
+        for value in (TRADING_NAME, ABN, BSB, ACCOUNT_NUMBER):
+            assert value not in resp.text, f"an unfilled venue fell back to Hamilton's {value!r}"
+    finally:
+        app.dependency_overrides.clear()

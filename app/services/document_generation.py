@@ -587,8 +587,15 @@ def generate_agreement_content(booking: Booking) -> dict:
     bank details."""
     space = booking.space
     terms_sections = _terms_sections(booking)
+    # From THIS booking's venue, not from module constants. The constants
+    # had one answer, and a contract that names the wrong company is not a
+    # contract with this one. Falls back to the constant only where the
+    # venue has not been filled in yet, which is Hamilton's own values --
+    # and an unfilled second venue would print blank rather than print
+    # Hamilton's, because venue_identity supplies no fallback either.
+    venue = booking.venue
     return {
-        "venue": policy.VENUE_TRADING_NAME,
+        "venue": venue.trading_name or policy.VENUE_TRADING_NAME,
         # Both rooms. The agreement header is frozen at generation on
         # purpose (a signed contract reflects what was agreed), so
         # unlike the Event Order band this has to be right HERE.
@@ -612,8 +619,8 @@ def generate_agreement_content(booking: Booking) -> dict:
         # that wants one block of plain text.
         "terms_sections": terms_sections,
         "terms_text": rebuild_terms_text(terms_sections),
-        "venue_abn": policy.VENUE_ABN,
-        "venue_address": policy.VENUE_ADDRESS,
-        "venue_contact_name": policy.VENUE_CONTACT_NAME,
-        "venue_contact_email": policy.VENUE_CONTACT_EMAIL,
+        "venue_abn": venue.abn or policy.VENUE_ABN,
+        "venue_address": venue.address or policy.VENUE_ADDRESS,
+        "venue_contact_name": venue.contact_name or policy.VENUE_CONTACT_NAME,
+        "venue_contact_email": venue.contact_email or policy.VENUE_CONTACT_EMAIL,
     }

@@ -60,7 +60,7 @@ from app.services.document_generation import (
     generate_beo_content,
     rebuild_terms_text,
 )
-from app.templating import templates
+from app.templating import templates, venue_identity
 from app.utils import is_valid_email, truncate
 
 router = APIRouter(prefix="/admin/bookings", tags=["admin-bookings"], dependencies=[Depends(require_staff)])
@@ -1688,6 +1688,7 @@ def preview_invoice(
             "gst_component": invoicing.gst_component(invoice.total),
             "line_items": invoicing.line_item_breakdown(invoice.line_items),
             "other_invoices": other_invoices,
+            **venue_identity(invoice.booking.venue),
             "stripe_configured": False,
             "card_payment_url": None,
             "card_payment_amount": None,

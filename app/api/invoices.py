@@ -11,7 +11,7 @@ from app.models.invoice import InvoiceStatus
 from app.services import invoicing, policy, stripe_integration
 from app.services.booking import VOIDED_STATUSES
 from app.services.pdf import render_html_to_pdf
-from app.templating import templates
+from app.templating import templates, venue_identity
 from app.utils import looks_like_a_token
 
 router = APIRouter(tags=["invoices"])
@@ -99,6 +99,10 @@ def _build_invoice_context(db: Session, invoice, *, include_card_payment: bool) 
         "stripe_configured": card_payment_url is not None,
         "card_payment_url": card_payment_url,
         "card_payment_amount": card_payment_amount,
+        # Live, not frozen: an unpaid invoice must point at the account
+        # that is current now. Both the screen and the PDF come through
+        # here, so they cannot disagree.
+        **venue_identity(invoice.booking.venue),
     }
 
 

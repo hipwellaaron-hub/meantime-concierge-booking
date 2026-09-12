@@ -138,6 +138,58 @@ def line_total(item: dict) -> str:
     return f"${total:,.2f}"
 
 
+# --- venue identity, per render ---------------------------------------------
+
+
+def venue_identity(venue) -> dict:
+    """The venue facts a client-facing template prints, for THIS venue.
+
+    These were Jinja GLOBALS until 2026-09-12: bound once at import from
+    module constants, which is process-wide by definition and therefore had
+    exactly one answer. The Entrance is a different company with its own
+    ABN, bank account and Stripe account, so one answer is the wrong number
+    of answers.
+
+    Returns a plain dict so every call site passes it explicitly. There is
+    deliberately NO fallback to Hamilton: a render that forgets the venue
+    gets empty strings and shows a blank ABN, which somebody notices. A
+    fallback would print another company's real bank details on this
+    company's invoice, which nobody notices until the money lands in the
+    wrong account.
+
+    `venue` may be None for a page with no booking behind it (an expired
+    link, an error page). Empty is the right answer there too.
+    """
+    if venue is None:
+        return {key: "" for key in _IDENTITY_KEYS}
+    return {
+        "venue_trading_name": venue.trading_name or "",
+        "venue_legal_name": venue.legal_name or "",
+        "venue_abn": venue.abn or "",
+        "venue_address": venue.address or "",
+        "venue_phone": venue.phone or "",
+        "venue_contact_name": venue.contact_name or "",
+        "venue_contact_email": venue.contact_email or "",
+        "bank_account_name": venue.bank_account_name or "",
+        "bank_bsb": venue.bank_bsb or "",
+        "bank_account_number": venue.bank_account_number or "",
+    }
+
+
+_IDENTITY_KEYS = (
+    "venue_trading_name",
+    "venue_legal_name",
+    "venue_abn",
+    "venue_address",
+    "venue_phone",
+    "venue_contact_name",
+    "venue_contact_email",
+    "bank_account_name",
+    "bank_bsb",
+    "bank_account_number",
+)
+
+
 def has_venue_logo() -> bool:
     """Checked per render, not once at import: the logo is a deploy-time
     asset, and a stale cached False would silently keep it off every
@@ -224,25 +276,22 @@ templates.env.globals["ga4_measurement_id"] = _settings.ga4_measurement_id if _t
 templates.env.globals["meta_pixel_id"] = _settings.meta_pixel_id if _tracking_env_ok else ""
 templates.env.globals["has_venue_logo"] = has_venue_logo
 templates.env.globals["venue_logo_url"] = LOGO_STATIC_PATH
-templates.env.globals["venue_phone"] = policy.VENUE_PHONE
 # The Dietaries section prints this whatever the stored value is -- the
 # template had its own literal copy, so changing the constant would have
 # left the two disagreeing about the one sentence a client reads for an
 # allergy question. document_regeneration reads the same name.
 templates.env.globals["NO_DIETARIES"] = NO_DIETARIES
 
-# Live (not frozen) venue/banking details for the invoice view -- an unpaid
-# invoice must always point at the current account, not whatever was true
-# when it was generated. Signed agreements deliberately do the opposite
-# (see app.services.document_generation): those freeze this same data into
-# the document's content at generation time, because a contract has to
-# reflect what was true when it was agreed, not what's true today.
-templates.env.globals["venue_trading_name"] = policy.VENUE_TRADING_NAME
-templates.env.globals["venue_legal_name"] = policy.VENUE_LEGAL_NAME
-templates.env.globals["venue_abn"] = policy.VENUE_ABN
-templates.env.globals["venue_address"] = policy.VENUE_ADDRESS
-templates.env.globals["bank_account_name"] = policy.BANK_ACCOUNT_NAME
-templates.env.globals["bank_bsb"] = policy.BANK_BSB
-templates.env.globals["bank_account_number"] = policy.BANK_ACCOUNT_NUMBER
-templates.env.globals["venue_contact_name"] = policy.VENUE_CONTACT_NAME
-templates.env.globals["venue_contact_email"] = policy.VENUE_CONTACT_EMAIL
+# Venue identity is NO LONGER a global. It was ten of them, bound here once
+# at import from module constants -- process-wide by definition, and
+# therefore one answer for a system that now needs two. Every client-facing
+# render passes templating.venue_identity(venue) instead.
+#
+# Live (not frozen) is still the rule for the INVOICE: an unpaid invoice
+# must point at the account that is current now, not whatever was true when
+# it was generated. Signed agreements deliberately do the opposite (see
+# app.services.document_generation), freezing the same facts into the
+# document's content, because a contract reflects what was agreed.
+#
+# venue_phone stays below only because document.html reads it on the Event
+# Order header; it is supplied per render as well and the global is gone.

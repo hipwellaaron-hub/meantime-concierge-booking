@@ -29,7 +29,7 @@ from app.services import documents as documents_service
 from app.services import staff_auth
 from app.services.document_generation import format_date_long
 from app.services.pdf import render_html_to_pdf
-from app.templating import templates
+from app.templating import templates, venue_identity
 
 router = APIRouter(prefix="/api/staff", tags=["staff-app"])
 
@@ -313,6 +313,7 @@ def booking_beo(
             "floor_newer_version": newer,
             "floor_drift": _floor_drift(document, booking),
             "floor_rsa_gap": _floor_rsa_gap(document, booking),
+            **venue_identity(booking.venue),
         },
     )
 
@@ -332,7 +333,8 @@ def booking_beo_pdf(
     booking = _get_visible_booking_or_404(db, booking_id)
     document, _newer = _get_floor_beo_or_404(db, booking)
     html = templates.get_template("document.html").render(
-        document=document, booking=booking, is_pdf=True, floor_pdf=True
+        document=document, booking=booking, is_pdf=True, floor_pdf=True,
+        **venue_identity(booking.venue),
     )
     filename = f"{booking.reference_code}-BEO-v{document.version}.pdf"
     return Response(
