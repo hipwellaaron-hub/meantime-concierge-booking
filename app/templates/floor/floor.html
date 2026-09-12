@@ -88,6 +88,22 @@
 
   .empty { text-align: center; color: var(--muted); padding: 26px 0; }
   .refresh-hint { text-align: center; font-size: 0.7rem; color: var(--muted); padding: 10px 0; }
+
+  /* A refusal has to be VISIBLE. Sits above the BEO frame (z-index 30) so a
+     failure inside the viewer is not hidden behind it, and low on the screen
+     where a thumb already is. Tappable to dismiss, and big enough to read at
+     arm's length mid-function rather than held up to the face. */
+  .toast { position: fixed; left: 12px; right: 12px; bottom: 18px; z-index: 60;
+    background: var(--surface-hi); border: 1px solid var(--border-bright);
+    border-left: 4px solid var(--gold); border-radius: 10px;
+    padding: 14px 16px; color: var(--cream); font-size: 0.95rem; line-height: 1.4;
+    box-shadow: 0 8px 28px rgba(0,0,0,0.45); cursor: pointer; }
+  .toast .toast-dismiss { display: block; margin-top: 6px; font-size: 0.72rem;
+    color: var(--muted); letter-spacing: 0.04em; text-transform: uppercase; }
+  @media (prefers-reduced-motion: no-preference) {
+    .toast { animation: toast-in 160ms ease-out; }
+    @keyframes toast-in { from { opacity: 0; transform: translateY(8px); } }
+  }
 </style>
 </head>
 <body>
@@ -107,12 +123,67 @@
   function token() { try { return localStorage.getItem(TOKEN_KEY); } catch (e) { return null; } }
   function setToken(t) { try { t ? localStorage.setItem(TOKEN_KEY, t) : localStorage.removeItem(TOKEN_KEY); } catch (e) {} }
 
+  // ---- SAYING SOMETHING WHEN A REQUEST FAILS ----
+  //
+  // Until 2026-09-12 this app had no way to report a failure at all. api()
+  // handled 401 and passed EVERY other response through as if it had
+  // succeeded, and all three callers ended in `.catch(function () {})` -- an
+  // empty catch. So a tap on a booking the server refused did nothing
+  // whatsoever: no sheet, no message, no sign the tap had registered. Same
+  // for a dropped connection mid-function, a 500, or a booking belonging to
+  // another venue. On the one surface the team uses while a function is
+  // actually running, every failure was invisible.
+  function toast(message) {
+    var existing = document.querySelector(".toast");
+    if (existing) existing.remove();
+    var el = document.createElement("div");
+    el.className = "toast";
+    el.setAttribute("role", "alert");
+    el.innerHTML = esc(message) + '<span class="toast-dismiss">Tap to dismiss</span>';
+    el.addEventListener("click", function () { el.remove(); });
+    document.body.appendChild(el);
+    // Long enough to read while carrying plates; not so short it is gone
+    // before anyone looks up.
+    setTimeout(function () { if (el.parentNode) el.remove(); }, 9000);
+  }
+
+  // The catch for every api() call. A logged-out error is already handled --
+  // renderLogin() has put the sign-in screen up -- so it is marked handled
+  // rather than toasted on top of its own explanation.
+  function showError(err) {
+    if (err && err.handled) return;
+    toast((err && err.message) || "Something went wrong. Try again.");
+  }
+
   function api(path, options) {
     options = options || {};
     options.headers = Object.assign({}, options.headers, { "Authorization": "Bearer " + token() });
     return fetch("/api/staff" + path, options).then(function (resp) {
-      if (resp.status === 401) { setToken(null); renderLogin(); throw new Error("logged out"); }
+      if (resp.status === 401) {
+        setToken(null);
+        renderLogin();
+        var out = new Error("logged out");
+        out.handled = true;
+        throw out;
+      }
+      if (!resp.ok) {
+        // The server's own words where it has them. /api/staff answers JSON
+        // on every path including its refusals (the admin HTML error handler
+        // is /admin only, deliberately), but a proxy or a gateway can still
+        // put something else in front of it -- so a body that will not parse
+        // falls back to the status rather than throwing a second error on
+        // top of the first.
+        return resp.json().catch(function () { return null; }).then(function (body) {
+          throw new Error(
+            (body && body.detail) || ("Couldn't load that (" + resp.status + "). Try again.")
+          );
+        });
+      }
       return resp;
+    }, function () {
+      // fetch itself rejected: no network, DNS, or the phone went through a
+      // dead spot in the building. This is the common one on a function night.
+      throw new Error("No connection. Check the venue wi-fi and try again.");
     });
   }
 
@@ -166,7 +237,7 @@
     api("/bookings?from=" + from + "&to=" + to).then(function (resp) { return resp.json(); }).then(function (data) {
       state.bookings = data.bookings;
       renderApp();
-    }).catch(function () {});
+    }).catch(showError);
   }
 
   function isoOf(d) { return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); }
@@ -318,7 +389,7 @@
       document.getElementById("sheet-close").addEventListener("click", function () { sheet.remove(); });
       var beoBtn = document.getElementById("open-beo");
       if (beoBtn) beoBtn.addEventListener("click", function () { openBeo(b); });
-    }).catch(function () {});
+    }).catch(showError);
   }
 
   // ---- BEO VIEWER ----
@@ -341,9 +412,9 @@
           a.href = url; a.download = b.event_name.replace(/[^a-z0-9]+/gi, "-") + "-BEO.pdf";
           document.body.appendChild(a); a.click(); a.remove();
           setTimeout(function () { URL.revokeObjectURL(url); }, 5000);
-        });
+        }).catch(showError);
       });
-    }).catch(function () {});
+    }).catch(showError);
   }
 
   // ---- BOOT ----

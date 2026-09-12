@@ -626,3 +626,60 @@ def test_the_floor_still_opens_its_own_venues_booking(client, db, contact, loft,
     mine = _confirmed_booking(db, loft, contact, event_name="Hamilton Function")
 
     assert client.get(f"/api/staff/bookings/{mine.id}", headers=headers).status_code == 200
+
+
+# --- what the floor app can actually SHOW the person holding the phone ------
+#
+# Until 2026-09-12 the app had no way to report a failure at all: api()
+# handled 401 and let every other response through as if it had succeeded,
+# and each caller ended in an empty `.catch(function () {})`. A tap on a
+# booking the server refused did nothing whatsoever -- no sheet, no message,
+# no sign the tap had registered.
+#
+# The toast that replaced that reads `detail` off the response body. These
+# pin the server half of that contract: if a refusal ever stops being JSON,
+# or stops carrying `detail`, the phone goes back to saying nothing useful.
+
+
+def test_a_refused_booking_answers_json_with_a_detail_the_app_can_show(client, db, floor_user):
+    """The exact shape the toast reads. A refusal must be JSON with a
+    non-empty `detail` -- not HTML, and not an empty body."""
+    headers = _login(client)
+    missing = "00000000-0000-0000-0000-000000000000"
+
+    resp = client.get(f"/api/staff/bookings/{missing}", headers=headers)
+
+    assert resp.status_code == 404
+    assert resp.headers["content-type"].startswith("application/json"), (
+        "the floor app parses this as JSON; HTML here is what the /admin error "
+        "handler does, and it must never reach /api"
+    )
+    detail = resp.json().get("detail")
+    assert detail, "a refusal with no detail leaves the phone with nothing to show"
+    assert isinstance(detail, str) and detail.strip()
+
+
+def test_the_beo_route_refuses_in_json_too(client, db, loft, contact, floor_user):
+    """The other tap. openBeo reads the response as TEXT and puts it in an
+    iframe, so a refusal that is not caught would render raw JSON at the
+    person holding the phone."""
+    headers = _login(client)
+    missing = "00000000-0000-0000-0000-000000000000"
+
+    resp = client.get(f"/api/staff/bookings/{missing}/beo", headers=headers)
+
+    assert resp.status_code == 404
+    assert resp.headers["content-type"].startswith("application/json")
+    assert resp.json().get("detail")
+
+
+def test_an_unauthenticated_request_is_401_not_404(client, db, floor_user):
+    """The app treats 401 differently -- it clears the token and shows the
+    sign-in screen instead of a toast. If a signed-out request started
+    answering 404, the phone would toast 'Booking not found' at somebody
+    whose session had simply expired."""
+    missing = "00000000-0000-0000-0000-000000000000"
+
+    resp = client.get(f"/api/staff/bookings/{missing}")
+
+    assert resp.status_code == 401
