@@ -72,27 +72,39 @@ def seed(db=None) -> Venue:
             db.flush()
 
         # Identity, from the same values migration e1b6a44c7f83 backfills.
-        # Set every run, not only on creation: a freshly seeded database and
-        # a migrated one have to agree, and this is also how a venue that
-        # predates the columns gets filled. `name` stays the internal label
-        # ("Hamilton"); `trading_name` is what a client sees.
+        # `name` stays the internal label ("Hamilton"); `trading_name` is
+        # what a client sees.
         #
-        # Deliberately reads policy.py rather than repeating the literals.
-        # The constants are still the source until the renders move onto
-        # these columns, and two copies would drift the moment one changed.
-        venue.trading_name = policy.VENUE_TRADING_NAME
-        venue.legal_name = policy.VENUE_LEGAL_NAME
-        venue.abn = policy.VENUE_ABN
-        venue.address = policy.VENUE_ADDRESS
-        venue.phone = policy.VENUE_PHONE
-        venue.contact_name = policy.VENUE_CONTACT_NAME
-        venue.contact_email = policy.VENUE_CONTACT_EMAIL
-        venue.bank_account_name = policy.BANK_ACCOUNT_NAME
-        venue.bank_bsb = policy.BANK_BSB
-        venue.bank_account_number = policy.BANK_ACCOUNT_NUMBER
-        venue.reference_prefix = "HAM"
-        venue.stripe_secret_key_env = "STRIPE_SECRET_KEY"
-        venue.stripe_webhook_secret_env = "STRIPE_WEBHOOK_SECRET"
+        # FILL ONLY WHAT IS EMPTY. This runs on every deploy (preDeploy), and
+        # the client-facing renders now read these COLUMNS rather than the
+        # constants -- so a plain assignment would silently revert a bank
+        # account or an ABN corrected in the database, on the next deploy,
+        # with nothing in the log but "Seeded Hamilton venue and spaces"
+        # (review, 2026-09-12). A blank field is an unfinished setup and
+        # gets a value; a filled one is somebody's answer and is left alone.
+        #
+        # Seeding the same literals as the migration is deliberate: a fresh
+        # database and a migrated one have to agree, and reading policy.py
+        # rather than repeating them keeps the two copies from drifting
+        # while the constants are still there for the email sender.
+        defaults = {
+            "trading_name": policy.VENUE_TRADING_NAME,
+            "legal_name": policy.VENUE_LEGAL_NAME,
+            "abn": policy.VENUE_ABN,
+            "address": policy.VENUE_ADDRESS,
+            "phone": policy.VENUE_PHONE,
+            "contact_name": policy.VENUE_CONTACT_NAME,
+            "contact_email": policy.VENUE_CONTACT_EMAIL,
+            "bank_account_name": policy.BANK_ACCOUNT_NAME,
+            "bank_bsb": policy.BANK_BSB,
+            "bank_account_number": policy.BANK_ACCOUNT_NUMBER,
+            "reference_prefix": "HAM",
+            "stripe_secret_key_env": "STRIPE_SECRET_KEY",
+            "stripe_webhook_secret_env": "STRIPE_WEBHOOK_SECRET",
+        }
+        for field, value in defaults.items():
+            if not getattr(venue, field, None):
+                setattr(venue, field, value)
 
         existing_names = {s.name for s in db.query(Space).filter_by(venue_id=venue.id)}
         for space_kwargs in HAMILTON_SPACES:
