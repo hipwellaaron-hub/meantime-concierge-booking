@@ -563,7 +563,12 @@ def test_resend_floor_welcome(db, admin_client, floor_user, monkeypatch):
     )
     assert resp.status_code == 303
     assert "welcome=sent" in resp.headers["location"]
-    assert calls == [{"name": floor_user.name, "email": floor_user.email}]
+    # The VENUE is part of the call now: this email signs itself and names
+    # an inbox, and it used to sign every venue's new staff as Hamilton.
+    assert len(calls) == 1
+    assert calls[0]["name"] == floor_user.name
+    assert calls[0]["email"] == floor_user.email
+    assert calls[0]["venue"] is not None, "the welcome email was sent with no venue to sign as"
 
 
 def test_resend_welcome_refused_for_admin_account(db, admin_client, staff_user, monkeypatch):

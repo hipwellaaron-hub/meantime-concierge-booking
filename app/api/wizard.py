@@ -177,6 +177,23 @@ def view_wizard(token: str, request: Request, db: Session = Depends(get_db)):
     )
 
 
+def _help_email(booking) -> str | None:
+    """The address to show a client for help with THIS booking's venue.
+
+    Returns None when the venue has no inbox recorded, so the panel simply
+    omits the line. Never another venue's address: this is the one place a
+    client is told where to write.
+    """
+    # Imported inside the function, matching the rest of this module: the
+    # route below does the same.
+    from app.services import notifications
+
+    try:
+        return notifications.venue_mail_for(booking).contact_email
+    except notifications.VenueMailNotConfigured:
+        return None
+
+
 @router.post("/w/{token}/basics", dependencies=[Depends(rate_limit_dependency(_wizard_step_rate_limiter))])
 def submit_basics_step(token: str, request: Request, payload: WizardBasicsStep, db: Session = Depends(get_db)):
     session = _get_usable_session(db, token)
@@ -389,7 +406,13 @@ def save_for_later(token: str, request: Request, db: Session = Depends(get_db)):
         "email_sent": email_sent,
         "resume_url": resume_url,
         "due_date_display": due_date_display,
-        "help_email": notifications.ENQUIRY_NOTIFICATION_RECIPIENT,
+        # Rendered to the CLIENT as a mailto: on the save-and-come-back
+        # panel (templates/wizard/wizard.html). It was a module constant,
+        # so an Entrance client was told to email the other company.
+        # None rather than a wrong address when the venue has no inbox
+        # recorded -- the panel drops the line, which is honest; an
+        # address belonging to somebody else is not.
+        "help_email": _help_email(booking),
         "contact_email": booking.contact.email if booking.contact else None,
     }
 

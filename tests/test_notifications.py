@@ -24,6 +24,9 @@ def _booking(**overrides) -> Booking:
     defaults.update(overrides)
     booking = Booking(**defaults)
     booking.contact = contact
+    # Every booking belongs to a venue, and the email identity now comes
+    # from it. A stub without one is not a booking this system can produce.
+    booking.venue = _stub_venue()
     return booking
 
 
@@ -178,8 +181,11 @@ def test_send_enquiry_notification_sets_reply_to_client_and_internal_from():
         notifications.send_enquiry_notification_email(booking, dashboard_base_url="https://example.test")
 
     sent_message = mock_smtp.send_message.call_args.args[0]
-    assert sent_message["To"] == "meantimehamilton@gmail.com"
-    assert "meantimehamilton@gmail.com" in sent_message["From"]
+    # TWO DIFFERENT ADDRESSES that were the same string for Hamilton, which
+    # is why this test could not tell them apart: From is the ONE Gmail
+    # account everything is sent through, To is THIS VENUE'S own inbox.
+    assert sent_message["To"] == STUB_VENUE_EMAIL, "the alert went to a venue other than this booking's"
+    assert "meantimehamilton@gmail.com" in sent_message["From"], "the sending account is process-wide"
     assert sent_message["Reply-To"] == "jane@example.com"
     assert "Jane's 30th" in sent_message["Subject"]
 
@@ -226,6 +232,26 @@ def test_send_enquiry_notification_raises_when_not_configured():
 from decimal import Decimal  # noqa: E402
 
 from app.models import Space  # noqa: E402
+
+
+# Deliberately NOT Hamilton's real address and NOT policy.VENUE_CONTACT_EMAIL.
+# These tests used to assert msg["To"] == ENQUIRY_NOTIFICATION_RECIPIENT --
+# the same constant the code read, so the comparison held whatever the
+# constant said. A sentinel that appears nowhere else can tell "this
+# venue's inbox" apart from "whatever the process was configured with".
+STUB_VENUE_EMAIL = "zz-stub-venue@example.test"
+STUB_VENUE_NAME = "ZZ Stub Venue Trading Name"
+
+
+def _stub_venue(**overrides):
+    from app.models import Venue
+
+    fields = dict(
+        name="Stub", slug="zz-stub", trading_name=STUB_VENUE_NAME,
+        contact_name="Stub Coordinator", contact_email=STUB_VENUE_EMAIL,
+    )
+    fields.update(overrides)
+    return Venue(**fields)
 
 
 def _booking_with_space(**overrides) -> Booking:
@@ -277,7 +303,7 @@ def test_send_agreement_signed_goes_to_venue_no_reply_to():
             dashboard_base_url="https://x",
         )
     msg = mock_smtp.send_message.call_args.args[0]
-    assert msg["To"] == notifications.ENQUIRY_NOTIFICATION_RECIPIENT
+    assert msg["To"] == STUB_VENUE_EMAIL
     assert "Meantime Concierge" in msg["From"]
     assert msg["Reply-To"] is None  # an internal alert, not a message to answer
     assert "Agreement signed" in msg["Subject"]
@@ -297,7 +323,7 @@ def test_send_deposit_paid_goes_to_venue():
             dashboard_base_url="https://x",
         )
     msg = mock_smtp.send_message.call_args.args[0]
-    assert msg["To"] == notifications.ENQUIRY_NOTIFICATION_RECIPIENT
+    assert msg["To"] == STUB_VENUE_EMAIL
     assert "Deposit paid" in msg["Subject"]
     assert msg["X-Concierge-Booking-Url"] == f"https://x/admin/bookings/{b.id}"
     assert "/admin/bookings/" not in msg.get_content()
@@ -327,6 +353,7 @@ def test_floor_welcome_body_has_setup_and_usage_no_password():
     body = notifications.build_floor_welcome_body(
         name="sally hipwell", email="sally@meantime.com.au",
         floor_url="https://book.example/floor", help_email="help@meantime.com.au",
+        trading_name="ZZ Stub Venue Trading Name", closed_days="closed Monday and Tuesday",
     )
     assert "Sally Hipwell" in body  # recased
     assert "https://book.example/floor" in body
@@ -344,7 +371,8 @@ def test_send_floor_welcome_goes_to_the_new_user():
          patch.object(notifications, "DIGEST_GMAIL_APP_PASSWORD", "fake-app-password"), \
          patch.object(notifications.smtplib, "SMTP_SSL", return_value=mock_smtp):
         notifications.send_floor_welcome_email(
-            name="Sally", email="sally@meantime.com.au", floor_url="https://x/floor"
+            name="Sally", email="sally@meantime.com.au", floor_url="https://x/floor",
+            venue=_stub_venue(),
         )
     msg = mock_smtp.send_message.call_args.args[0]
     assert msg["To"] == "sally@meantime.com.au"
@@ -353,7 +381,9 @@ def test_send_floor_welcome_goes_to_the_new_user():
 
 def test_notify_floor_welcome_returns_false_when_not_configured():
     with patch.object(notifications, "DIGEST_GMAIL_ADDRESS", None):
-        assert notifications.notify_floor_welcome(name="Sally", email="sally@meantime.com.au") is False
+        assert notifications.notify_floor_welcome(
+            name="Sally", email="sally@meantime.com.au", venue=_stub_venue(),
+        ) is False
 
 
 def test_notify_floor_welcome_returns_true_on_send():
@@ -362,7 +392,9 @@ def test_notify_floor_welcome_returns_true_on_send():
     with patch.object(notifications, "DIGEST_GMAIL_ADDRESS", "meantimehamilton@gmail.com"), \
          patch.object(notifications, "DIGEST_GMAIL_APP_PASSWORD", "fake-app-password"), \
          patch.object(notifications.smtplib, "SMTP_SSL", return_value=mock_smtp):
-        assert notifications.notify_floor_welcome(name="Sally", email="sally@meantime.com.au") is True
+        assert notifications.notify_floor_welcome(
+            name="Sally", email="sally@meantime.com.au", venue=_stub_venue(),
+        ) is True
 
 
 # --- UI filters ---------------------------------------------------------------

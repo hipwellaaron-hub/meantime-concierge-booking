@@ -64,7 +64,9 @@ def test_the_email_never_goes_to_the_client(db, loft):
             booking, outstanding_items=[], dashboard_base_url="https://example.test"
         )
     message = send.call_args[0][0]
-    assert message["To"] == notifications.ENQUIRY_NOTIFICATION_RECIPIENT
+    assert message["To"] == booking.venue.contact_email, (
+        "the alert went to a venue other than the one the booking belongs to"
+    )
     assert booking.contact.email not in str(message)
     assert message["Reply-To"] is None  # not a message to reply to
 

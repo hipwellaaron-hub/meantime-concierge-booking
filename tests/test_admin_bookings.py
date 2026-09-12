@@ -1164,10 +1164,7 @@ def test_enquiry_notification_preview_shows_the_real_email(admin_client, db, lof
     """The preview must be built by the same functions that send, so it
     can't drift from what actually goes out."""
     from app.services.enquiry_classification import preview_enquiry_notification
-    from app.services.notifications import (
-        ENQUIRY_NOTIFICATION_RECIPIENT,
-        build_enquiry_notification_subject,
-    )
+    from app.services.notifications import build_enquiry_notification_subject
 
     booking = create_booking(
         db, space_id=loft.id, contact_id=None, event_date=dt.date(2026, 11, 28),
@@ -1176,7 +1173,10 @@ def test_enquiry_notification_preview_shows_the_real_email(admin_client, db, lof
     )
 
     recipient, subject, body, booking_url = preview_enquiry_notification(booking)
-    assert recipient == ENQUIRY_NOTIFICATION_RECIPIENT
+    # THIS BOOKING'S venue, not a module constant. The preview renders under
+    # a venue band that says "Everything on this page belongs to this
+    # venue", and it was showing another venue's inbox in the To cell.
+    assert recipient == booking.venue.contact_email
     assert subject == build_enquiry_notification_subject(booking)
     assert "meantime Christmas party" in subject
     assert "Reference:" in body and str(booking.reference_code) in body
@@ -1185,7 +1185,7 @@ def test_enquiry_notification_preview_shows_the_real_email(admin_client, db, lof
 
     page = admin_client.get(f"/admin/bookings/{booking.id}/enquiry-notification/preview")
     assert page.status_code == 200
-    assert ENQUIRY_NOTIFICATION_RECIPIENT in page.text
+    assert booking.venue.contact_email in page.text
     assert "meantime Christmas party" in page.text
     assert booking_url in page.text
 

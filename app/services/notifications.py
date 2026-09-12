@@ -25,10 +25,11 @@ import logging
 import os
 import smtplib
 from decimal import Decimal
+from dataclasses import dataclass
 from email.message import EmailMessage
 
 from app.models import Booking
-from app.services import policy
+from app.services import policy, venue_profile
 from app.utils import format_date_dmy, format_person_name, is_valid_email
 
 
@@ -62,12 +63,68 @@ DIGEST_GMAIL_ADDRESS = os.environ.get("DIGEST_GMAIL_ADDRESS")
 DIGEST_GMAIL_APP_PASSWORD = _strip_all_whitespace(os.environ.get("DIGEST_GMAIL_APP_PASSWORD"))
 DIGEST_RECIPIENT_EMAIL = os.environ.get("DIGEST_RECIPIENT_EMAIL")
 
-# Fixed and independent of DIGEST_RECIPIENT_EMAIL on purpose: the brief is
-# explicit that the enquiry notification goes to the venue's own inbox,
-# not wherever the separate staff digest happens to be configured to go
-# (DIGEST_RECIPIENT_EMAIL has been pointed at Aaron's personal address in
-# at least one real config -- see tests/test_notifications.py).
-ENQUIRY_NOTIFICATION_RECIPIENT = policy.VENUE_CONTACT_EMAIL
+# ENQUIRY_NOTIFICATION_RECIPIENT lived here: policy.VENUE_CONTACT_EMAIL, a
+# module constant bound at import. It was the To: of four staff alerts and
+# the Reply-To of two CLIENT emails, and it named Hamilton's inbox for
+# every venue. Deleted rather than kept, because a constant with the right
+# shape is how the next caller reaches for it again.
+#
+# The rule it encoded is still true and is now expressed per venue: the
+# enquiry notification goes to THAT VENUE'S own inbox, deliberately NOT to
+# DIGEST_RECIPIENT_EMAIL, which has been pointed at Aaron's personal
+# address in at least one real config (see tests/test_notifications.py).
+
+
+class VenueMailNotConfigured(RuntimeError):
+    """This venue has not been given the identity an email needs."""
+
+
+@dataclass(frozen=True)
+class VenueMail:
+    """Who an email is from, who it is signed by, and where a reply lands --
+    for ONE venue, read off its row."""
+
+    trading_name: str
+    contact_name: str
+    contact_email: str
+
+
+def venue_mail(venue) -> VenueMail:
+    """This venue's email identity, or a refusal naming what is missing.
+
+    REFUSES RATHER THAN RENDERING A BLANK, and that is the whole design.
+    EmailMessage["To"] = None stores the literal string "None" and Gmail
+    then refuses the recipient -- ugly, but it fails. From = "None
+    <address>" sends perfectly happily, and the client receives an email
+    from "None" signed "None". There is no blank that is safe here, so a
+    venue nobody has finished setting up does not send at all.
+
+    Same rule as venue_profile.for_venue -- "a venue with no profile must
+    not draft in Hamilton's voice with Hamilton's sign-off" -- and the same
+    source as the invoice bank block and the agreement header: the row.
+    """
+    if venue is None:
+        raise VenueMailNotConfigured("no venue on this booking, so there is no identity to send as")
+    missing = [
+        field
+        for field in ("trading_name", "contact_name", "contact_email")
+        if not (getattr(venue, field, None) or "").strip()
+    ]
+    if missing:
+        raise VenueMailNotConfigured(
+            f"venue {getattr(venue, 'slug', '?')!r} has no {', '.join(missing)} recorded, "
+            "so no email can be sent as or to it -- fill it in on the venue row"
+        )
+    return VenueMail(
+        trading_name=venue.trading_name.strip(),
+        contact_name=venue.contact_name.strip(),
+        contact_email=venue.contact_email.strip(),
+    )
+
+
+def venue_mail_for(booking: Booking) -> VenueMail:
+    """The identity for the venue THIS booking belongs to."""
+    return venue_mail(getattr(booking, "venue", None))
 
 
 class GmailSendNotConfigured(RuntimeError):
@@ -79,10 +136,17 @@ class GmailSendRejected(RuntimeError):
 
 
 def is_gmail_smtp_configured() -> bool:
-    """The credential gate shared by every email this module sends --
-    DIGEST_RECIPIENT_EMAIL is a separate, digest-only requirement (see
-    is_digest_email_configured); the enquiry notification always sends to
-    the fixed ENQUIRY_NOTIFICATION_RECIPIENT above and needs nothing else."""
+    """The credential gate shared by every email this module sends.
+
+    CREDENTIALS ONLY. It says the process can talk to Gmail; it does not
+    say any particular venue can be emailed. That second question is
+    per-venue now and is answered by venue_mail(), which raises.
+
+    This docstring used to end "the enquiry notification always sends to
+    the fixed ENQUIRY_NOTIFICATION_RECIPIENT above and needs nothing else",
+    which stopped being true the moment the recipient came from a row.
+    DIGEST_RECIPIENT_EMAIL remains a separate, digest-only requirement --
+    see is_digest_email_configured."""
     return bool(DIGEST_GMAIL_ADDRESS and DIGEST_GMAIL_APP_PASSWORD)
 
 
@@ -193,7 +257,7 @@ def build_enquiry_notification_body(booking: Booking) -> str:
 
 def send_enquiry_notification_email(booking: Booking, *, dashboard_base_url: str) -> None:
     """One email per enquiry, sent to the venue's own inbox
-    (ENQUIRY_NOTIFICATION_RECIPIENT) -- never to the client, who already
+    (venues.contact_email) -- never to the client, who already
     has the thank-you page. From carries a display name that reads as
     internal so it's obviously not a message from the client; Reply-To is
     the client's own address (when there is a valid one on file) so
@@ -214,7 +278,11 @@ def send_enquiry_notification_email(booking: Booking, *, dashboard_base_url: str
 
     message = EmailMessage()
     message["From"] = f"Meantime Concierge <{DIGEST_GMAIL_ADDRESS}>"
-    message["To"] = ENQUIRY_NOTIFICATION_RECIPIENT
+    # THIS venue's inbox. It was one module constant, so a Nice Try
+    # Events enquiry was announced to Meantime Pty Ltd's Gmail -- and
+    # Reply-To is the CLIENT, so the reply they then received came from
+    # the other company with their own enquiry quoted under it.
+    message["To"] = venue_mail_for(booking).contact_email
     if contact is not None and is_valid_email(contact.email):
         message["Reply-To"] = contact.email
     message["Subject"] = build_enquiry_notification_subject(booking)
@@ -279,7 +347,7 @@ def send_wizard_submission_email(
     notification can never lose a client's completed submission."""
     message = EmailMessage()
     message["From"] = f"Meantime Concierge <{DIGEST_GMAIL_ADDRESS}>"
-    message["To"] = ENQUIRY_NOTIFICATION_RECIPIENT
+    message["To"] = venue_mail_for(booking).contact_email
     message["Subject"] = build_wizard_submission_subject(booking)
     message.set_content(
         build_wizard_submission_body(
@@ -309,11 +377,15 @@ def build_wizard_resume_body(booking: Booking, *, resume_url: str, due_date_disp
     if due_date_display:
         lines.append(f"Please complete this by {due_date_display}.")
         lines.append("")
+    # THE CLIENT'S OWN EMAIL. This told an Entrance client to write to
+    # Hamilton's inbox and signed off as Hamilton -- one of only two
+    # messages this system deliberately sends a client.
+    mail = venue_mail_for(booking)
     lines += [
-        f"Any questions, just reply or email {ENQUIRY_NOTIFICATION_RECIPIENT}.",
+        f"Any questions, just reply or email {mail.contact_email}.",
         "",
-        f"{policy.VENUE_CONTACT_NAME}",
-        policy.VENUE_TRADING_NAME,
+        mail.contact_name,
+        mail.trading_name,
     ]
     return "\n".join(lines)
 
@@ -330,10 +402,16 @@ def send_wizard_resume_email(booking: Booking, *, resume_url: str, due_date_disp
     if contact is None or not is_valid_email(contact.email):
         raise GmailSendNotConfigured("this booking has no contact with a valid email address on file")
 
+    # Resolved BEFORE the message is built, so a venue with no identity
+    # recorded refuses outright rather than sending as "None": From =
+    # "None <address>" is accepted by Gmail without complaint, and the
+    # client receives an email from None signed None.
+    mail = venue_mail_for(booking)
+
     message = EmailMessage()
-    message["From"] = f"{policy.VENUE_TRADING_NAME} <{DIGEST_GMAIL_ADDRESS}>"
+    message["From"] = f"{mail.trading_name} <{DIGEST_GMAIL_ADDRESS}>"
     message["To"] = contact.email
-    message["Reply-To"] = ENQUIRY_NOTIFICATION_RECIPIENT
+    message["Reply-To"] = mail.contact_email
     message["Subject"] = build_wizard_resume_subject(booking)
     message.set_content(build_wizard_resume_body(booking, resume_url=resume_url, due_date_display=due_date_display))
     _send_via_gmail_smtp(message)
@@ -379,7 +457,7 @@ def send_agreement_signed_email(
 ) -> None:
     message = EmailMessage()
     message["From"] = f"Meantime Concierge <{DIGEST_GMAIL_ADDRESS}>"
-    message["To"] = ENQUIRY_NOTIFICATION_RECIPIENT
+    message["To"] = venue_mail_for(booking).contact_email
     message["Subject"] = build_agreement_signed_subject(booking)
     message["X-Concierge-Booking-Url"] = f"{dashboard_base_url}/admin/bookings/{booking.id}"
     message.set_content(
@@ -419,8 +497,10 @@ def send_deposit_paid_email(
     booking: Booking, *, amount: Decimal, agreement_signed: bool, now_confirmed: bool, dashboard_base_url: str
 ) -> None:
     message = EmailMessage()
+    # Money into Nice Try Events' Stripe account, announced to Nice Try
+    # Events' inbox. It went to Hamilton's.
     message["From"] = f"Meantime Concierge <{DIGEST_GMAIL_ADDRESS}>"
-    message["To"] = ENQUIRY_NOTIFICATION_RECIPIENT
+    message["To"] = venue_mail_for(booking).contact_email
     message["Subject"] = build_deposit_paid_subject(booking)
     message["X-Concierge-Booking-Url"] = f"{dashboard_base_url}/admin/bookings/{booking.id}"
     message.set_content(
@@ -435,7 +515,10 @@ def build_floor_welcome_subject() -> str:
     return "Your Meantime Floor access"
 
 
-def build_floor_welcome_body(*, name: str, email: str, floor_url: str, help_email: str) -> str:
+def build_floor_welcome_body(
+    *, name: str, email: str, floor_url: str, help_email: str,
+    trading_name: str, closed_days: str | None,
+) -> str:
     """Plain text, to a new floor-team member: how to get the app onto
     their phone and how to read it. Deliberately does NOT carry a password
     -- the manager who created the account gives that separately, so a
@@ -458,7 +541,13 @@ def build_floor_welcome_body(*, name: str, email: str, floor_url: str, help_emai
             "",
             "3. HOW TO READ IT",
             "- Upcoming: the next functions, each with a green PAID or red OWING pill.",
-            "- Calendar: the month at a glance (Monday and Tuesday are closed).",
+            # From venues.trading_days, not typed in here. "Monday and
+            # Tuesday are closed" is one venue's week, and this email goes
+            # to every venue's new staff. A venue that has not recorded its
+            # days gets the sentence with no parenthetical at all -- an
+            # honest silence rather than another building's week.
+            "- Calendar: the month at a glance"
+            + (f" ({closed_days})." if closed_days else "."),
             "- Tap a function for its setup / arrival / food times and to open the BEO run sheet.",
             "- Green PAID plus a green 'BEO' tick means good to go: the client has approved",
             "  the run sheet. A gold BEO chip is a run sheet the client has NOT approved yet.",
@@ -468,41 +557,66 @@ def build_floor_welcome_body(*, name: str, email: str, floor_url: str, help_emai
             "",
             f"Any questions, email {help_email}.",
             "",
-            policy.VENUE_TRADING_NAME,
+            trading_name,
         ]
     )
 
 
-def send_floor_welcome_email(*, name: str, email: str, floor_url: str) -> None:
+def send_floor_welcome_email(*, name: str, email: str, floor_url: str, venue) -> None:
+    """`venue` is REQUIRED. This is the email that tells somebody which app
+    to install and who to ask -- signing it as the other company, and
+    pointing it at the other company's inbox, is how a new casual at The
+    Entrance ends up emailing Hamilton on their first shift."""
     if not is_valid_email(email):
         raise GmailSendNotConfigured(f"cannot send a floor welcome to an invalid address: {email!r}")
+    mail = venue_mail(venue)
     message = EmailMessage()
-    message["From"] = f"{policy.VENUE_TRADING_NAME} <{DIGEST_GMAIL_ADDRESS}>"
+    message["From"] = f"{mail.trading_name} <{DIGEST_GMAIL_ADDRESS}>"
     message["To"] = email
-    message["Reply-To"] = ENQUIRY_NOTIFICATION_RECIPIENT
+    message["Reply-To"] = mail.contact_email
     message["Subject"] = build_floor_welcome_subject()
     message.set_content(
         build_floor_welcome_body(
-            name=name, email=email, floor_url=floor_url, help_email=ENQUIRY_NOTIFICATION_RECIPIENT
+            name=name, email=email, floor_url=floor_url, help_email=mail.contact_email,
+            trading_name=mail.trading_name, closed_days=venue_profile.closed_days_text(venue),
         )
     )
     _send_via_gmail_smtp(message)
 
 
-def notify_floor_welcome(*, name: str, email: str) -> bool:
+def notify_floor_welcome(*, name: str, email: str, venue) -> bool:
     """Send a new floor-team member their setup-and-usage email. Returns
     True if it sent, False if it couldn't (Gmail not configured, or the
     send failed) -- the account is already created either way, so this
     never raises and the caller can surface 'created, but the email didn't
-    go' rather than failing the whole action."""
+    go' rather than failing the whole action.
+
+    `venue` is REQUIRED and has no default. This function took no venue at
+    all, so nothing downstream could be venue-aware -- while both callers
+    in app/api/admin_staff.py had the venue in hand and dropped it on the
+    next line. Because everything here is swallowed into a False, a venue
+    with no identity recorded is logged explicitly rather than vanishing
+    into the blanket handler."""
     from app.config import settings
 
     if not is_gmail_smtp_configured():
         logger.warning("Floor welcome not sent to %s: Gmail SMTP not configured", email)
         return False
     try:
-        send_floor_welcome_email(name=name, email=email, floor_url=f"{settings.dashboard_base_url}/floor")
+        send_floor_welcome_email(
+            name=name, email=email, floor_url=f"{settings.dashboard_base_url}/floor", venue=venue,
+        )
         return True
+    except VenueMailNotConfigured:
+        # Named separately from the blanket handler below. Everything here
+        # is swallowed into a False, so without its own line this reads as
+        # "the email failed" when the truth is "this venue has no identity
+        # recorded" -- a different problem with a different fix.
+        logger.error(
+            "Floor welcome not sent to %s: venue %r has no email identity recorded",
+            email, getattr(venue, "slug", None),
+        )
+        return False
     except Exception:  # noqa: BLE001 -- account creation must stand even if the welcome email can't send
         logger.exception("Floor welcome email failed for %s", email)
         return False

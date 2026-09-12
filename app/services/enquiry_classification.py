@@ -460,8 +460,13 @@ def preview_enquiry_notification(booking: Booking) -> tuple[str, str, str, str]:
     Sends nothing, records nothing, and needs no Gmail credentials: it
     answers "what would this email say" without requiring the mail path
     to be working."""
+    # THIS booking's venue, from the same resolver the real send uses --
+    # which is the point of the docstring above: the preview cannot drift
+    # from the send if both ask the same question. It read a module
+    # constant, so the preview rendered under a band saying "Meantime The
+    # Entrance" with a To cell reading Hamilton's inbox.
     return (
-        notifications.ENQUIRY_NOTIFICATION_RECIPIENT,
+        notifications.venue_mail_for(booking).contact_email,
         notifications.build_enquiry_notification_subject(booking),
         notifications.build_enquiry_notification_body(booking),
         f"{settings.dashboard_base_url}/admin/bookings/{booking.id}",

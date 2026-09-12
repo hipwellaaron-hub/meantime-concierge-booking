@@ -135,7 +135,12 @@ def create_staff(
     # visible rather than silent.
     outcome = "updated" if existed else "created"
     if new_user.role == "floor":
-        sent = notifications.notify_floor_welcome(name=new_user.name, email=new_user.email)
+        # The venue was resolved on the line above and used to create the
+        # account; it belongs in the email too, which signed off as
+        # Hamilton to every venue's new staff.
+        sent = notifications.notify_floor_welcome(
+            name=new_user.name, email=new_user.email, venue=request.state.venue,
+        )
         return RedirectResponse(
             url=f"{request.state.venue_base}/staff?welcome={'sent' if sent else 'failed'}&outcome={outcome}",
             status_code=303,
@@ -157,7 +162,12 @@ def resend_floor_welcome(
     user = _staff_in_scope(db, request, user_id)
     if user.role != "floor":
         raise HTTPException(status_code=422, detail="Only floor accounts use the Meantime Floor app")
-    sent = notifications.notify_floor_welcome(name=user.name, email=user.email)
+    # The account's OWN venue, not the page's: a floor account belongs to
+    # one building and _staff_in_scope has already checked it is this
+    # one, so the two agree -- but the account is the truthful source.
+    sent = notifications.notify_floor_welcome(
+        name=user.name, email=user.email, venue=user.venue or request.state.venue,
+    )
     return RedirectResponse(
         url=f"{request.state.venue_base}/staff?welcome={'sent' if sent else 'failed'}",
         status_code=303,
