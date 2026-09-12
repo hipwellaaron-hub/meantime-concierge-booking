@@ -22,7 +22,7 @@ information leak.
 import datetime as dt
 
 from fastapi import APIRouter, Depends
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -51,14 +51,48 @@ def healthz(db: Session = Depends(get_db)):
         }
 
     try:
-        venue = db.query(Venue).filter_by(slug="hamilton").first()
-        notification_failures = (
-            len(enquiry_classification.get_enquiry_notification_failures(db, venue)) if venue else 0
+        # EVERY venue, not a hardcoded one. Two things were wrong here until
+        # 2026-09-12, and they compounded:
+        #
+        #   * `filter_by(slug="hamilton").first()` -- `.first()` returns None
+        #     where the eight `_venue()` helpers all use `.one()`, which
+        #     raises. So a database with no Hamilton row reported
+        #     notification_failures = 0 and status "ok". The one endpoint
+        #     that exists to DETECT trouble was the one that failed open, and
+        #     an external monitor would have seen a green light over an empty
+        #     database.
+        #   * Only Hamilton was ever asked. A second venue's failing enquiry
+        #     notifications would not have shown up at all.
+        #
+        # No venue is NAMED in the response: this endpoint is public, its own
+        # docstring forbids leaking config, and which companies operate here
+        # is not a fact a monitoring URL should hand out. One folded boolean.
+        venues = db.scalars(select(Venue)).all()
+        if not venues:
+            # A database with no venue cannot serve anybody. Degraded, loudly.
+            return {
+                "status": "degraded",
+                "checks": {"database": True, "venues_present": False},
+                "checked_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+            }
+
+        notification_failures = sum(
+            len(enquiry_classification.get_enquiry_notification_failures(db, venue))
+            for venue in venues
         )
         checks = {
             "database": True,
+            "venues_present": True,
             "gmail_configured": is_gmail_smtp_configured(),
-            "stripe_configured": stripe_integration.is_configured(),
+            # Per venue, folded: true only when EVERY venue could actually
+            # mint a payment link. A process-level "some key is set" answer
+            # would read green while a second company had no key at all.
+            # is_configured_for only reads an environment variable -- never
+            # assert_key_belongs_to, which calls Stripe over the network and
+            # has no business inside a health check.
+            "stripe_configured": all(
+                stripe_integration.is_configured_for(venue) for venue in venues
+            ),
             "enquiry_notifications_failing": notification_failures > 0,
         }
         status = "degraded" if notification_failures > 0 else "ok"
