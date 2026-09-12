@@ -59,6 +59,38 @@ def include_object(object_, name, type_, reflected, compare_to):
     return True
 
 
+# OUTSTANDING, NOT YET DONE -- three MORE objects have the same hazard and are
+# NOT protected here, because they are pre-existing (introduced by ed35a74 and
+# the Event Order proposals work) rather than part of the venue change, and
+# each needs its migration read to declare it correctly:
+#
+#     ck_beo_proposal_field_state             CheckConstraint on beo_proposal_fields
+#     ck_beo_proposal_status                  CheckConstraint on beo_proposals
+#     uq_beo_proposal_one_pending_per_booking UNIQUE index on beo_proposals.booking_id
+#                                             (probably PARTIAL -- it needs its
+#                                             postgresql_where to match exactly)
+#     ix_bookings_parent_booking_id           Index on bookings.parent_booking_id
+#
+# The right fix for these is to DECLARE them on their models (unlike the venue
+# constraints above, none of them creates a second FK path, so none has the
+# AmbiguousForeignKeysError problem that forced the filter). Until that is
+# done, autogenerate proposes dropping all four. Check with:
+#
+#     .venv/Scripts/python.exe -c "
+#     from sqlalchemy import create_engine
+#     from alembic.migration import MigrationContext
+#     from alembic.autogenerate import compare_metadata
+#     from app.config import settings
+#     from app.database import Base
+#     import app.models
+#     engine = create_engine(settings.test_database_url)
+#     with engine.connect() as conn:
+#         for d in compare_metadata(MigrationContext.configure(conn), Base.metadata):
+#             print(repr(d)[:200])
+#     "
+#
+# A zero-diff run of that snippet is what "done" looks like.
+
 # KNOWN, AND DELIBERATELY NOT FILTERED: autogenerate also proposes ADDING an
 # FK bookings.venue_id -> venues.id, because Booking declares one on the
 # column and d8c3f1a7e920 never built it. That direction is safe -- it adds

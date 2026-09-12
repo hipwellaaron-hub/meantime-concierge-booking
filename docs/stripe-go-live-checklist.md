@@ -216,12 +216,41 @@ company. Two things catch it:
   `payment_venue_mismatch`. A client has paid and somebody has to unpick it
   by hand; a silent return is how that stays invisible.
 
-**Filling in `stripe_account_id` closes the rollback window.** While it is
-NULL, payment link ids are stored as bare strings that the previous build can
-still read. From the first link minted after it is set, they are stored as
-`{"id": …, "account": …}`, and the previous build's deactivation loop chokes
-on the first one. Set it once the deploy is settled — not while a rollback is
-still on the table.
+### Filling in `stripe_account_id` — its own step, on its own day
+
+**This is a deliberate, standalone change. Never bundle it with a deploy, a
+migration, or another configuration edit** (Aaron, 2026-09-12). It is the one
+step in this document that cannot be undone by rolling back.
+
+**What it does.** It arms `assert_key_belongs_to`: from that moment the
+resolved Stripe key is checked against the account the venue says it banks
+into, before any payment link is created, and a mismatch refuses to create the
+link at all. That is the protection against a mis-keyed link taking money into
+the wrong company.
+
+**Why it closes the rollback window.** While the column is NULL,
+`create_payment_link` returns no account and `record_payment_link` stores the
+link id as a **bare string** — exactly the shape the previous build reads.
+From the first link minted after it is set, entries are stored as
+`{"id": …, "account": …}` dicts. The previous build's deactivation loop hands
+a dict straight to `stripe.PaymentLink.modify`, which raises `TypeError` — not
+a `stripe.StripeError`, so it is not caught — and abandons the rest of that
+invoice's links **undeactivated**. A client could then pay a link that should
+have been closed.
+
+**So the order is:**
+
+1. Deploy. Let it sit until you are satisfied you will not roll back.
+2. Only then, set `venues.stripe_account_id` for the venue — on its own,
+   with no other change going out beside it.
+3. Confirm by viewing one invoice: the page still renders and still offers a
+   card link. If the account id is wrong, there will be no card option at all
+   (the refusal degrades to "no card option", never to a broken page or a link
+   into the wrong account).
+
+Until step 2 is done for a venue, that venue's credential guard is **dormant**
+— it returns early and checks nothing. Nothing in the code or the UI announces
+that, so this document is the only record.
 
 ## Also worth knowing
 
