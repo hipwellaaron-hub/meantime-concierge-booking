@@ -99,6 +99,9 @@ def seed(db=None) -> Venue:
             "bank_bsb": policy.BANK_BSB,
             "bank_account_number": policy.BANK_ACCOUNT_NUMBER,
             "reference_prefix": "HAM",
+            # Wednesday through Sunday: Python weekday numbers, Monday=0.
+            # Matches migration a4e7b2f9c105's backfill exactly.
+            "trading_days": [2, 3, 4, 5, 6],
             "stripe_secret_key_env": "STRIPE_SECRET_KEY",
             "stripe_webhook_secret_env": "STRIPE_WEBHOOK_SECRET",
         }

@@ -1,7 +1,7 @@
 import uuid
 
-from sqlalchemy import String
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy import SmallInteger, String
+from sqlalchemy.dialects.postgresql import ARRAY, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -42,6 +42,18 @@ class Venue(Base):
 
     licence_number: Mapped[str | None] = mapped_column(String(64), nullable=True)
     licensed_manager: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    # The days this venue TRADES, as Python weekday numbers (Monday=0 ...
+    # Sunday=6) -- the same numbering `date.weekday()` returns, so a check
+    # is `d.weekday() in venue.trading_days` with no conversion.
+    #
+    # Open days rather than closed ones, so NULL unambiguously means "nobody
+    # has said" and [] means "open no days", which is a different and equally
+    # sayable thing. NULL is never treated as "same as Hamilton": that is the
+    # guess that puts a function on a day the kitchen is shut.
+    #
+    # Hamilton and The Entrance are both Wed-Sun (Aaron, 2026-09-12).
+    trading_days: Mapped[list[int] | None] = mapped_column(ARRAY(SmallInteger), nullable=True)
 
     # Five characters, because reference_code is String(20) and the date and
     # suffix take the rest. Unique: two venues sharing a prefix would make
