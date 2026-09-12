@@ -22,6 +22,8 @@ GET    /admin/login
 GET    /admin/reports/attribution
 GET    /admin/staff
 GET    /admin/triage
+GET    /admin/{venue_slug}/
+GET    /admin/{venue_slug}/reports/attribution
 GET    /api/ai/availability
 GET    /api/ai/bookings
 GET    /api/ai/bookings/{booking_id}/documents

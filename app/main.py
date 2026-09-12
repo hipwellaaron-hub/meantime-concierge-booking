@@ -14,6 +14,7 @@ from app.api.ai_write import router as ai_write_router
 from app.api.admin_auth import router as admin_auth_router
 from app.api.admin_bookings import router as admin_bookings_router
 from app.api.admin_calendar import router as admin_calendar_router
+from app.api.admin_compat import router as admin_compat_router
 from app.api.admin_dashboard import router as admin_dashboard_router
 from app.api.admin_drafts import router as admin_drafts_router
 from app.api.admin_invoices import router as admin_invoices_router
@@ -259,6 +260,12 @@ app.include_router(enquiries_router)
 app.include_router(webhooks_router)
 app.include_router(wizard_router)
 app.include_router(admin_auth_router)
+# BEFORE the venue-scoped routers: these own the literal legacy paths
+# ("/admin/", "/admin/bookings"), and registering them first means a
+# venue whose slug collided with one of those literals could never
+# shadow them. venue_scope refuses a reserved slug as well, so this is
+# the second of two locks rather than the only one.
+app.include_router(admin_compat_router)
 app.include_router(admin_dashboard_router)
 app.include_router(admin_drafts_router)
 app.include_router(admin_bookings_router)

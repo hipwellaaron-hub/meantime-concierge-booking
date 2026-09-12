@@ -3,8 +3,9 @@ from fastapi.responses import HTMLResponse
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.admin_auth import admin_ctx, current_venue, require_staff
+from app.admin_auth import admin_ctx, require_staff
 from app.database import get_db
+from app.venue_scope import venue_scope
 from app.models import Booking, BookingEvent, Invoice, Space, Venue
 from app.models.booking import BookingStatus
 from app.models.invoice import InvoiceStatus
@@ -14,7 +15,10 @@ from app.services import documents as documents_service
 from app.services import enquiry_classification, ivvy_import, wizard as wizard_service
 from app.templating import templates
 
-router = APIRouter(prefix="/admin", tags=["admin-dashboard"], dependencies=[Depends(require_staff), Depends(current_venue)])
+router = APIRouter(
+    prefix="/admin/{venue_slug}", tags=["admin-dashboard"],
+    dependencies=[Depends(require_staff), Depends(venue_scope)],
+)
 
 
 def _venue(db: Session) -> Venue:

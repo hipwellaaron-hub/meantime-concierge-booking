@@ -1,0 +1,14 @@
+{% extends "admin/_base.html" %}
+{% block title %}No venue{% endblock %}
+{% block content %}
+{#- Signed in, but there is nowhere to send them. A configuration fault
+    rather than a 404, and named as one so it gets fixed instead of
+    retried. -#}
+<div class="card" style="max-width: 520px; margin: 40px auto;">
+  <h2 style="font-family: var(--font-head); margin-bottom: 6px;">No venue is set up</h2>
+  <p style="color: var(--muted); font-size: 0.88rem;">
+    Your account is signed in, but there is no venue it can open. That is a
+    configuration problem rather than something you can fix from here.
+  </p>
+</div>
+{% endblock %}

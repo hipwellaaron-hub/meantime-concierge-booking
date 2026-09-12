@@ -12,8 +12,15 @@ def test_logout_with_wrong_csrf_token_is_rejected(admin_client):
 
     # Session must still be alive -- a rejected CSRF attempt must not log
     # the real user out.
+    # /admin/ redirects to the single venue's dashboard; an unauthenticated
+    # request would redirect to /admin/login instead, so WHERE it goes is the
+    # thing that distinguishes "still signed in" from "logged out".
     still_in = admin_client.get("/admin/", follow_redirects=False)
-    assert still_in.status_code == 200
+    assert still_in.status_code == 303
+    assert "/admin/login" not in still_in.headers["location"], (
+        "a rejected CSRF attempt logged the real user out"
+    )
+    assert admin_client.get("/admin/", follow_redirects=True).status_code == 200
 
 
 def test_policy_action_without_csrf_token_is_rejected(admin_client, db, booking):

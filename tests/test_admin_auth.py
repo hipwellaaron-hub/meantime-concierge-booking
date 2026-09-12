@@ -39,8 +39,15 @@ def test_login_success_sets_session_and_redirects(db, staff_user, hamilton):
         assert resp.status_code == 303
         assert resp.headers["location"] == "/admin/"
 
-        dashboard = client.get("/admin/")
+        # /admin/ is the venue chooser now, and with one venue it redirects
+        # straight through to that venue's dashboard -- so the proof that the
+        # session works is that FOLLOWING it renders a page, not that the
+        # front door itself is a 200.
+        dashboard = client.get("/admin/", follow_redirects=True)
         assert dashboard.status_code == 200
+        assert "/admin/hamilton" in str(dashboard.url), (
+            f"login did not land in a venue: {dashboard.url}"
+        )
     finally:
         app.dependency_overrides.clear()
 

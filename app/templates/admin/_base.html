@@ -215,15 +215,20 @@
       </form></span>
     </div>
   </div>
+  {#- admin_url() decides per link, because the routers move one at a time:
+      a moved section gets /admin/<slug>/..., one that has not moved yet gets
+      its legacy /admin/... path, which still works because its router is
+      untouched. Building every link from the venue base instead would point
+      the nav at a 404 for every section that had not moved yet. -#}
   <nav class="primary">
-    <a href="/admin/">Dashboard</a>
-    <a href="/admin/calendar">Calendar</a>
-    <a href="/admin/bookings">Bookings</a>
-    <a href="/admin/invoices">Invoices</a>
-    <a href="/admin/triage">Triage</a>
-    <a href="/admin/drafts">AI drafts</a>
-    <a href="/admin/reports/attribution">Reports</a>
-    <a href="/admin/staff">Staff</a>
+    <a href="{{ admin_url('') }}">Dashboard</a>
+    <a href="{{ admin_url('/calendar') }}">Calendar</a>
+    <a href="{{ admin_url('/bookings') }}">Bookings</a>
+    <a href="{{ admin_url('/invoices') }}">Invoices</a>
+    <a href="{{ admin_url('/triage') }}">Triage</a>
+    <a href="{{ admin_url('/drafts') }}">AI drafts</a>
+    <a href="{{ admin_url('/reports/attribution') }}">Reports</a>
+    <a href="{{ admin_url('/staff') }}">Staff</a>
   </nav>
 </header>
 

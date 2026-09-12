@@ -1,0 +1,29 @@
+{% extends "admin/_base.html" %}
+{% block title %}Choose a venue{% endblock %}
+{% block content %}
+{#- Only ever reached with MORE THAN ONE venue: with one, the route
+    redirects straight through and this page is never rendered. -#}
+<div class="card" style="max-width: 520px; margin: 40px auto;">
+  <h2 style="font-family: var(--font-head); margin-bottom: 6px;">Which venue?</h2>
+  <p style="color: var(--muted); font-size: 0.88rem; margin-bottom: 18px;">
+    These are separate businesses. Nothing you do in one appears in the other.
+  </p>
+  <div style="display: flex; flex-direction: column; gap: 10px;">
+    {% for venue in venues %}
+    <a class="venue-choice" href="/admin/{{ venue.slug }}{{ then }}">
+      <span class="venue-choice-name">{{ venue.trading_name or venue.name }}</span>
+      {% if venue.legal_name %}<span class="venue-choice-entity">{{ venue.legal_name }}</span>{% endif %}
+    </a>
+    {% endfor %}
+  </div>
+</div>
+<style>
+  .venue-choice { display: flex; flex-direction: column; gap: 2px; padding: 14px 16px;
+    border: 1px solid var(--border-bright); border-radius: 10px; text-decoration: none; }
+  .venue-choice:hover { border-color: var(--gold); }
+  .venue-choice-name { font-weight: 600; color: var(--cream); }
+  /* The legal entity, not just the trading name: these are two companies,
+     and the difference is the whole reason the question is being asked. */
+  .venue-choice-entity { font-size: 0.74rem; color: var(--muted); }
+</style>
+{% endblock %}
