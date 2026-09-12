@@ -77,6 +77,7 @@ def _pipeline_payload(record: ai_pipeline.PipelineRecord) -> dict:
 
 @router.get("/pipeline")
 def pipeline(
+    venue: str = Query(default=None, description="Venue slug. Required."),
     stage: str | None = Query(default=None),
     awaiting: str | None = Query(default=None),
     ctx: AiContext = Depends(require_ai),
@@ -96,7 +97,8 @@ def pipeline(
     if awaiting is not None and awaiting not in ("staff", "client"):
         raise HTTPException(status_code=400, detail="awaiting must be 'staff' or 'client'")
 
-    records = ai_pipeline.build_records(db, ctx.venue)
+    scope = ctx.require_venue(venue)
+    records = ai_pipeline.build_records(db, scope)
 
     if stage is not None:
         records = [r for r in records if r.stage == stage]
@@ -115,7 +117,7 @@ def pipeline(
 
     return {
         "as_of": ctx.as_of_iso,
-        "venue": ctx.venue.slug,
+        "venue": scope.slug,
         "total": len(records),
         "counts": counts,
         "by_stage": grouped,
@@ -147,6 +149,7 @@ def pipeline(
 
 @router.get("/availability")
 def availability(
+    venue: str = Query(default=None, description="Venue slug. Required."),
     date: dt.date | None = Query(default=None),
     date_from: dt.date | None = Query(default=None, alias="from"),
     date_to: dt.date | None = Query(default=None, alias="to"),
@@ -157,6 +160,12 @@ def availability(
     """Everything touching each slot: confirmed, tentative, and every open
     enquiry. Time-aware, so a lunch and an evening in the same room are
     both listed and neither conceals the other."""
+    # FIRST. A caller who omits several things is told about the venue
+    # before anything else, because it is the one that would otherwise
+    # produce a plausible answer about a building nobody chose -- the
+    # others just fail. Telling them about the date first costs a
+    # second round trip for one mistake.
+    scope = ctx.require_venue(venue)
     if date is not None:
         start = end = date
     elif date_from is not None and date_to is not None:
@@ -173,17 +182,17 @@ def availability(
             status_code=400, detail=f"Range too wide (max {MAX_AVAILABILITY_DAYS} days)"
         )
 
-    space_row = _space_by_slug(db, ctx.venue, space)
+    space_row = _space_by_slug(db, scope, space)
     days = ai_availability.build_availability(
         db,
-        ctx.venue,
+        scope,
         date_from=start,
         date_to=end,
         space_id=space_row.id if space_row else None,
     )
     return {
         "as_of": ctx.as_of_iso,
-        "venue": ctx.venue.slug,
+        "venue": scope.slug,
         "days": days,
         "notes": {
             "email_enquiries": (
@@ -289,6 +298,7 @@ def _booking_payload(db: Session, booking: Booking) -> dict:
 
 @router.get("/bookings")
 def bookings(
+    venue: str = Query(default=None, description="Venue slug. Required."),
     ref: str | None = Query(default=None),
     email: str | None = Query(default=None),
     date: dt.date | None = Query(default=None),
@@ -299,21 +309,27 @@ def bookings(
     """Booking lookup by reference, contact email, or date (+ optional
     space). The date form is the second, independent path the availability
     cross-check in section 10a.2 compares against."""
+    # FIRST. A caller who omits several things is told about the venue
+    # before anything else, because it is the one that would otherwise
+    # produce a plausible answer about a building nobody chose -- the
+    # others just fail. Telling them about the date first costs a
+    # second round trip for one mistake.
+    scope = ctx.require_venue(venue)
     if not any([ref, email, date]):
         raise HTTPException(status_code=400, detail="Provide one of ?ref=, ?email= or ?date=")
 
-    space_row = _space_by_slug(db, ctx.venue, space)
+    space_row = _space_by_slug(db, scope, space)
 
     if date is not None:
         rows = ai_availability.bookings_on_date(
-            db, ctx.venue, on=date, space_id=space_row.id if space_row else None
+            db, scope, on=date, space_id=space_row.id if space_row else None
         )
         ids = [b.id for b in rows]
     else:
         stmt = (
             select(Booking)
             .join(Space, Booking.space_id == Space.id)
-            .where(Space.venue_id == ctx.venue.id)
+            .where(Space.venue_id == scope.id)
         )
         if ref:
             stmt = stmt.where(Booking.reference_code == ref.strip())
@@ -324,7 +340,7 @@ def bookings(
         ids = list(db.scalars(stmt.with_only_columns(Booking.id)).all())
 
     if not ids:
-        return {"as_of": ctx.as_of_iso, "venue": ctx.venue.slug, "count": 0, "bookings": []}
+        return {"as_of": ctx.as_of_iso, "venue": scope.slug, "count": 0, "bookings": []}
 
     loaded = list(
         db.scalars(
@@ -345,7 +361,7 @@ def bookings(
 
     return {
         "as_of": ctx.as_of_iso,
-        "venue": ctx.venue.slug,
+        "venue": scope.slug,
         "count": len(loaded),
         "bookings": [_booking_payload(db, b) for b in loaded],
     }
@@ -356,6 +372,7 @@ def bookings(
 
 @router.get("/catalogue")
 def catalogue(
+    venue: str = Query(default=None, description="Venue slug. Required."),
     as_of: dt.date | None = Query(default=None),
     ctx: AiContext = Depends(require_ai),
     db: Session = Depends(get_db),
@@ -370,6 +387,14 @@ def catalogue(
     but no legacy price was ever defined for it (Vegetarian Pizza is the
     real case). It must be surfaced as unknown, never guessed.
     """
+    # Required like the other reads, even though MenuItem carries no
+    # venue_id yet: the ANSWER is labelled with the venue, so it must be the
+    # venue that was asked for rather than whichever one the credential
+    # happened to list first. Per-venue pricing was settled 2026-09-12 and
+    # the column is not built -- see VENUE_FREE["MenuItem"] in
+    # tests/test_venue_scope_inventory.py, which fails if that note is
+    # deleted without the work being done.
+    scope = ctx.require_venue(venue)
     items = list(db.scalars(select(MenuItem).order_by(MenuItem.category, MenuItem.name)).all())
 
     payload = []
@@ -404,7 +429,7 @@ def catalogue(
     return {
         "as_of": ctx.as_of_iso,
         "pricing_as_of": as_of.isoformat() if as_of else None,
-        "venue": ctx.venue.slug,
+        "venue": scope.slug,
         "count": len(payload),
         "items": payload,
         "notes": {
@@ -430,7 +455,14 @@ def _ai_booking_or_404(db: Session, ctx: AiContext, booking_id: uuid.UUID) -> Bo
     booking = db.scalar(
         select(Booking)
         .join(Space, Booking.space_id == Space.id)
-        .where(Booking.id == booking_id, Space.venue_id == ctx.venue.id)
+        # The permitted SET, not a requested venue. A by-id read names one
+        # booking, so the only question is whether this credential may see
+        # it -- and resolving the venue from the booking instead would
+        # remove the authorisation check rather than scope it.
+        .where(
+            Booking.id == booking_id,
+            Space.venue_id.in_([v.id for v in (ctx.venues or [ctx.venue])]),
+        )
     )
     if booking is None:
         raise HTTPException(status_code=404, detail="Booking not found")

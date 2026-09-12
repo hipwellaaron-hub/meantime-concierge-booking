@@ -360,7 +360,7 @@ def test_tool_call_forwards_to_concierge_and_returns_its_json(client):
         )
         body = _rpc(
             client, token, "tools/call",
-            {"name": "availability", "arguments": {"date": "2026-11-28"}},
+            {"name": "availability", "arguments": {"venue": "hamilton", "date": "2026-11-28"}},
         ).json()
 
     assert body["result"]["isError"] is False
@@ -377,7 +377,7 @@ def test_the_concierge_kill_switch_stops_every_tool(client):
     token = _connect(client)
     with patch("mcp_server.concierge.httpx.get") as mocked:
         mocked.return_value = httpx.Response(503, json={"detail": "AI access is currently disabled"})
-        body = _rpc(client, token, "tools/call", {"name": "pipeline", "arguments": {}}).json()
+        body = _rpc(client, token, "tools/call", {"name": "pipeline", "arguments": {"venue": "hamilton", }}).json()
 
     assert body["result"]["isError"] is True
     text = body["result"]["content"][0]["text"]
@@ -388,7 +388,7 @@ def test_a_rate_limit_is_reported_not_swallowed(client):
     token = _connect(client)
     with patch("mcp_server.concierge.httpx.get") as mocked:
         mocked.return_value = httpx.Response(429, json={"detail": "rate limited"})
-        body = _rpc(client, token, "tools/call", {"name": "pipeline", "arguments": {}}).json()
+        body = _rpc(client, token, "tools/call", {"name": "pipeline", "arguments": {"venue": "hamilton", }}).json()
     assert body["result"]["isError"] is True
     assert "rate limit" in body["result"]["content"][0]["text"].lower()
 
@@ -398,7 +398,7 @@ def test_the_concierge_credential_never_appears_in_a_response(client):
     token = _connect(client)
     with patch("mcp_server.concierge.httpx.get") as mocked:
         mocked.return_value = httpx.Response(200, json={"ok": True})
-        body = _rpc(client, token, "tools/call", {"name": "pipeline", "arguments": {}})
+        body = _rpc(client, token, "tools/call", {"name": "pipeline", "arguments": {"venue": "hamilton", }})
     assert settings.ai_api_token not in body.text
 
     for path in ["/health", "/.well-known/oauth-authorization-server",
@@ -702,7 +702,7 @@ def test_integer_and_enum_arguments_are_checked_too(client):
     token = _connect(client)
     with patch("mcp_server.tools.call_ai") as called:
         limit = _rpc(client, token, "tools/call", {"name": "booking_events", "arguments": {"booking_id": "abc", "limit": "ten"}}).json()
-        stage = _rpc(client, token, "tools/call", {"name": "pipeline", "arguments": {"stage": "imaginary"}}).json()
+        stage = _rpc(client, token, "tools/call", {"name": "pipeline", "arguments": {"venue": "hamilton", "stage": "imaginary"}}).json()
 
     assert "limit must be an integer" in limit["error"]["message"]
     assert "stage must be one of:" in stage["error"]["message"]
@@ -840,3 +840,71 @@ def test_an_empty_fields_object_beside_a_food_order_is_a_proposal(client):
     assert "error" not in body, body
     assert posted.call_args[0][1]["fields"] == {}
     assert posted.call_args[0][1]["food_order"] == [{"name": "Grazing Platter", "quantity": 2}]
+
+
+# --- the venue argument, which is required ---------------------------------
+#
+# Aaron, 2026-09-12: "checking six dates across two venues in a row while
+# drafting replies. A response clearly labelled 'hamilton' when I asked
+# about the Entrance is something I'd miss on the fourth check, because I'm
+# reading the dates, not the label."
+#
+# So the model is refused at the MCP boundary rather than being handed an
+# answer about a building nobody named. It asks again; that costs two
+# seconds and cannot be misread.
+
+
+def test_a_read_tool_without_a_venue_is_refused_by_the_schema(client):
+    token = _connect(client)
+
+    body = _rpc(
+        client, token, "tools/call",
+        {"name": "availability", "arguments": {"date": "2026-11-28"}},
+    ).json()
+
+    assert "result" not in body or body["result"].get("isError"), (
+        "availability answered without a venue being named"
+    )
+
+
+def test_every_read_tool_requires_a_venue():
+    """The schema itself, so this cannot regress one tool at a time. A tool
+    that merely DOCUMENTS the argument without requiring it would let the
+    model omit it and get somebody else's building."""
+    from mcp_server.tools import TOOLS
+
+    reads = {"availability", "bookings", "pipeline", "catalogue"}
+    missing = []
+    for tool in TOOLS:
+        if tool["name"] not in reads:
+            continue
+        schema = tool["inputSchema"]
+        if "venue" not in schema.get("properties", {}):
+            missing.append(f"{tool['name']}: no venue property")
+        elif "venue" not in schema.get("required", []):
+            missing.append(f"{tool['name']}: venue is not required")
+
+    assert not missing, missing
+
+
+def test_every_read_tool_actually_forwards_the_venue():
+    """Declaring it and sending it are different. A tool that required the
+    argument and then dropped it would refuse the model for nothing and
+    still query the default venue."""
+    from unittest.mock import patch
+
+    import httpx as _httpx
+
+    from mcp_server.tools import TOOLS
+
+    reads = {"availability", "bookings", "pipeline", "catalogue"}
+    for tool in TOOLS:
+        if tool["name"] not in reads:
+            continue
+        with patch("mcp_server.concierge.httpx.get") as mocked:
+            mocked.return_value = _httpx.Response(200, json={})
+            tool["_call"]({"venue": "zzprobe", "date": "2026-11-28", "booking_id": "x"})
+        params = mocked.call_args.kwargs.get("params") or {}
+        assert params.get("venue") == "zzprobe", (
+            f"{tool['name']} did not forward the venue: {params}"
+        )

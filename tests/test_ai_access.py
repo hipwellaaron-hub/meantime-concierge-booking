@@ -29,6 +29,18 @@ def ai_client(db, hamilton, monkeypatch):
     try:
         client = TestClient(app)
         client.headers.update({"Authorization": f"Bearer {TOKEN}"})
+        # Reads take a required venue now. This file is about the CREDENTIAL
+        # and the kill switches, so the venue is supplied here rather than
+        # letting a 400 masquerade as an auth result -- "refused" and
+        # "refused for the reason this test is about" are different answers.
+        original = client.request
+
+        def request(method, url, *args, **kwargs):
+            if isinstance(url, str) and url.startswith("/api/ai/") and "venue=" not in url:
+                url += ("&" if "?" in url else "?") + f"venue={hamilton.slug}"
+            return original(method, url, *args, **kwargs)
+
+        client.request = request
         yield client
     finally:
         app.dependency_overrides.clear()

@@ -37,6 +37,20 @@ def ai_client(db, hamilton, monkeypatch):
     try:
         client = TestClient(app)
         client.headers.update({"Authorization": f"Bearer {TOKEN}"})
+        # Every AI read takes a REQUIRED venue now (Aaron, 2026-09-12): a
+        # response correctly labelled "hamilton" to a question about The
+        # Entrance is missed on the fourth check when you are reading dates,
+        # not labels. Adding it here rather than to every call keeps these
+        # tests about what they were about -- and the tests that assert the
+        # REFUSAL build their own client, so this default cannot hide it.
+        original = client.request
+
+        def request(method, url, *args, **kwargs):
+            if isinstance(url, str) and url.startswith("/api/ai/") and "venue=" not in url:
+                url += ("&" if "?" in url else "?") + f"venue={hamilton.slug}"
+            return original(method, url, *args, **kwargs)
+
+        client.request = request
         yield client
     finally:
         app.dependency_overrides.clear()

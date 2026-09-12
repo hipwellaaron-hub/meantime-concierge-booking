@@ -42,10 +42,41 @@ class AiContext:
     actor: str
     as_of: dt.datetime
     db: Session
+    venues: list = None  # every venue this credential may read
 
     @property
     def as_of_iso(self) -> str:
         return self.as_of.isoformat()
+
+    def require_venue(self, slug: str | None) -> Venue:
+        """Which venue THIS CALL is about. Required, never defaulted.
+
+        Aaron, 2026-09-12: checking six dates across two venues while
+        drafting replies means reading the DATES, not the label. A response
+        correctly labelled "hamilton" to a question about The Entrance is
+        something you miss on the fourth check -- and then quote a free
+        Saturday at the wrong building. Refusing costs two seconds and
+        cannot be misread.
+
+        Narrows within what the credential permits and never widens past it:
+        an unknown slug and a slug outside the permitted set are refused the
+        same way, so this cannot be used to discover venues the token may
+        not read.
+        """
+        permitted = self.venues or [self.venue]
+        choices = ", ".join(v.slug for v in permitted)
+        if not slug:
+            raise HTTPException(
+                status_code=400,
+                detail=f"venue is required -- name one of: {choices}",
+            )
+        for v in permitted:
+            if v.slug == slug:
+                return v
+        raise HTTPException(
+            status_code=404,
+            detail=f"No venue '{slug}' is readable with this credential -- available: {choices}",
+        )
 
 
 def _params(request: Request) -> dict:
@@ -77,7 +108,8 @@ def require_ai(
         raise HTTPException(status_code=429, detail="AI read rate limit exceeded")
 
     try:
-        venue = ai_access.ai_venue(db)
+        venues = ai_access.ai_venues(db)
+        venue = venues[0]
     except ai_access.AiAccessError as exc:
         raise HTTPException(status_code=exc.status, detail=exc.detail) from exc
 
@@ -91,6 +123,7 @@ def require_ai(
 
     return AiContext(
         venue=venue,
+        venues=venues,
         actor=AI_ACTOR,
         as_of=dt.datetime.now(dt.timezone.utc),
         db=db,

@@ -122,6 +122,11 @@ class Settings(BaseSettings):
 
     # The AI credential is venue-scoped from day one even though Hamilton
     # is the only venue -- the Entrance gets its own credential later (section 7).
+    # Which venues the AI credential may read. Comma-separated; one slug
+    # behaves exactly as before. This is AUTHORISATION -- the ceiling on what
+    # that token can ever see -- and is deliberately separate from the
+    # `venue` argument each read takes, which SELECTS one of these. A request
+    # can narrow within this list and can never widen past it.
     ai_venue_slug: str = "hamilton"
 
     # Runaway guards, not operational ceilings (section 4.4, section 7). Reads are

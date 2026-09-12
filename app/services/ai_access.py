@@ -123,14 +123,34 @@ def bearer_from_header(authorization: str | None) -> str | None:
     return value.strip()
 
 
+def ai_venues(db: Session) -> list[Venue]:
+    """Every venue this credential MAY see -- the authorisation ceiling.
+
+    Comma-separated in AI_VENUE_SLUG; one slug behaves exactly as it did.
+    Which of these a given call is ABOUT is a separate question, answered by
+    a required argument on each read -- see AiContext.require_venue.
+
+    Ordered by name so a refusal lists the choices the same way every time.
+    """
+    slugs = [s.strip() for s in settings.ai_venue_slug.split(",") if s.strip()]
+    if not slugs:
+        raise AiAccessError(503, "AI_VENUE_SLUG is empty; no venue is readable")
+    venues = list(db.scalars(select(Venue).where(Venue.slug.in_(slugs)).order_by(Venue.name)).all())
+    missing = sorted(set(slugs) - {v.slug for v in venues})
+    if missing:
+        raise AiAccessError(
+            503, f"AI venue(s) {', '.join(missing)} are not configured"
+        )
+    return venues
+
+
 def ai_venue(db: Session) -> Venue:
-    """The one venue this credential may see (brief section 7). Scoped now
-    so adding the Entrance later is a new credential, not a new filter
-    bolted onto every query."""
-    venue = db.scalar(select(Venue).where(Venue.slug == settings.ai_venue_slug))
-    if venue is None:
-        raise AiAccessError(503, f"AI venue '{settings.ai_venue_slug}' is not configured")
-    return venue
+    """The FIRST permitted venue. Kept for callers that genuinely have no
+    request to take an argument from -- the reconciliation job, and the
+    module-level prompt. Not for a read endpoint: a read picks its venue by
+    argument, because a labelled answer about the wrong building is still an
+    answer about the wrong building when the reader is scanning dates."""
+    return ai_venues(db)[0]
 
 
 # --- request log --------------------------------------------------------

@@ -45,6 +45,16 @@ TOOLS: list[dict] = [
         "inputSchema": {
             "type": "object",
             "properties": {
+                "venue": {
+                    "type": "string",
+                    "description": (
+                        "REQUIRED. Which venue this question is about, by slug. There is "
+                        "no default and there must not be one: an answer about the wrong "
+                        "building reads exactly like an answer about the right one when "
+                        "you are scanning dates. If you do not know which venue the "
+                        "conversation is about, ASK -- do not guess."
+                    ),
+                },
                 "stage": {
                     "type": "string",
                     "description": (
@@ -63,8 +73,10 @@ TOOLS: list[dict] = [
                     "description": "Return only records where the ball is with this side.",
                 },
             },
+            "required": ["venue"],
         },
         "_call": lambda args: call_ai("/api/ai/pipeline", {
+            "venue": args.get("venue"),
             "stage": args.get("stage"), "awaiting": args.get("awaiting"),
         }),
     },
@@ -92,6 +104,16 @@ TOOLS: list[dict] = [
         "inputSchema": {
             "type": "object",
             "properties": {
+                "venue": {
+                    "type": "string",
+                    "description": (
+                        "REQUIRED. Which venue this question is about, by slug. There is "
+                        "no default and there must not be one: an answer about the wrong "
+                        "building reads exactly like an answer about the right one when "
+                        "you are scanning dates. If you do not know which venue the "
+                        "conversation is about, ASK -- do not guess."
+                    ),
+                },
                 "date": {**_DATE, "description": "A single date to check (YYYY-MM-DD)."},
                 "from": {**_DATE, "description": "Start of a date range. Use with 'to'."},
                 "to": {**_DATE, "description": "End of a date range (max 120 days)."},
@@ -100,8 +122,10 @@ TOOLS: list[dict] = [
                     "description": "Limit to one room: loft, mezzanine or lounge. Omit for all rooms.",
                 },
             },
+            "required": ["venue"],
         },
         "_call": lambda args: call_ai("/api/ai/availability", {
+            "venue": args.get("venue"),
             "date": args.get("date"), "from": args.get("from"),
             "to": args.get("to"), "space": args.get("space"),
         }),
@@ -124,6 +148,16 @@ TOOLS: list[dict] = [
         "inputSchema": {
             "type": "object",
             "properties": {
+                "venue": {
+                    "type": "string",
+                    "description": (
+                        "REQUIRED. Which venue this question is about, by slug. There is "
+                        "no default and there must not be one: an answer about the wrong "
+                        "building reads exactly like an answer about the right one when "
+                        "you are scanning dates. If you do not know which venue the "
+                        "conversation is about, ASK -- do not guess."
+                    ),
+                },
                 "ref": {"type": "string", "description": "Booking reference, e.g. HAM-20261128-IO5O3."},
                 "email": {"type": "string", "description": "Contact email address."},
                 "date": {**_DATE, "description": "All bookings on this date."},
@@ -132,8 +166,10 @@ TOOLS: list[dict] = [
                     "description": "With 'date', limit to one room: loft, mezzanine or lounge.",
                 },
             },
+            "required": ["venue"],
         },
         "_call": lambda args: call_ai("/api/ai/bookings", {
+            "venue": args.get("venue"),
             "ref": args.get("ref"), "email": args.get("email"),
             "date": args.get("date"), "space": args.get("space"),
         }),
@@ -158,6 +194,16 @@ TOOLS: list[dict] = [
         "inputSchema": {
             "type": "object",
             "properties": {
+                "venue": {
+                    "type": "string",
+                    "description": (
+                        "REQUIRED. Which venue this question is about, by slug. There is "
+                        "no default and there must not be one: an answer about the wrong "
+                        "building reads exactly like an answer about the right one when "
+                        "you are scanning dates. If you do not know which venue the "
+                        "conversation is about, ASK -- do not guess."
+                    ),
+                },
                 "as_of": {
                     **_DATE,
                     "description": (
@@ -166,8 +212,12 @@ TOOLS: list[dict] = [
                     ),
                 },
             },
+            "required": ["venue"],
         },
-        "_call": lambda args: call_ai("/api/ai/catalogue", {"as_of": args.get("as_of")}),
+        "_call": lambda args: call_ai(
+            "/api/ai/catalogue",
+            {"venue": args.get("venue"), "as_of": args.get("as_of")},
+        ),
     },
     {
         "name": "booking_documents",
