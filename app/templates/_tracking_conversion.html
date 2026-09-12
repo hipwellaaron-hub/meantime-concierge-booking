@@ -21,6 +21,10 @@
 (function () {
   var LEAD_ID = {{ conversion_lead_id | tojson }};
   var ENQUIRY_TYPE = {{ conversion_enquiry_type | tojson }};
+  // Which venue this lead belongs to, from the booking's own venue row.
+  // This was the literal 'hamilton', on a tag that fires for every
+  // venue -- and the browser copy is the primary path, not the fallback.
+  var VENUE = {{ conversion_venue | tojson }};
   var BASE = {{ ("/enquiries/" ~ booking.id ~ "/conversion/") | tojson }};
 
   function markedAlready(key) {
@@ -46,7 +50,7 @@
     try {
       gtag('event', 'function_enquiry_submitted', {
         lead_id: LEAD_ID,
-        venue: 'hamilton',
+        venue: VENUE || undefined,
         source_system: 'meantime_concierge',
         enquiry_type: ENQUIRY_TYPE || undefined
       });

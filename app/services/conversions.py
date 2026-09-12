@@ -147,7 +147,7 @@ def safe_event_type(value: str | None) -> str:
     return value if value in EVENT_TYPES else OTHER_EVENT_TYPE
 
 
-def _venue_slug(booking: Booking) -> str:
+def venue_slug_for(booking: Booking) -> str:
     """Which venue an analytics event is attributed to.
 
     Reads booking.venue, not booking.space.venue. Both answer the same thing
@@ -289,7 +289,7 @@ def meta_payload(booking: Booking) -> dict:
     # at the page it came from rather than at a URL that only existed while
     # there was one venue. Bare /enquire when the slug is unknown -- that
     # URL resolves; "/enquire/" does not.
-    slug = _venue_slug(booking)
+    slug = venue_slug_for(booking)
     base = getattr(settings, "public_base_url", "") or settings.dashboard_base_url
     source_url = f"{base}/enquire/{slug}" if slug else f"{base}/enquire"
     event = {
@@ -301,7 +301,7 @@ def meta_payload(booking: Booking) -> dict:
         "user_data": user_data,
         "custom_data": {
             "lead_id": booking.reference_code,
-            "venue": _venue_slug(booking),
+            "venue": venue_slug_for(booking),
             "source_system": SOURCE_SYSTEM,
             "content_category": safe_event_type(booking.event_type),
         },
@@ -376,7 +376,7 @@ def ga4_payload(booking: Booking) -> dict | None:
         return None
     params = {
         "lead_id": booking.reference_code,
-        "venue": _venue_slug(booking),
+        "venue": venue_slug_for(booking),
         "source_system": SOURCE_SYSTEM,
         "enquiry_type": safe_event_type(booking.event_type),
         "dispatch_channel": CHANNEL_SERVER,

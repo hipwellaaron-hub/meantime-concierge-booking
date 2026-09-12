@@ -26,7 +26,11 @@
   <div class="card">
     <h1>This offer is no longer available</h1>
     <p>{{ message }}</p>
-    <p><a href="mailto:{{ contact_email }}">{{ contact_email }}</a></p>
+    {# Hidden rather than rendered empty. A venue with no contact email
+       recorded should show nothing here, not an mailto: link to nowhere;
+       there is no other address to substitute that would not be another
+       company's. #}
+    {% if contact_email %}<p><a href="mailto:{{ contact_email }}">{{ contact_email }}</a></p>{% endif %}
   </div>
 </body>
 </html>

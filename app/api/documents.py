@@ -79,7 +79,11 @@ def _unavailable_response(request: Request, document, *, being_updated: bool = F
         request, "link_unavailable.html",
         {
             "booking": document.booking,
-            "contact_email": policy.VENUE_CONTACT_EMAIL,
+            # THIS VENUE's address, from the booking's own row. It was a
+            # module constant -- Hamilton's -- on a public page shown to a
+            # client whose booking may belong to the other company, at the
+            # one moment they are already confused about why a link died.
+            "contact_email": (document.booking.venue.contact_email if document.booking.venue else None) or "",
             "message": BEING_UPDATED_MESSAGE if being_updated else NO_LONGER_ACTIVE_MESSAGE,
         },
         status_code=410,

@@ -274,6 +274,10 @@ def enquiry_thanks(booking_id: uuid.UUID, request: Request, db: Session = Depend
             "emit_ga4": emit_ga4,
             "emit_meta": emit_meta,
             "conversion_lead_id": booking.reference_code,
+            # The same slug the server-side copy reports, from the same
+            # helper, so the browser event and the server event cannot
+            # disagree about which company the lead belongs to.
+            "conversion_venue": conversions.venue_slug_for(booking),
             # Only a value from the form's own list reaches the tag.
             "conversion_enquiry_type": conversions.safe_event_type(booking.event_type),
         },

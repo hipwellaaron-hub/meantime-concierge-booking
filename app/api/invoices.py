@@ -37,7 +37,11 @@ def _unavailable_response(request: Request, invoice) -> HTMLResponse:
         request, "link_unavailable.html",
         {
             "booking": invoice.booking,
-            "contact_email": policy.VENUE_CONTACT_EMAIL,
+            # THIS VENUE's address, from the booking's own row. It was a
+            # module constant -- Hamilton's -- on a public page shown to a
+            # client whose booking may belong to the other company, at the
+            # one moment they are already confused about why a link died.
+            "contact_email": (invoice.booking.venue.contact_email if invoice.booking.venue else None) or "",
             "message": "This invoice is no longer active. Get in touch and we'll help directly.",
         },
         status_code=410,
