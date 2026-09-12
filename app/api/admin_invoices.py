@@ -9,15 +9,16 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 
-from app.admin_auth import admin_ctx, current_venue, require_staff
+from app.admin_auth import admin_ctx, require_staff
 from app.database import get_db
+from app.venue_scope import venue_scope
 from app.models import Venue
 from app.models.invoice import InvoiceStatus
 from app.models.staff_user import StaffUser
 from app.services import invoicing
 from app.templating import templates
 
-router = APIRouter(prefix="/admin/invoices", tags=["admin-invoices"], dependencies=[Depends(require_staff), Depends(current_venue)])
+router = APIRouter(prefix="/admin/{venue_slug}/invoices", tags=["admin-invoices"], dependencies=[Depends(require_staff), Depends(venue_scope)])
 
 
 def _venue(db: Session) -> Venue:

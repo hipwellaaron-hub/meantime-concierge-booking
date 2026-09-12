@@ -124,7 +124,8 @@ def test_dashboard_tile_count_matches_the_worklist(admin_client, db, loft, hamil
 
     page = admin_client.get("/admin/")
     assert "BEOs to review" in page.text
-    assert 'href="/admin/triage#beos-to-review"' in page.text
+    # Scoped: admin_triage moved onto /admin/{venue_slug}/ (step 6).
+    assert f'href="/admin/{hamilton.slug}/triage#beos-to-review"' in page.text
 
     triage = admin_client.get("/admin/triage")
     listed = documents_service.get_beos_awaiting_review(db, hamilton)

@@ -106,7 +106,10 @@ def test_the_auth_router_declares_no_venue_scope():
 # Routers that have MOVED onto /admin/{venue_slug}/. This list IS the
 # rollout: move a router, add it here, and the tests below check the two
 # halves that have to stay in step.
-MOVED_ROUTERS = {"admin_dashboard", "admin_reports"}
+MOVED_ROUTERS = {
+    "admin_dashboard", "admin_reports",
+    "admin_calendar", "admin_drafts", "admin_invoices", "admin_staff", "admin_triage",
+}  # admin_bookings is the one still to move
 
 ALL_STAFF_ROUTERS = (
     "admin_bookings", "admin_calendar", "admin_dashboard", "admin_drafts",
@@ -320,3 +323,42 @@ def test_a_venue_slug_that_did_not_come_from_the_path_is_refused(db, hamilton, s
         venue_scope(_QueryOnly(), hamilton.slug, db=db, staff=staff_user)
 
     assert exc.value.status_code == 404
+
+
+def test_no_moved_router_redirects_to_its_own_legacy_path():
+    """A moved router must send the browser to its SCOPED url, never the
+    legacy one.
+
+    The legacy path belongs to the compat route now, and that route rebuilds
+    its destination from a fixed literal -- so it DROPS THE QUERY STRING.
+    `/admin/staff?outcome=created` became `/admin/hamilton/staff`, and the
+    confirmation banner after adding a staff account silently stopped
+    appearing.
+
+    I missed this twice by hand: once in the first sweep, which only matched
+    single-line redirects, and again in the second, which found a third and a
+    fourth. Hence a test rather than another read-through.
+
+    /admin/bookings/... is allowed: that router has NOT moved, so its legacy
+    URL is still its real one.
+    """
+    import pathlib
+    import re
+
+    offenders = []
+    for name in MOVED_ROUTERS:
+        source = pathlib.Path(f"app/api/{name}.py").read_text(encoding="utf-8")
+        section = name.replace("admin_", "")
+        for n, line in enumerate(source.splitlines(), 1):
+            for match in re.finditer(r'url=f?"(/admin/[^"]*)"', line):
+                target = match.group(1)
+                if target.startswith("/admin/bookings"):
+                    continue  # not moved yet; still the real URL
+                if target.startswith("/admin/login") or target.startswith("/admin/logout"):
+                    continue  # never scoped
+                offenders.append(f"app/api/{name}.py:{n} -> {target}")
+
+    assert not offenders, (
+        "these moved routers redirect to a legacy path, which loses any query "
+        f"string on the way through the compat route: {offenders}"
+    )

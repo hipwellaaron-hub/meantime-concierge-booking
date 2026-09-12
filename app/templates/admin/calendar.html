@@ -36,20 +36,20 @@
 <div class="card" style="border-color: var(--ember);">
   <p style="margin:0; color: var(--ember);">
     {{ undated_count }} booking{{ "s" if undated_count != 1 else "" }} with no event date set -- not shown below.
-    See <a href="/admin/triage">Triage</a>.
+    See <a href="{{ venue_base }}/triage">Triage</a>.
   </p>
 </div>
 {% endif %}
 
 <div class="cal-nav">
   <div class="cal-range">{{ grid.week_start.strftime("%d %b").lstrip("0") }} &ndash; {{ grid.week_end.strftime("%d %b %Y").lstrip("0") }}</div>
-  <form method="get" action="/admin/calendar" class="cal-nav-links">
-    <a class="btn secondary" href="/admin/calendar?week={{ prev_week.isoformat() }}">&larr; Prev week</a>
-    <a class="btn secondary" href="/admin/calendar?week={{ this_week.isoformat() }}">This week</a>
-    <a class="btn secondary" href="/admin/calendar?week={{ next_week.isoformat() }}">Next week &rarr;</a>
+  <form method="get" action="{{ venue_base }}/calendar" class="cal-nav-links">
+    <a class="btn secondary" href="{{ venue_base }}/calendar?week={{ prev_week.isoformat() }}">&larr; Prev week</a>
+    <a class="btn secondary" href="{{ venue_base }}/calendar?week={{ this_week.isoformat() }}">This week</a>
+    <a class="btn secondary" href="{{ venue_base }}/calendar?week={{ next_week.isoformat() }}">Next week &rarr;</a>
     <input type="date" name="week" value="{{ grid.week_start.isoformat() }}">
     <button class="btn secondary" type="submit">Jump</button>
-    <a class="btn" href="/admin/calendar/holds/new">New hold</a>
+    <a class="btn" href="{{ venue_base }}/calendar/holds/new">New hold</a>
   </form>
 </div>
 

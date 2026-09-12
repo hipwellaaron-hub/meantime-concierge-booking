@@ -6,7 +6,7 @@
 
 <div class="card">
   <h2>Switches</h2>
-  <form method="post" action="/admin/drafts/switches" class="field-row" style="align-items:center; gap:18px; flex-wrap:wrap;">
+  <form method="post" action="{{ venue_base }}/drafts/switches" class="field-row" style="align-items:center; gap:18px; flex-wrap:wrap;">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <label><input type="checkbox" name="drafting_enabled" {% if drafting_enabled %}checked{% endif %}> Drafting on <span class="muted">(generate drafts for new enquiries)</span></label>
     <label><input type="checkbox" name="drafts_visible" {% if drafts_visible %}checked{% endif %}> Drafts visible <span class="muted">(stage 2, not yet)</span></label>
@@ -76,7 +76,7 @@
   {% endif %}
 
   {% if d.status == 'generated' and not d.outcome %}
-  <form method="post" action="/admin/drafts/{{ d.id }}/review" style="margin-top:12px;">
+  <form method="post" action="{{ venue_base }}/drafts/{{ d.id }}/review" style="margin-top:12px;">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <div style="display:grid; gap:8px; max-width:720px;">
       <div><label>What you actually sent <span class="muted">(paste it, or leave blank if unchanged)</span></label>

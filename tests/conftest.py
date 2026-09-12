@@ -130,10 +130,48 @@ def admin_client(db, staff_user, hamilton):
         data={"csrf_token": csrf_token, "email": staff_user.email, "password": STAFF_TEST_PASSWORD, "next": "/admin/"},
     )
     assert resp.status_code in (200, 303)
+
+    _scope_admin_urls(client, hamilton.slug)
     try:
         yield client
     finally:
         app.dependency_overrides.clear()
+
+
+def _scope_admin_urls(client, venue_slug: str):
+    """Rewrite /admin/<section> to /admin/<venue>/<section> for the sections
+    that have MOVED onto the venue segment.
+
+    ONE place instead of editing every admin test, which is the trade the
+    venue-switch design chose deliberately -- and the cost is named rather
+    than hidden: these tests stop asserting WHICH URL the app serves. Three
+    things assert that instead, and they are the reason this is safe:
+
+      * tests/route_inventory.txt -- a checked-in list of all 119 routes that
+        fails on any change
+      * test_the_nav_never_points_at_a_section_that_has_not_moved
+      * test_every_nav_link_actually_resolves, which follows every nav link
+
+    Driven by the app's own MOVED_SECTIONS, so a section the app has not
+    moved is NOT rewritten here either -- otherwise this fixture would send
+    every bookings test to a URL that does not exist yet, and the failure
+    would look like a broken route rather than a half-finished rollout.
+    """
+    from app.venue_scope import MOVED_SECTIONS
+
+    prefixes = sorted((s for s in MOVED_SECTIONS if s), key=len, reverse=True)
+    original = client.request
+
+    def request(method, url, *args, **kwargs):
+        if isinstance(url, str) and url.startswith("/admin/"):
+            rest = url[len("/admin"):]
+            for section in prefixes:
+                if rest == section or rest.startswith(section + "/") or rest.startswith(section + "?"):
+                    url = f"/admin/{venue_slug}{rest}"
+                    break
+        return original(method, url, *args, **kwargs)
+
+    client.request = request
 
 
 @pytest.fixture(autouse=True)

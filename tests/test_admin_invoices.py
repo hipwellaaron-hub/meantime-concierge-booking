@@ -75,7 +75,7 @@ def test_default_shows_active_hides_paid(admin_client, db, loft):
     assert f"#{draft.invoice_number}" in all_view.text
 
 
-def test_unpaid_tile_count_matches_the_list_it_links_to(admin_client, db, loft):
+def test_unpaid_tile_count_matches_the_list_it_links_to(admin_client, db, loft, hamilton):
     """The dashboard tile links to /admin/invoices?status=sent, so the
     count on the tile and the rows on that page must be the same set --
     otherwise clicking a '3' that shows 5 rows quietly erodes trust in
@@ -85,7 +85,10 @@ def test_unpaid_tile_count_matches_the_list_it_links_to(admin_client, db, loft):
     _invoice(db, _booking(db, loft, name="Still draft"))  # must not be counted
 
     dashboard = admin_client.get("/admin/")
-    assert 'href="/admin/invoices?status=sent"' in dashboard.text
+    # Scoped: admin_invoices moved onto /admin/{venue_slug}/ (step 6).
+    # Still the literal, because the point of this test is that the tile
+    # links to the very list it counts.
+    assert f'href="/admin/{hamilton.slug}/invoices?status=sent"' in dashboard.text
 
     from app.models import Venue
 

@@ -17,8 +17,9 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
-from app.admin_auth import admin_ctx, current_venue, require_csrf, require_staff
+from app.admin_auth import admin_ctx, require_csrf, require_staff
 from app.database import get_db
+from app.venue_scope import venue_scope
 from app.models import Booking
 from app.models.enquiry_draft import (
     OUTCOME_DISCARDED,
@@ -31,7 +32,7 @@ from app.models.staff_user import StaffUser
 from app.services import ai_access, drafting
 from app.templating import templates
 
-router = APIRouter(prefix="/admin/drafts", tags=["admin-drafts"], dependencies=[Depends(require_staff), Depends(current_venue)])
+router = APIRouter(prefix="/admin/{venue_slug}/drafts", tags=["admin-drafts"], dependencies=[Depends(require_staff), Depends(venue_scope)])
 
 
 @router.get("", response_class=HTMLResponse)
@@ -92,7 +93,7 @@ def record_review(
     draft.reviewed_at = dt.datetime.now(dt.timezone.utc)
     draft.reviewed_by = f"staff:{staff.email}"
     db.commit()
-    return RedirectResponse(url="/admin/drafts", status_code=303)
+    return RedirectResponse(url=f"{request.state.venue_base}/drafts", status_code=303)
 
 
 @router.post("/switches", dependencies=[Depends(require_csrf)])
@@ -111,4 +112,4 @@ def set_switches(
     row.drafts_visible = drafts_visible == "on"
     row.updated_by = f"staff:{staff.email}"
     db.commit()
-    return RedirectResponse(url="/admin/drafts", status_code=303)
+    return RedirectResponse(url=f"{request.state.venue_base}/drafts", status_code=303)

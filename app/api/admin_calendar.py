@@ -7,8 +7,9 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.admin_auth import admin_ctx, current_venue, require_csrf, require_staff
+from app.admin_auth import admin_ctx, require_csrf, require_staff
 from app.database import get_db
+from app.venue_scope import venue_scope
 from app.models import Space, Venue
 from app.models.staff_user import StaffUser
 from app.services import booking as booking_service
@@ -16,7 +17,7 @@ from app.services import calendar as calendar_service
 from app.templating import templates
 from app.utils import truncate
 
-router = APIRouter(prefix="/admin/calendar", tags=["admin-calendar"], dependencies=[Depends(require_staff), Depends(current_venue)])
+router = APIRouter(prefix="/admin/{venue_slug}/calendar", tags=["admin-calendar"], dependencies=[Depends(require_staff), Depends(venue_scope)])
 
 BOOKING_EVENT_ACTOR_MAX_LENGTH = 255
 
@@ -123,5 +124,6 @@ def create_hold(
     if len(created) == 1:
         return RedirectResponse(url=f"/admin/bookings/{created[0].id}", status_code=303)
     return RedirectResponse(
-        url=f"/admin/calendar?week={calendar_service.week_start_for(event_date).isoformat()}", status_code=303
+        url=f"{request.state.venue_base}/calendar?week={calendar_service.week_start_for(event_date).isoformat()}",
+        status_code=303,
     )

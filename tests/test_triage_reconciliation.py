@@ -92,7 +92,13 @@ def test_run_now_is_staff_only(db, hamilton):
 
     app.dependency_overrides[get_db] = lambda: db
     try:
-        resp = TestClient(app, follow_redirects=False).post("/admin/triage/reconcile", data={})
+        # The SCOPED url, because that is where the endpoint lives now. A
+        # 404 on the old one would pass this assertion for the wrong reason:
+        # "refused because it does not exist" is not "refused because you are
+        # not staff", and only the second is what this test is about.
+        resp = TestClient(app, follow_redirects=False).post(
+            f"/admin/{hamilton.slug}/triage/reconcile", data={}
+        )
         assert resp.status_code in (302, 303, 307, 401, 403)
         assert db.query(ReconciliationFinding).count() == 0
     finally:

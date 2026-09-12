@@ -3,7 +3,7 @@
 {% block content %}
 <h1>Invoices</h1>
 
-<form method="get" action="/admin/invoices" class="card" style="display:flex; gap:12px; align-items:flex-end;">
+<form method="get" action="{{ venue_base }}/invoices" class="card" style="display:flex; gap:12px; align-items:flex-end;">
   <div style="flex:1;">
     <label for="status">Status</label>
     <select id="status" name="status">

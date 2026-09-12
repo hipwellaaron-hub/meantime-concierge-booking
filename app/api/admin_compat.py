@@ -84,6 +84,13 @@ def admin_root(request: Request, db: Session = Depends(get_db), staff: StaffUser
 # Add an entry here in the SAME commit that moves its router, never before.
 MOVED_LIST_PATHS: tuple[tuple[str, str], ...] = (
     ("reports/attribution", "/reports/attribution"),
+    ("calendar", "/calendar"),
+    ("drafts", "/drafts"),
+    ("invoices", "/invoices"),
+    ("staff", "/staff"),
+    ("triage", "/triage"),
+    # "bookings" is NOT here yet: app/api/admin_bookings.py still owns
+    # /admin/bookings, and a compat entry would shadow it.
 )
 
 for _legacy, _then in MOVED_LIST_PATHS:

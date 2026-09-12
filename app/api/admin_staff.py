@@ -12,17 +12,25 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.admin_auth import admin_ctx, current_venue, require_csrf, require_staff
+from app.admin_auth import admin_ctx, require_csrf, require_staff
 from app.database import get_db
+from app.venue_scope import venue_scope
 from app.models import StaffAppToken, StaffUser
 from app.services import notifications, staff_auth
 from app.templating import templates
 
-router = APIRouter(prefix="/admin/staff", tags=["admin-staff"], dependencies=[Depends(require_staff), Depends(current_venue)])
+router = APIRouter(prefix="/admin/{venue_slug}/staff", tags=["admin-staff"], dependencies=[Depends(require_staff), Depends(venue_scope)])
 
 
-def _redirect() -> RedirectResponse:
-    return RedirectResponse(url="/admin/staff", status_code=303)
+def _redirect(request: Request) -> RedirectResponse:
+    """Back to this venue's staff page.
+
+    The venue base, never the literal "/admin/staff": that path belongs to
+    the compat route now, which rebuilds its destination from a fixed
+    literal and so drops any query string -- which silently lost the
+    ?outcome= that puts the confirmation banner on the page.
+    """
+    return RedirectResponse(url=f"{request.state.venue_base}/staff", status_code=303)
 
 
 @router.get("", response_class=HTMLResponse)
@@ -80,9 +88,12 @@ def create_staff(
     if new_user.role == "floor":
         sent = notifications.notify_floor_welcome(name=new_user.name, email=new_user.email)
         return RedirectResponse(
-            url=f"/admin/staff?welcome={'sent' if sent else 'failed'}&outcome={outcome}", status_code=303
+            url=f"{request.state.venue_base}/staff?welcome={'sent' if sent else 'failed'}&outcome={outcome}",
+            status_code=303,
         )
-    return RedirectResponse(url=f"/admin/staff?outcome={outcome}", status_code=303)
+    return RedirectResponse(
+        url=f"{request.state.venue_base}/staff?outcome={outcome}", status_code=303
+    )
 
 
 @router.post("/{user_id}/resend-welcome", dependencies=[Depends(require_csrf)])
@@ -100,7 +111,10 @@ def resend_floor_welcome(
     if user.role != "floor":
         raise HTTPException(status_code=422, detail="Only floor accounts use the Meantime Floor app")
     sent = notifications.notify_floor_welcome(name=user.name, email=user.email)
-    return RedirectResponse(url=f"/admin/staff?welcome={'sent' if sent else 'failed'}", status_code=303)
+    return RedirectResponse(
+        url=f"{request.state.venue_base}/staff?welcome={'sent' if sent else 'failed'}",
+        status_code=303,
+    )
 
 
 @router.post("/{user_id}/deactivate", dependencies=[Depends(require_csrf)])
@@ -119,7 +133,7 @@ def deactivate_staff(
         raise HTTPException(status_code=404, detail="No such staff user")
     user.is_active = False
     db.commit()
-    return _redirect()
+    return _redirect(request)
 
 
 @router.post("/{user_id}/reactivate", dependencies=[Depends(require_csrf)])
@@ -134,7 +148,7 @@ def reactivate_staff(
         raise HTTPException(status_code=404, detail="No such staff user")
     user.is_active = True
     db.commit()
-    return _redirect()
+    return _redirect(request)
 
 
 @router.post("/tokens/{token_id}/revoke", dependencies=[Depends(require_csrf)])
@@ -148,4 +162,4 @@ def revoke_token(
         staff_auth.revoke_app_token(db, token_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    return _redirect()
+    return _redirect(request)

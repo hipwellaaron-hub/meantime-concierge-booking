@@ -7,7 +7,7 @@
 <div class="card" style="border-color: var(--gold-dim);">
   <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
     <h2 style="margin:0;">Reconciliation findings ({{ findings | length }})</h2>
-    <form method="post" action="/admin/triage/reconcile" style="margin:0;">
+    <form method="post" action="{{ venue_base }}/triage/reconcile" style="margin:0;">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <button class="btn" type="submit" title="Reads everything, fixes nothing. Opens new findings and clears any that have resolved.">Run reconciliation now</button>
     </form>

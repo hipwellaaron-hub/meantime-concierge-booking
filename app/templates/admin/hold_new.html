@@ -1,7 +1,7 @@
 {% extends "admin/_base.html" %}
 {% block title %}New hold{% endblock %}
 {% block content %}
-<p><a href="/admin/calendar">&larr; Calendar</a></p>
+<p><a href="{{ venue_base }}/calendar">&larr; Calendar</a></p>
 <h1>New hold</h1>
 <p class="muted">
   A hold blocks a space against real double-booking (it's a booking at "tentative" status underneath),
@@ -10,7 +10,7 @@
 </p>
 
 <div class="card">
-  <form method="post" action="/admin/calendar/holds">
+  <form method="post" action="{{ venue_base }}/calendar/holds">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
 
     <label>Space(s)</label>

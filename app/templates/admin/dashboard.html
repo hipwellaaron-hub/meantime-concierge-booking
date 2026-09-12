@@ -8,23 +8,23 @@
     <div class="num">{{ counts.open_enquiries }}</div>
     <div class="label">Open enquiries</div>
   </a>
-  <a class="card stat" href="/admin/triage" style="text-decoration:none;">
+  <a class="card stat" href="{{ venue_base }}/triage" style="text-decoration:none;">
     <div class="num">{{ counts.triage }}</div>
     <div class="label">Awaiting triage</div>
   </a>
-  <a class="card stat" href="/admin/triage" style="text-decoration:none; {% if counts.notification_failures %}border-color: var(--ember);{% endif %}">
+  <a class="card stat" href="{{ venue_base }}/triage" style="text-decoration:none; {% if counts.notification_failures %}border-color: var(--ember);{% endif %}">
     <div class="num" style="{% if counts.notification_failures %}color: var(--ember);{% endif %}">{{ counts.notification_failures }}</div>
     <div class="label">Enquiry emails failed</div>
   </a>
-  <a class="card stat" href="/admin/triage" style="text-decoration:none;">
+  <a class="card stat" href="{{ venue_base }}/triage" style="text-decoration:none;">
     <div class="num">{{ counts.wizard_ready }}</div>
     <div class="label">Wizard-ready</div>
   </a>
-  <a class="card stat" href="/admin/triage#beos-to-review" style="text-decoration:none; {% if counts.beos_to_review %}border-color: var(--gold);{% endif %}">
+  <a class="card stat" href="{{ venue_base }}/triage#beos-to-review" style="text-decoration:none; {% if counts.beos_to_review %}border-color: var(--gold);{% endif %}">
     <div class="num">{{ counts.beos_to_review }}</div>
     <div class="label">BEOs to review</div>
   </a>
-  <a class="card stat" href="/admin/invoices?status=sent" style="text-decoration:none;">
+  <a class="card stat" href="{{ venue_base }}/invoices?status=sent" style="text-decoration:none;">
     <div class="num">{{ counts.unpaid_invoices }}</div>
     <div class="label">Unpaid invoices</div>
   </a>

@@ -130,7 +130,11 @@ def venue_scope(
 # So the nav asks this. Move a router, add it here, and the link follows.
 # When the set is complete the helper below collapses to `base + path` and
 # both can go.
-MOVED_SECTIONS = frozenset({"", "/reports/attribution"})
+MOVED_SECTIONS = frozenset({
+    "", "/reports/attribution",
+    "/calendar", "/drafts", "/invoices", "/staff", "/triage",
+    # "/bookings" is NOT here yet -- that router has not moved.
+})
 
 
 def admin_url(venue_base: str, path: str) -> str:

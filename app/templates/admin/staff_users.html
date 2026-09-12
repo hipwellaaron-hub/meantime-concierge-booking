@@ -32,7 +32,7 @@
   <p class="muted" style="font-size:0.85rem; margin:-4px 0 12px;">An email already on file is not a new account:
     that person's password is reset, their role becomes whatever is picked here, and a deactivated account is
     reactivated. That is also how you reset a forgotten password &mdash; there is no self-serve reset.</p>
-  <form method="post" action="/admin/staff/create" class="field-row" style="align-items:flex-end;">
+  <form method="post" action="{{ venue_base }}/staff/create" class="field-row" style="align-items:flex-end;">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <div><label>Name</label><input type="text" name="name" required maxlength="255"></div>
     <div><label>Email</label><input type="email" name="email" required maxlength="320"></div>
@@ -62,7 +62,7 @@
           {% set tokens = tokens_by_user.get(user.id, []) %}
           {% if tokens %}
           {% for token in tokens %}
-          <form class="inline" method="post" action="/admin/staff/tokens/{{ token.id }}/revoke">
+          <form class="inline" method="post" action="{{ venue_base }}/staff/tokens/{{ token.id }}/revoke">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <span class="muted" style="font-size:0.75rem;">
               {% if token.last_used_at %}last seen {{ token.last_used_at | sydney_time }}{% else %}never used{% endif %}
@@ -76,19 +76,19 @@
         </td>
         <td>
           {% if user.role == "floor" and user.is_active %}
-          <form class="inline" method="post" action="/admin/staff/{{ user.id }}/resend-welcome" onsubmit="return confirm('Re-send the Meantime Floor setup email to {{ user.name }}?');">
+          <form class="inline" method="post" action="{{ venue_base }}/staff/{{ user.id }}/resend-welcome" onsubmit="return confirm('Re-send the Meantime Floor setup email to {{ user.name }}?');">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <button class="btn secondary" type="submit">Resend setup email</button>
           </form>
           {% endif %}
           {% if user.id != me.id %}
           {% if user.is_active %}
-          <form class="inline" method="post" action="/admin/staff/{{ user.id }}/deactivate" onsubmit="return confirm('Deactivate {{ user.name }}? Their logins and app tokens stop working immediately.');">
+          <form class="inline" method="post" action="{{ venue_base }}/staff/{{ user.id }}/deactivate" onsubmit="return confirm('Deactivate {{ user.name }}? Their logins and app tokens stop working immediately.');">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <button class="btn danger" type="submit">Deactivate</button>
           </form>
           {% else %}
-          <form class="inline" method="post" action="/admin/staff/{{ user.id }}/reactivate">
+          <form class="inline" method="post" action="{{ venue_base }}/staff/{{ user.id }}/reactivate">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <button class="btn secondary" type="submit">Reactivate</button>
           </form>
