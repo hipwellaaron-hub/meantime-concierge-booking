@@ -117,6 +117,8 @@
   .pdf-sign { margin-top: 8pt; padding-top: 6pt; border-top: 1.2pt solid #1f2420; font-size: 8pt; }
   .pdf-sign .signed { font-weight: bold; }
   .pdf-sign .unsigned-line { color: #6b7268; }
+  /* Names the other party to the contract, under the signature line. */
+  .pdf-sign .counterparty { margin-top: 5pt; color: #1f2420; }
   .pdf-foot { margin-top: 5pt; font-size: 6.6pt; color: #969a93; }
 
   /* Event Order (PDF). Two columns MUST be a table -- xhtml2pdf has no
@@ -314,6 +316,11 @@
         {% endif %}
       </td>
       <td class="identity">
+        {# The contracting entity, then its ABN. An ABN identifies a legal
+           entity, so printing one without naming the entity hands a client
+           the half they cannot resolve backwards. Frozen at generation with
+           the rest of the header. #}
+        {% if document.content.venue_legal_name %}{{ document.content.venue_legal_name }}<br>{% endif %}
         ABN {{ document.content.venue_abn }}<br>
         {{ document.content.venue_address }}<br>
         {{ document.content.venue_contact_name }} &middot; {{ document.content.venue_contact_email }}
@@ -373,6 +380,14 @@
     {% else %}
     <span class="unsigned-line">Signature ____________________________&nbsp;&nbsp;
     Name ____________________________&nbsp;&nbsp; Date ______________</span>
+    {% endif %}
+    {# The OTHER party. A contract has two, and this block named one: the
+       hirer signed a blank line with nothing on the page saying who they
+       were contracting with. Frozen, so it says what was agreed rather
+       than what the venues row happens to hold today. Agreement only --
+       an Event Order is a run sheet, not a contract. #}
+    {% if document.content.venue_legal_name %}
+    <div class="counterparty">This agreement is with {{ document.content.venue_legal_name }}{% if document.content.venue_abn %}, ABN {{ document.content.venue_abn }}{% endif %}.</div>
     {% endif %}
   </div>
   <div class="pdf-foot">
@@ -494,7 +509,7 @@
 
   {% if document.type.value == "agreement" %}
   <div class="venue-header">
-    {{ document.content.venue }} &middot; ABN {{ document.content.venue_abn }}<br>
+    {{ document.content.venue }}{% if document.content.venue_legal_name %} &middot; {{ document.content.venue_legal_name }}{% endif %} &middot; ABN {{ document.content.venue_abn }}<br>
     {{ document.content.venue_address }}<br>
     Venue contact: {{ document.content.venue_contact_name }} ({{ document.content.venue_contact_email }})
   </div>
@@ -660,7 +675,11 @@
     <input type="text" name="signer_name" placeholder="Your full name" required>
     <button type="submit">Accept &amp; Sign</button>
     <p class="consent-text">
-      By typing your name and clicking Accept &amp; Sign, you agree to be bound by the terms above, and consent to
+      {# WHO they are agreeing to be bound BY. This form is where the client
+         actually signs, and it said "the terms above" without ever naming
+         the other party -- the PDF's signature block has the same line, but
+         nobody signs the PDF. Frozen with the document. #}
+      By typing your name and clicking Accept &amp; Sign, you agree to be bound by the terms above{% if document.content.venue_legal_name %}, in an agreement with {{ document.content.venue_legal_name }}{% if document.content.venue_abn %} (ABN {{ document.content.venue_abn }}){% endif %}{% endif %}, and consent to
       signing this document electronically. We record your name, IP address, and the time of acceptance.
     </p>
   </form>

@@ -30,11 +30,24 @@ REVIEW = "[REVIEW]"
 # literal strings, not templated across spaces: "The one word difference
 # is exactly the kind of drift that produced the errors in §3.4."
 
-_DEPOSITS_CLAUSE = (
-    f"A non-refundable deposit of ${STANDARD_DEPOSIT:.0f} is payable on issue of the deposit invoice. "
-    "The deposit will secure your date and event location. Meantime cannot guarantee any booking without a "
-    "deposit."
-)
+def _deposits_clause(venue) -> str:
+    """The Deposits clause, naming THIS venue.
+
+    It read "Meantime cannot guarantee any booking without a deposit" -- a
+    module constant, and the only self-naming word in the entire contract.
+    On a Nice Try Events agreement it named neither that company nor that
+    venue.
+
+    A venue with no trading name recorded says "The venue" rather than
+    borrowing another company's name. Same rule as everywhere else here:
+    blank or neutral, never a guess.
+    """
+    who = (getattr(venue, "trading_name", None) or "").strip() or "The venue"
+    return (
+        f"A non-refundable deposit of ${STANDARD_DEPOSIT:.0f} is payable on issue of the deposit invoice. "
+        f"The deposit will secure your date and event location. {who} cannot guarantee any booking without a "
+        "deposit."
+    )
 
 _CREDIT_CARD_CLAUSE = "A valid credit card is required to secure your booking."
 
@@ -166,7 +179,7 @@ def _terms_sections(booking: Booking) -> list[dict]:
     # here any more -- a new room at a new venue gets correct terms from
     # its figures, not a [REVIEW] placeholder in a client document.
     sections = [
-        {"heading": "Deposits", "body": _DEPOSITS_CLAUSE},
+        {"heading": "Deposits", "body": _deposits_clause(booking.venue)},
         {"heading": "Credit Card", "body": _CREDIT_CARD_CLAUSE},
     ]
     if booking.agreed_min_adults > 0:
@@ -632,6 +645,17 @@ def generate_agreement_content(booking: Booking) -> dict:
         # that wants one block of plain text.
         "terms_sections": terms_sections,
         "terms_text": rebuild_terms_text(terms_sections),
+        # THE COMPANY THE HIRER IS CONTRACTING WITH. Frozen like the rest:
+        # a signed contract reflects what was agreed, and the entity that
+        # signed it does not change because a row was edited afterwards.
+        #
+        # It was missing entirely. venue_identity has supplied
+        # venue_legal_name all along and no client template read it, which
+        # tests/test_identity_keys_are_supplied.py cannot catch because it
+        # checks template-to-dict and never dict-to-template. An ABN
+        # belongs to a legal entity, so an agreement printing the ABN and
+        # not the entity gave a client the half they cannot resolve.
+        "venue_legal_name": venue.legal_name or "",
         "venue_abn": venue.abn or "",
         "venue_address": venue.address or "",
         "venue_contact_name": venue.contact_name or "",
