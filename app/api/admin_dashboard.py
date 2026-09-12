@@ -49,10 +49,12 @@ def dashboard(request: Request, db: Session = Depends(get_db), staff: StaffUser 
     triage_count = len(ivvy_import.get_unassigned_bookings(db, venue))
     wizard_ready_count = len(wizard_service.get_wizard_eligible_bookings(db, venue))
     unpaid_invoices = db.scalar(
+        # invoices.venue_id, not a join through Space. The insert trigger
+        # takes it from the booking and a second trigger freezes it, so the
+        # two cannot disagree -- and reading the column the schema
+        # advertises beats a join that quietly does the same thing.
         select(func.count(Invoice.id))
-        .join(Booking, Invoice.booking_id == Booking.id)
-        .join(Space, Booking.space_id == Space.id)
-        .where(Space.venue_id == venue.id, Invoice.status == InvoiceStatus.sent)
+        .where(Invoice.venue_id == venue.id, Invoice.status == InvoiceStatus.sent)
     )
     notification_failures_count = len(enquiry_classification.get_enquiry_notification_failures(db, venue))
     beos_to_review_count = len(documents_service.get_beos_awaiting_review(db, venue))

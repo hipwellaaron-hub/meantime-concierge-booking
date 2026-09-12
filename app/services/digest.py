@@ -91,9 +91,12 @@ def get_overdue_invoices(db: Session, venue: Venue, *, as_of: dt.date | None = N
         db.scalars(
             select(Invoice)
             .join(Invoice.booking)
+            # invoices.venue_id rather than a correlated has() two levels
+            # deep through Booking -> Space. Same rows, one predicate, and
+            # it reads the column that is actually the invoice's venue.
             .where(Invoice.status == InvoiceStatus.sent)
             .where(Invoice.due_date < as_of)
-            .where(Invoice.booking.has(Booking.space.has(venue_id=venue.id)))
+            .where(Invoice.venue_id == venue.id)
             .order_by(Invoice.due_date)
         ).all()
     )

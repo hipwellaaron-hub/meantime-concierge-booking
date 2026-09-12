@@ -721,22 +721,25 @@ def search_invoices(
     status: InvoiceStatus | None = None,
     include_terminal: bool = False,
 ) -> list[Invoice]:
-    """Invoices across the venue, newest first. By default the ones still
-    needing attention (draft, sent); paid and cancelled are excluded unless
-    a specific status is chosen or include_terminal is set. Scoped through
-    Booking -> Space to the venue the same way the dashboard's own counts
-    are, so the list and the count on the tile that links to it can never
-    disagree."""
-    from app.models import Space
+    """This venue's invoice register, newest first. By default the ones
+    still needing attention (draft, sent); paid and cancelled are excluded
+    unless a specific status is chosen or include_terminal is set.
 
-    query = (
-        select(Invoice)
-        .join(Booking, Invoice.booking_id == Booking.id)
-        .join(Space, Booking.space_id == Space.id)
-        .where(Space.venue_id == venue_id)
-    )
+    Scoped on invoices.venue_id, the same column the dashboard's own count
+    uses, so the list and the tile that links to it cannot disagree. It
+    used to join Booking -> Space for the same answer; the triggers make
+    the two identical, and reading the column the schema advertises is the
+    version somebody arriving at this code can trust.
+
+    ORDERED BY THE REGISTER'S OWN NUMBER, not created_at. created_at is
+    now(), which Postgres fixes at TRANSACTION START, while the number is
+    taken later inside the insert -- so two invoices raised at the same
+    moment could list in the opposite order to their numbers, silently. A
+    register ordered by its own position cannot.
+    """
+    query = select(Invoice).where(Invoice.venue_id == venue_id)
     if status is not None:
         query = query.where(Invoice.status == status)
     elif not include_terminal:
         query = query.where(Invoice.status.not_in(INVOICE_TERMINAL_STATUSES))
-    return list(db.scalars(query.order_by(Invoice.created_at.desc())))
+    return list(db.scalars(query.order_by(Invoice.invoice_number.desc())))
