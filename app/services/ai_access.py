@@ -144,13 +144,12 @@ def ai_venues(db: Session) -> list[Venue]:
     return venues
 
 
-def ai_venue(db: Session) -> Venue:
-    """The FIRST permitted venue. Kept for callers that genuinely have no
-    request to take an argument from -- the reconciliation job, and the
-    module-level prompt. Not for a read endpoint: a read picks its venue by
-    argument, because a labelled answer about the wrong building is still an
-    answer about the wrong building when the reader is scanning dates."""
-    return ai_venues(db)[0]
+# There was an ai_venue(db) here returning "the first permitted venue", kept
+# for callers with no request to take an argument from. It had none: its
+# docstring named the reconciliation job and the module-level prompt, and
+# neither called it. Deleted rather than left, because a helper that hands
+# back an arbitrary one of several venues is a silent wrong-venue answer
+# waiting for whoever reaches for it next.
 
 
 # --- request log --------------------------------------------------------

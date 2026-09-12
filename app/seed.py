@@ -10,6 +10,8 @@ Run with: python -m app.seed
 
 from decimal import Decimal
 
+from sqlalchemy import select
+
 from app.database import SessionLocal
 from app.models import Space, Venue
 from app.services import policy
@@ -158,7 +160,21 @@ def report_gaps(venue) -> str:
     )
 
 
+def report_every_venue(db) -> list[str]:
+    """A line per venue, in slug order.
+
+    EVERY venue, not the one that was just seeded. `seed()` creates and
+    returns Hamilton and only Hamilton, so reporting on its return value
+    meant the second venue -- the one actually likely to be half-filled,
+    because somebody typed its row in by hand -- was never looked at. The
+    gaps it would have reported are blanks on a client's invoice.
+    """
+    return [report_gaps(v) for v in db.scalars(select(Venue).order_by(Venue.slug)).all()]
+
+
 if __name__ == "__main__":
-    seeded = seed()
+    seed()
     print("Seeded Hamilton venue and spaces.")
-    print(report_gaps(seeded))
+    with SessionLocal() as db:
+        for line in report_every_venue(db):
+            print(line)
