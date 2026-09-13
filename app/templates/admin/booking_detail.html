@@ -544,7 +544,21 @@
         </div>
       </div>
       <p class="muted" style="font-size:0.8rem;">Line items (a deposit already paid is credited automatically). Leave a row's description blank to skip it.</p>
-      {% for i in range(6) %}
+      {% if final_invoice_prefill %}
+      <p class="muted" style="font-size:0.8rem;">Filled in from this booking's Event Order food order. Edit anything before creating.</p>
+      {% endif %}
+      {# Prefilled rows first, then blanks up to six. The rows themselves are
+         ordinary inputs: a staff member still reads them and presses the
+         button, which is the difference between this and the proposal path
+         that creates the invoice outright. #}
+      {% for row in final_invoice_prefill %}
+      <div class="field-row">
+        <div><label>Description</label><input type="text" name="description" value="{{ row.description }}"></div>
+        <div style="flex:0 0 90px;"><label>Qty</label><input type="text" name="quantity" value="{{ row.quantity }}"></div>
+        <div style="flex:0 0 120px;"><label>Unit price</label><input type="text" name="unit_price" value="{{ row.unit_price }}"></div>
+      </div>
+      {% endfor %}
+      {% for i in range(6 - (final_invoice_prefill | length if final_invoice_prefill else 0)) %}
       <div class="field-row">
         <div><label>Description</label><input type="text" name="description"></div>
         <div style="flex:0 0 90px;"><label>Qty</label><input type="text" name="quantity" value="1"></div>

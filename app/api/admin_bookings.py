@@ -458,6 +458,11 @@ def booking_detail(
             # Prefilled into the "create final invoice" form so the hand
             # path and the wizard path date an invoice the same way. Staff
             # can still type over it -- the route takes whatever is posted.
+            # The form arrives holding the Event Order's food order, so a
+            # staff member stops retyping lines the document already has.
+            final_invoice_prefill=beo_proposals_service.final_invoice_prefill(
+                documents_service.get_current(db, booking.id, DocumentType.beo)
+            ),
             suggested_final_due_date=policy.final_balance_due_date(
                 booking.event_date, issued_on=dt.date.today()
             ),

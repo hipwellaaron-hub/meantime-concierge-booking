@@ -397,6 +397,44 @@ def _is_catalogue_built(invoice) -> bool:
     return all(line.get("menu_item_id") for line in charges)
 
 
+def final_invoice_prefill(document) -> list[dict]:
+    """The Event Order's food order as invoice line rows, for the booking
+    page's Create-final-invoice form to arrive already filled in.
+
+    Returns [] when there is no current Event Order or it holds no food --
+    the form then looks exactly as it did before.
+
+    A PREFILL, deliberately, not an auto-create. sync_final_invoice_from_food
+    above does build the invoice outright, but only off an approved
+    PROPOSAL; a booking whose food was typed straight into the Event Order
+    never reaches it, and every migrated booking is in that shape. Making
+    that function fire on any Event Order would start writing invoices
+    nobody asked for, so this fills the form and a person still decides.
+
+    The name is read across all three shapes this key has had --
+    "description", "item", "name" -- because the bookings that need this
+    most are the migrated ones carrying the older keys. Same order as
+    _normalise_food_lines, which this has to agree with.
+    """
+    if document is None:
+        return []
+    content = document.content or {}
+    lines = (content.get(FOOD_ORDER_FIELD) or {}).get("line_items") or []
+    rows = []
+    for raw in lines:
+        if not isinstance(raw, dict):
+            continue
+        name = raw.get("description") or raw.get("item") or raw.get("name") or ""
+        if not name:
+            continue
+        rows.append({
+            "description": name,
+            "quantity": raw.get("quantity") or 1,
+            "unit_price": raw.get("unit_price") or "",
+        })
+    return rows
+
+
 def sync_final_invoice_from_food(db: Session, booking: Booking, lines: list[dict], *, actor: str) -> str:
     """The second half of the ruling: "the line items and invoice are
     built from the catalogue." Runs after the approved lines are on the
