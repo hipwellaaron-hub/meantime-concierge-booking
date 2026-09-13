@@ -267,6 +267,63 @@ templates.env.filters["client_safe"] = client_safe
 templates.env.filters["person_name"] = _format_person_name
 templates.env.filters["aus_date"] = _format_date_dmy
 templates.env.filters["bullets"] = bullets
+def beo_billing(document) -> dict:
+    """The Event Order's money block, computed NOW from what has been paid.
+
+    Returns {"total", "deposit_paid", "balance_due"} as strings, or None
+    values where the figure genuinely is not knowable.
+
+    LIVE, NOT FROZEN, and deliberately so. The stored block was written
+    when the document was generated, so a deposit paid afterwards never
+    reached it -- and the Generate path never passed a deposit at all, so
+    every Event Order made outside the wizard printed "[REVIEW] payments
+    aren't tracked in Concierge until Phase 3" over a payment the invoices
+    table was holding. Reading it here fixes every document that already
+    exists, with no regeneration: the same mechanism, and the same reason,
+    as the unfilled-fields block below.
+
+    The session comes from the document itself. During any render it is
+    ORM-attached, so there is no route wiring to forget at one of the six
+    places that render this template -- the template asks and this answers.
+    With no session (a detached object in a test or a script) it falls
+    back to the stored block, which is never worse than today.
+    """
+    content = document.content or {}
+    stored = content.get("total_food_spend") or {}
+
+    # The food total stays derived from the document's OWN stored lines:
+    # what was ordered is a fact about this version of the Event Order, and
+    # it is what the client agreed to. Only the PAYMENT side is live.
+    total = stored.get("total")
+
+    from decimal import Decimal
+    from sqlalchemy.orm import object_session
+
+    db = object_session(document)
+    if db is None:
+        return {
+            "total": total,
+            "deposit_paid": stored.get("deposit_paid"),
+            "balance_due": stored.get("balance_due"),
+        }
+
+    from app.services import invoicing
+
+    deposit_paid = invoicing.get_deposit_paid(db, document.booking)
+    balance_due = None
+    if total is not None:
+        balance_due = Decimal(str(total)) - deposit_paid
+
+    return {
+        "total": total,
+        # 0.00 is a FACT, not an unknown -- nobody has paid a deposit yet,
+        # which is a different statement from "we cannot tell". The same
+        # distinction beo_proposals._deposit_paid_for records.
+        "deposit_paid": f"{deposit_paid:.2f}",
+        "balance_due": f"{balance_due:.2f}" if balance_due is not None else None,
+    }
+
+
 templates.env.filters["line_total"] = line_total
 # The Bar Structure section prints the credit above the words. Joined at
 # render time so the stored field stays free of generated text -- see
@@ -277,6 +334,11 @@ templates.env.filters["bar_structure_shown"] = bar_structure_shown
 # render time on purpose: it works on every document that already exists,
 # without regenerating any of them.
 templates.env.filters["unfilled_fields"] = _unfilled_fields
+# The Event Order's deposit and balance, read at render from what has
+# actually been paid rather than from a figure frozen at generation. A
+# filter rather than six route contexts: one forgotten render site
+# would print a dash where money goes.
+templates.env.filters["beo_billing"] = beo_billing
 from app.config import settings as _settings  # noqa: E402
 
 # Browser tags render only in production (or locally, where the ids are

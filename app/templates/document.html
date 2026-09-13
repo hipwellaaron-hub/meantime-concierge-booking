@@ -247,16 +247,26 @@
 {% endif %}
 {% endmacro %}
 
-{% macro beo_totals(content, staff) %}
+{#
+  `billing` is document | beo_billing -- the deposit and balance read AT
+  RENDER from what has actually been paid, not the figures frozen into the
+  document when it was generated. A balance frozen at generation is wrong
+  the moment anybody pays anything, and the Generate path never passed a
+  deposit at all, so every Event Order made outside the wizard printed a
+  [REVIEW] note about payments not being tracked over a payment the
+  invoices table was holding.
+
+  Computed here so it is true of every document that already exists,
+  without regenerating any of them -- the same mechanism as the
+  unfilled-fields block above, for the same reason.
+#}
+{% macro beo_totals(billing, staff) %}
 <div class="beo-sec">
   <div class="beo-h">Total Food Spend</div>
   <ul class="beo-bullets">
-    <li>Food total: {{ ("$" + content.total_food_spend.total) if content.total_food_spend.total else "—" }}</li>
-    <li>Less deposit paid: {{ ("$" + content.total_food_spend.deposit_paid) if content.total_food_spend.deposit_paid else "—" }}</li>
-    <li>Balance owing: {{ ("$" + content.total_food_spend.balance_due) if content.total_food_spend.balance_due else "—" }}</li>
-    {% if staff and content.total_food_spend.note %}
-    <li class="review">{{ content.total_food_spend.note }}</li>
-    {% endif %}
+    <li>Food total: {{ ("$" + billing.total) if billing.total else "—" }}</li>
+    <li>Less deposit paid: {{ ("$" + billing.deposit_paid) if billing.deposit_paid else "—" }}</li>
+    <li>Balance owing: {{ ("$" + billing.balance_due) if billing.balance_due else "—" }}</li>
   </ul>
 </div>
 {% endmacro %}
@@ -285,7 +295,7 @@
 {# Total Food Spend is money -- withheld from the floor surface, where the
    paid/owing pill is the only financial signal. Kept on the client's PDF
    and the admin screen view. #}
-{% if not is_floor_app %}{{ beo_totals(content, staff) }}{% endif %}
+{% if not is_floor_app %}{{ beo_totals(document | beo_billing, staff) }}{% endif %}
 {{ beo_section("Bar Structure", content | bar_structure_shown, staff) }}
 {% endmacro %}
 
@@ -406,7 +416,7 @@
 {% set staff = is_staff_preview %}
 {% set gaps = document.content | unfilled_fields if staff else [] %}
 {% set content = document.content %}
-{% set ref = content._reference %}
+{% set ref = content._reference %}{% set billing = document | beo_billing %}
 {% set client_name = (ref.get("client_name") or (booking.contact.name if booking.contact else None)) | person_name %}
 <div class="card">
   <table class="beo-header">
@@ -472,9 +482,13 @@
   <div class="beo-billing">
     <table>
       <tr><td><b>Billing Summary</b></td><td style="text-align:right;"></td></tr>
-      <tr><td>Food total</td><td style="text-align:right;">{{ ("$" + content.total_food_spend.total) if content.total_food_spend.total else "—" }}</td></tr>
-      <tr><td>Total paid</td><td style="text-align:right;">{{ ("$" + ref.total_paid) if ref.get("total_paid") else "—" }}</td></tr>
-      <tr><td><b>Balance owing</b></td><td style="text-align:right;"><b>{{ ("$" + content.total_food_spend.balance_due) if content.total_food_spend.balance_due else "—" }}</b></td></tr>
+      {# Live, like the bullet list above. "Total paid" used to read
+         content._reference.total_paid -- the legacy iVvy snapshot, empty
+         for anything Concierge generated, which is why it printed a dash
+         on a booking whose deposit was sitting in the invoices table. #}
+      <tr><td>Food total</td><td style="text-align:right;">{{ ("$" + billing.total) if billing.total else "—" }}</td></tr>
+      <tr><td>Total paid</td><td style="text-align:right;">{{ ("$" + billing.deposit_paid) if billing.deposit_paid else "—" }}</td></tr>
+      <tr><td><b>Balance owing</b></td><td style="text-align:right;"><b>{{ ("$" + billing.balance_due) if billing.balance_due else "—" }}</b></td></tr>
     </table>
   </div>
   {% endif %}
@@ -556,7 +570,7 @@
   {% set withhold = is_floor_app or floor_pdf %}
   {% set gaps = document.content | unfilled_fields if internal else [] %}
   {% set content = document.content %}
-  {% set ref = content._reference %}
+  {% set ref = content._reference %}{% set billing = document | beo_billing %}
   {% set client_name = (ref.get("client_name") or (booking.contact.name if booking.contact else None)) | person_name %}
 
   {# The floor works from the APPROVED version (Aaron, 2026-09-10). This
@@ -638,9 +652,13 @@
   <div class="beo-billing">
     <table>
       <tr><td><b>Billing Summary</b></td><td style="text-align:right;"></td></tr>
-      <tr><td>Food total</td><td style="text-align:right;">{{ ("$" + content.total_food_spend.total) if content.total_food_spend.total else "—" }}</td></tr>
-      <tr><td>Total paid</td><td style="text-align:right;">{{ ("$" + ref.total_paid) if ref.get("total_paid") else "—" }}</td></tr>
-      <tr><td><b>Balance owing</b></td><td style="text-align:right;"><b>{{ ("$" + content.total_food_spend.balance_due) if content.total_food_spend.balance_due else "—" }}</b></td></tr>
+      {# Live, like the bullet list above. "Total paid" used to read
+         content._reference.total_paid -- the legacy iVvy snapshot, empty
+         for anything Concierge generated, which is why it printed a dash
+         on a booking whose deposit was sitting in the invoices table. #}
+      <tr><td>Food total</td><td style="text-align:right;">{{ ("$" + billing.total) if billing.total else "—" }}</td></tr>
+      <tr><td>Total paid</td><td style="text-align:right;">{{ ("$" + billing.deposit_paid) if billing.deposit_paid else "—" }}</td></tr>
+      <tr><td><b>Balance owing</b></td><td style="text-align:right;"><b>{{ ("$" + billing.balance_due) if billing.balance_due else "—" }}</b></td></tr>
     </table>
   </div>
   {% endif %}
