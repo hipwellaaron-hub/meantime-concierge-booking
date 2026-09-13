@@ -446,7 +446,7 @@
       <td class="right">
         <span class="k">Event Order:</span> EO-{{ booking.reference_code }}-v{{ document.version }}<br>
         <span class="k">Booking Reference:</span> {{ booking.reference_code }}{% if not floor_pdf %}<br>
-        <span class="k">Total Paid:</span> {{ ("A$" + ref.total_paid) if ref.get("total_paid") else "—" }}{% endif %}
+        <span class="k">Total Paid:</span> {# Live, like the billing summary further down. This read content._reference.total_paid -- the legacy iVvy snapshot, which is empty for anything Concierge generated -- so on Adam Williams the header printed a dash while the summary below it printed $500.00. One document, two different statements about money. #}{{ ("A$" + billing.deposit_paid) if billing.deposit_paid else "—" }}{% endif %}
       </td>
     </tr>
   </table>
@@ -623,7 +623,7 @@
     <div class="right">
       <span class="k">Event Order:</span> EO-{{ booking.reference_code }}-v{{ document.version }}<br>
       <span class="k">Booking Reference:</span> {{ booking.reference_code }}{% if not withhold %}<br>
-      <span class="k">Total Paid:</span> {{ ("A$" + ref.total_paid) if ref.get("total_paid") else "—" }}{% endif %}
+      <span class="k">Total Paid:</span> {# Live, like the billing summary further down. This read content._reference.total_paid -- the legacy iVvy snapshot, which is empty for anything Concierge generated -- so on Adam Williams the header printed a dash while the summary below it printed $500.00. One document, two different statements about money. #}{{ ("A$" + billing.deposit_paid) if billing.deposit_paid else "—" }}{% endif %}
     </div>
   </div>
 

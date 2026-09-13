@@ -197,6 +197,44 @@ def test_every_rendered_copy_shows_the_balance(db, hamilton, loft, contact, staf
     assert "Phase 3" not in resp.text, "the stale payments note is still printing"
 
 
+def test_the_header_and_the_billing_summary_agree(admin_client, db, hamilton, loft, contact):
+    """Found on the LIVE document after deploying, not by a test: the
+    billing summary read $500.00 while the header two inches above it read
+    "Total Paid: —". Both are on the same page. The header was still reading
+    content._reference.total_paid, the legacy iVvy snapshot.
+
+    The assertion is that the two AGREE, rather than that each is right on
+    its own -- a document that states two different things about money is
+    wrong whichever figure a reader believes."""
+    booking = _booking(db, loft, contact, name="ZZHEADER Agreement")
+    _legacy_deposit(db, booking)
+    document = _beo(db, booking)
+
+    page = admin_client.get(
+        f"/admin/hamilton/bookings/{booking.id}/documents/{document.id}/preview",
+        follow_redirects=True,
+    )
+
+    assert page.status_code == 200, page.text
+    assert "Total Paid: —" not in page.text, (
+        "the header still prints a dash over a deposit the summary reports"
+    )
+    assert "A$500.00" in page.text, "the header does not carry the live figure"
+    assert "$950.00" in page.text
+
+
+def test_no_money_block_reads_the_legacy_snapshot():
+    """total_paid on _reference is the iVvy import's own figure and is empty
+    for every document Concierge generated. Three separate blocks read it;
+    each one printed a dash or a blank where a real number was available."""
+    import pathlib
+
+    markup = pathlib.Path("app/templates/document.html").read_text(encoding="utf-8")
+    live = [ln for ln in markup.splitlines() if "ref.total_paid" in ln and not ln.strip().startswith("{#")]
+
+    assert live == [], f"a money line still reads the legacy snapshot: {live}"
+
+
 def test_the_phase_three_note_is_gone_from_the_template():
     """It said payments are not tracked in Concierge. They are, and it was
     printing over a figure the system was holding."""
