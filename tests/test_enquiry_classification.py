@@ -259,23 +259,31 @@ def test_missing_event_date_does_not_crash_the_saturday_or_thursday_checks(db, u
     assert not any("Thursday" in f for f in flags)
 
 
-# --- midweek (Wednesday/Thursday) trading hours ---------------------------------
+# --- midweek trading hours: RULE REMOVED, 2026-09-14 -----------------------
+#
+# Wednesday and Thursday enquiries used to be flagged "trading closes at
+# 9pm, confirm an evening function actually fits". That is the published
+# RESTAURANT closing time; the venue is licensed to midnight every night
+# and midweek functions regularly run past 9pm (Aaron, 2026-09-14). The
+# flag also fired on EVERY midweek enquiry with no end-time test, so it was
+# friction rather than a warning.
+#
+# These two tests asserted the flag was raised. They now assert it is not.
 
 
-def test_thursday_is_flagged(db, unassigned_space):
+def test_a_thursday_enquiry_is_not_flagged_for_trading_hours(db, unassigned_space):
     thursday = _next_thursday(dt.date(2027, 1, 1))
     booking = _make_booking(db, unassigned_space, event_date=thursday)
     flags = classify_and_flag(db, booking, event_type="Corporate Function", adult_count=50, attendee_count=50, actor="test")
-    assert any("Thursday" in f for f in flags)
+    assert not any("trading closes" in f for f in flags)
+    assert not any("9pm" in f for f in flags)
 
 
-def test_wednesday_is_flagged(db, unassigned_space):
-    """Master Policy §1.8's trading-hours clause covers Wednesday and
-    Thursday identically -- this was previously checked only for Thursday."""
+def test_a_wednesday_enquiry_is_not_flagged_for_trading_hours(db, unassigned_space):
     wednesday = _next_wednesday(dt.date(2027, 1, 1))
     booking = _make_booking(db, unassigned_space, event_date=wednesday)
     flags = classify_and_flag(db, booking, event_type="Corporate Function", adult_count=50, attendee_count=50, actor="test")
-    assert any("Wednesday" in f for f in flags)
+    assert not any("trading closes" in f for f in flags)
 
 
 def test_friday_is_not_flagged_for_midweek_trading(db, unassigned_space):

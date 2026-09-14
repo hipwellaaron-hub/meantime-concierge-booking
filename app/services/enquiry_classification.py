@@ -135,12 +135,18 @@ def classify_and_flag(
 
     if booking.event_date is None:
         flags.append("Event date not provided -- confirm before proceeding.")
-    elif booking.event_date.weekday() in (WEDNESDAY, THURSDAY):
-        day_name = booking.event_date.strftime("%A")
-        flags.append(
-            f"{day_name} requested -- trading closes at 9pm, confirm an evening function actually "
-            "fits before promising the date."
-        )
+    # NO MIDWEEK FLAG. Until 2026-09-14 a Wednesday or Thursday enquiry was
+    # flagged "trading closes at 9pm, confirm an evening function actually
+    # fits". That is the published RESTAURANT closing time, not the
+    # function licence: the venue is licensed to midnight every night and
+    # midweek functions regularly run past 9pm (Aaron, 2026-09-14).
+    #
+    # It also fired on EVERY Wednesday and Thursday with no end-time test at
+    # all, so it was friction on every midweek enquiry rather than a
+    # warning about anything. The codebase already recorded the correct
+    # fact in tests/test_documents.py -- the same restaurant hours were
+    # deleted from the hire agreement for the same reason, and that
+    # deletion removed the right statement while leaving this one standing.
 
     notes_lower = (booking.notes or "").lower()
     if _ACCESSIBILITY_PATTERN.search(notes_lower):

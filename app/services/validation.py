@@ -27,9 +27,16 @@ MUSIC_OFF_TIME = dt.time(23, 30)
 # Master Policy v1.3 §1.8: "From 2:00pm standard. Earlier is often
 # possible but must be confirmed, never promised."
 SETUP_ACCESS_STANDARD_TIME = dt.time(14, 0)
-# Master Policy v1.3 §1.8: Wednesday AND Thursday trading is 12:00pm to
-# 9:00pm -- both days share the same clause, so both share this constant.
-MIDWEEK_TRADING_CLOSE = dt.time(21, 0)
+# The FUNCTION licence, which is the constraint a booking actually has:
+# licensed to midnight, every night (Aaron, 2026-09-14).
+#
+# This replaced MIDWEEK_TRADING_CLOSE = 21:00, which was Master Policy
+# v1.3 §1.8's Wednesday/Thursday RESTAURANT trading hours being used as a
+# client's function curfew. tests/test_documents.py has recorded the
+# distinction since the same figure was deleted from the hire agreement:
+# "Restaurant trading hours (12pm-9pm Wed/Thu) must not read as the
+# client's function curfew -- functions are licensed to midnight."
+LICENSED_CLOSE = dt.time(0, 0)
 
 
 @dataclass
@@ -80,19 +87,34 @@ def validate_setup_access_time(requested_time: dt.time) -> list[ValidationWarnin
     return []
 
 
-def validate_trading_hours(event_date: dt.date, end_time: dt.time) -> list[ValidationWarning]:
-    """Scoped to the one rule actually specified: Wednesday and Thursday
-    trading both close at 9:00pm (same clause, same hours). Not a general
-    by-day trading-hours engine."""
-    if event_date.weekday() in (WEDNESDAY, THURSDAY) and end_time > MIDWEEK_TRADING_CLOSE:
-        day_name = event_date.strftime("%A")
-        return [
-            ValidationWarning(
-                code="midweek_finish_after_close",
-                message=(
-                    f"{day_name} trading closes at 9:00pm — this booking proposes finishing at "
-                    f"{end_time.strftime('%I:%M%p').lstrip('0').lower()} and must be flagged and confirmed."
-                ),
-            )
-        ]
-    return []
+def validate_trading_hours(
+    event_date: dt.date, end_time: dt.time, start_time: dt.time | None = None
+) -> list[ValidationWarning]:
+    """The function licence: midnight, every night.
+
+    This used to warn that Wednesday and Thursday close at 9:00pm, which is
+    the restaurant's hours rather than the licence, and produced a warning
+    on ordinary midweek functions that run past 9pm as a matter of course.
+
+    A finish PAST MIDNIGHT is the thing that actually breaches the licence,
+    and it is visible only as an end time that falls before the start --
+    the column holds a time of day with no date, so 12:30am and 12:30pm are
+    told apart by which side of the start they land on. With no start_time
+    to compare against there is nothing this can conclude, and it says
+    nothing rather than guessing.
+
+    Every night, not midweek: the licence does not vary by day, so neither
+    does this.
+    """
+    if start_time is None or end_time > start_time:
+        return []
+    return [
+        ValidationWarning(
+            code="finish_after_licensed_close",
+            message=(
+                "This booking proposes finishing at "
+                f"{end_time.strftime('%I:%M%p').lstrip('0').lower()}, after midnight — the venue is "
+                "licensed until midnight, so a later finish has to be confirmed."
+            ),
+        )
+    ]

@@ -338,7 +338,59 @@ templates.env.filters["unfilled_fields"] = _unfilled_fields
 # actually been paid rather than from a figure frozen at generation. A
 # filter rather than six route contexts: one forgotten render site
 # would print a dash where money goes.
+def beo_timeline_bullets(document) -> list:
+    """The Event Order's timeline bullets, with each vendor's bump-in
+    requested/confirmed qualifier read AT RENDER from the vendor rows.
+
+    The bullets are composed once by build_event_timeline and frozen into
+    the document. _refresh_draft_beo_timeline re-composes them when a
+    bump-in is confirmed -- but only on a DRAFT, so an Event Order that has
+    already gone out goes on saying "requested -- not yet confirmed" after
+    staff have confirmed the time in writing. Adam Williams' DJ was
+    confirmed on 2 September and his Event Order still said requested
+    twelve days later, while the Music field on the same page said
+    otherwise. One document, two answers.
+
+    Same mechanism and same reason as beo_billing above: computed here, so
+    it is true of every document that already exists without regenerating
+    any of them, and there is no route context for six render sites to
+    forget.
+
+    ONLY the qualifier moves. The bullet's time, vendor name and contact
+    stay exactly as they were composed -- this is not a rebuild of the
+    timeline, which would discard anything a person typed into it.
+    """
+    content = document.content or {}
+    bullets = list((content.get("event_timeline") or {}).get("bullets") or [])
+
+    from sqlalchemy.orm import object_session
+
+    db = object_session(document)
+    if db is None:
+        return bullets
+
+    booking = document.booking
+    confirmed_now = {
+        v.name for v in booking.vendors if v.bump_in_confirmed and v.bump_in_time is not None
+    }
+    if not confirmed_now:
+        return bullets
+
+    out = []
+    for line in bullets:
+        # Matched on the frozen wording build_vendor_snapshot composes, and
+        # on the vendor's own name -- so a bullet for a vendor still
+        # genuinely unconfirmed is left alone.
+        if "(requested — not yet confirmed)" in line and any(name in line for name in confirmed_now):
+            line = line.replace("(requested — not yet confirmed)", "(confirmed)")
+        out.append(line)
+    return out
+
+
 templates.env.filters["beo_billing"] = beo_billing
+# The bump-in qualifier, read at render from booking_vendors rather than
+# the copy frozen when the Event Order was generated.
+templates.env.filters["beo_timeline_bullets"] = beo_timeline_bullets
 from app.config import settings as _settings  # noqa: E402
 
 # Browser tags render only in production (or locally, where the ids are

@@ -195,7 +195,10 @@
   <div class="beo-h">Event Timeline</div>
   <ul class="beo-bullets">
     {% if content.event_timeline.bullets %}
-    {% for line in content.event_timeline.bullets %}
+    {# document | beo_timeline_bullets, not the frozen list: a bump-in
+       confirmed after this Event Order went out is otherwise still
+       printed as "requested -- not yet confirmed" forever. #}
+    {% for line in document | beo_timeline_bullets %}
     <li>{{ line }}</li>
     {% endfor %}
     {% else %}

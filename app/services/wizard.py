@@ -348,7 +348,7 @@ def save_basics_step(
 
     warnings = validate_booking_time(booking.event_date, start_time, end_time)
     warnings += validate_setup_access_time(setup_access_time)
-    warnings += validate_trading_hours(booking.event_date, end_time)
+    warnings += validate_trading_hours(booking.event_date, end_time, start_time)
 
     _advance_step(session, WizardStep.basics)
     db.commit()
