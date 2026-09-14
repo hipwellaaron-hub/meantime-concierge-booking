@@ -700,6 +700,20 @@ def record_payment(
         old_status = invoice.status
         invoice.status = InvoiceStatus.paid
         invoice.paid_at = received_at
+        # Freeze the account the money actually went to. From here this
+        # invoice is a RECEIPT, and a receipt that re-renders whatever bank
+        # details the venue holds today is a record of nothing. Written
+        # once, on the transition, so a later venue change cannot reach it.
+        from app.templating import venue_identity
+
+        identity = venue_identity(invoice.booking.venue)
+        invoice.paid_to_account = {
+            "account_name": identity.get("venue_bank_account_name"),
+            "bsb": identity.get("venue_bank_bsb"),
+            "account_number": identity.get("venue_bank_account_number"),
+            "legal_name": identity.get("venue_legal_name"),
+            "abn": identity.get("venue_abn"),
+        }
         db.add(
             BookingEvent(
                 booking_id=invoice.booking_id,

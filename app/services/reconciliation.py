@@ -28,6 +28,7 @@ rather than approximated:
 
 import datetime as dt
 import logging
+from decimal import Decimal, InvalidOperation
 import re
 import uuid
 from dataclasses import dataclass
@@ -256,6 +257,74 @@ def check_final_invoice_deposit_credit(db: Session, bookings) -> list[Finding]:
     return out
 
 
+def check_food_price_drift(db: Session, bookings) -> list[Finding]:
+    """A DRAFT Event Order still quoting a catalogue price that has moved.
+
+    A food line's unit_price is frozen when the item is selected, and for a
+    SENT Event Order that is exactly right: it is what the client was
+    quoted, and it must not change underneath them. Nothing refreshes it
+    though, and nothing checked it -- so a draft generated before a price
+    change goes out at the old figure, and the invoice built from it bills
+    the old figure.
+
+    Platters are the live case. resolve_price sends everything except
+    pizzas straight to current_price, so a platter carries no legacy
+    variant and a platter price change reaches every booking -- there is no
+    per-booking lock protecting it the way there is for pizzas.
+
+    DRAFTS ONLY. Flagging a sent Event Order would be telling staff their
+    own quote is wrong, which it is not.
+
+    Reports, never rewrites: a quoted price is a commercial decision and a
+    staff member may have set it deliberately. Same rule as everything else
+    in this module.
+    """
+    from app.models import MenuItem
+    from app.services import catalogue
+
+    out = []
+    for b in bookings:
+        # Same predicate the other checks in this module use inline: the
+        # CURRENT version, not merely the newest -- a superseded draft is
+        # not what anyone would send.
+        beo = next(
+            (d for d in b.documents if d.type == DocumentType.beo and d.is_current), None
+        )
+        if beo is None or beo.status != DocumentStatus.draft:
+            continue
+        lines = ((beo.content or {}).get("food_order") or {}).get("line_items") or []
+        drifted = []
+        for line in lines:
+            item_id = line.get("menu_item_id")
+            if not item_id:
+                # Hand-typed or pre-2026-09-14, so there is no catalogue
+                # item to compare against. Silence is correct: a line
+                # nobody can price is not a line that has drifted.
+                continue
+            item = db.get(MenuItem, uuid.UUID(str(item_id)))
+            if item is None:
+                continue
+            today_price = catalogue.resolve_price(item, b)
+            if today_price is None:
+                continue
+            try:
+                quoted = Decimal(str(line.get("unit_price")))
+            except (InvalidOperation, TypeError):
+                continue
+            if quoted != today_price:
+                drifted.append(f"{item.name} quoted ${quoted}, now ${today_price}")
+        if drifted:
+            out.append(
+                Finding(
+                    b.id, "FOOD_PRICE_DRIFT", DATA_MISMATCH,
+                    "Draft Event Order still quotes a withdrawn catalogue price: "
+                    + "; ".join(drifted)
+                    + ". Regenerate it, or keep the quoted figure deliberately.",
+                )
+            )
+    return out
+
+
 def check_stale_holds(db: Session, venue: Venue, *, today: dt.date) -> list[Finding]:
     """Section 9.4. Reuses the same helper the dashboard tile uses, so the
     nightly job and the screen can never disagree about what needs chasing."""
@@ -455,6 +524,7 @@ def collect(db: Session, venue: Venue, *, today: dt.date | None = None,
     findings += check_notes_before_beo(bookings)
     findings += check_overpaid_invoices(db, bookings)
     findings += check_final_invoice_deposit_credit(db, bookings)
+    findings += check_food_price_drift(db, bookings)
     return findings
 
 

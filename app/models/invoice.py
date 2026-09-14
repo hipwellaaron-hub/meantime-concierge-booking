@@ -110,6 +110,18 @@ class Invoice(Base):
     # payable indefinitely until deactivated. Recorded here so
     # cancel_invoice has something to deactivate; see
     # stripe_integration.deactivate_payment_links.
+    # The bank account this invoice was actually paid to, frozen at the
+    # moment it became paid. A paid invoice is a RECEIPT -- a record of
+    # where money went -- while an unpaid one must point at the account
+    # that is current now, which is the rule stated in
+    # app.templating.venue_identity. Those are different questions and the
+    # live venue row can only answer the second.
+    #
+    # NULL for anything paid before 2026-09-14: there is no record of what
+    # it was paid to, and filling it in from today's venue row would assert
+    # a fact nobody knows. The template says which it is showing.
+    paid_to_account: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
     stripe_payment_link_ids: Mapped[list] = mapped_column(
         JSONB, nullable=False, server_default=text("'[]'::jsonb"), default=list
     )
