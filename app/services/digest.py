@@ -253,10 +253,11 @@ def _item_lines(content: DigestContent, *, dashboard_base_url: str) -> list[str]
         if cosmetic:
             lines.append(f"  - {', '.join(cosmetic)}")
             lines.append("  - These print BLANK on invoices, agreements and Event Orders.")
-        # No link: nothing in the admin edits a venue row (checked
-        # 2026-09-14 -- there is no /admin/venues route), so a link here
-        # would be a 404 in an email sent at 20:30.
-        lines.append("  - Set on the venues row directly; no admin page edits these yet.")
+        # There IS a page now (app/api/admin_venues.py, same day), so this
+        # line stopped being true within hours of being written and is a
+        # link again. An email read on a phone at 20:30 is the worst place
+        # for a sentence that says "there is nowhere to fix this".
+        lines.append(f"  - Fix them here: {dashboard_base_url}/admin/venues")
         lines.append("")
 
     if content.wizard_eligible:

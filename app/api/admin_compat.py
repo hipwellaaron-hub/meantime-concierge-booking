@@ -100,7 +100,15 @@ def admin_root(request: Request, db: Session = Depends(get_db), staff: StaffUser
 # outage. Caught by test_no_compat_route_shadows_a_live_one.
 #
 # Add an entry here in the SAME commit that moves its router, never before.
+#
+# "venues" is the one entry here that is NOT legacy: that page was born
+# scoped and never had an unscoped URL. It is here because the 20:30 digest
+# links to it, and every link the digest builds is deliberately unscoped --
+# a link that works out its own venue cannot go stale, cannot be wrong when
+# forwarded, and survives a rename (see this module's docstring). It cannot
+# shadow anything, because there is no real /admin/venues route to shadow.
 MOVED_LIST_PATHS: tuple[tuple[str, str], ...] = (
+    ("venues", "/venues"),
     ("reports/attribution", "/reports/attribution"),
     ("calendar", "/calendar"),
     ("drafts", "/drafts"),

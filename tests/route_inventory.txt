@@ -12,6 +12,7 @@ GET    /admin/login
 GET    /admin/reports/attribution
 GET    /admin/staff
 GET    /admin/triage
+GET    /admin/venues
 GET    /admin/{venue_slug}/
 GET    /admin/{venue_slug}/bookings
 GET    /admin/{venue_slug}/bookings/new

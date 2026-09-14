@@ -352,3 +352,34 @@ def test_a_write_without_a_csrf_token_is_refused(admin_client, db, hamilton, ent
     assert r.status_code == 403
     db.refresh(entrance)
     assert entrance.abn != "x"
+
+
+def test_the_digest_link_to_this_page_resolves(raw_admin_client, db, hamilton):
+    """The digest names an UNSCOPED /admin/venues, deliberately -- every
+    link it builds is unscoped so it works out its own venue and cannot go
+    stale when forwarded. That only holds if the unscoped path exists.
+
+    raw_admin_client, not admin_client: admin_client rewrites
+    /admin/<section>/... onto the venue segment, so this probe would never
+    reach the compat route and would pass because of the rewrite.
+    """
+    r = raw_admin_client.get("/admin/venues", follow_redirects=False)
+
+    assert r.status_code == 303, f"the digest's link is a {r.status_code}"
+    assert r.headers["location"].endswith("/venues"), r.headers["location"]
+
+
+def test_the_digest_actually_builds_that_link(db, hamilton):
+    """And the email names it. Asserted end to end rather than by reading
+    the format string: this line was WRONG within hours of being written
+    the first time -- it said no admin page edited these, which stopped
+    being true the same afternoon."""
+    from app.services import digest
+
+    hamilton.abn = None
+    db.flush()
+
+    content = digest.build_digest(db, hamilton)
+    _, body = digest.render_digest_text(content, dashboard_base_url="https://x")
+
+    assert "https://x/admin/venues" in body
