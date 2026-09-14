@@ -72,6 +72,16 @@ class Settings(BaseSettings):
     # 2026-09-12). This default is what makes those links work whether or not
     # the variable is ever set.
     dashboard_base_url: str = "https://book.meantime.com.au"
+    # The public site's origin, for the URL a Meta conversion is attributed
+    # to (conversions.meta_payload's event_source_url). Empty means "the
+    # enquiry form lives on the dashboard host", which is true today.
+    #
+    # It existed only as `getattr(settings, "public_base_url", "")` in
+    # conversions.py -- and with extra="ignore" above, a PUBLIC_BASE_URL set
+    # on Railway was silently dropped and the getattr always took its
+    # default. A setting that reads as configurable and is not is worse
+    # than one that does not exist. Now it is one.
+    public_base_url: str = ""
 
     # Public web-measurement identifiers for the enquiry funnel. Both PUBLIC
     # (not secrets) and both default EMPTY so local/dev/test never loads a

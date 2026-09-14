@@ -290,7 +290,10 @@ def meta_payload(booking: Booking) -> dict:
     # there was one venue. Bare /enquire when the slug is unknown -- that
     # URL resolves; "/enquire/" does not.
     slug = venue_slug_for(booking)
-    base = getattr(settings, "public_base_url", "") or settings.dashboard_base_url
+    # A real setting now (app/config.py). The getattr that sat here read a
+    # field Settings did not define, so PUBLIC_BASE_URL on Railway was
+    # silently ignored and this always fell through to the dashboard.
+    base = settings.public_base_url or settings.dashboard_base_url
     source_url = f"{base}/enquire/{slug}" if slug else f"{base}/enquire"
     event = {
         "event_name": EVENT_NAME_META,
