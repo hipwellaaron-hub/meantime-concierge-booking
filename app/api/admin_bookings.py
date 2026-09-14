@@ -988,17 +988,31 @@ def _get_draft_document_or_404(db: Session, booking_id: uuid.UUID, document_id: 
     return document
 
 
+_EDITOR_TEMPLATES = {
+    DocumentType.agreement: "admin/document_edit_agreement.html",
+    DocumentType.beo: "admin/document_edit_beo.html",
+}
+
+
+def _editor_template_for(doc_type) -> str:
+    """Which editor renders a document type -- by explicit mapping, never
+    by "agreement, else the other one". The else-branch handed every type
+    it had never heard of the Event Order editor, so a third DocumentType
+    would have got a run-sheet form silently. An unknown type is a bug in
+    whatever added it, and it should say so."""
+    try:
+        return _EDITOR_TEMPLATES[doc_type]
+    except KeyError:
+        raise ValueError(f"no editor is registered for document type {doc_type!r}") from None
+
+
 def _edit_form_response(
     request, staff, db, booking_id, document, *, form_content, conflicts=(), conflict=False, status_code=200
 ):
     """The edit screen. Shared by the GET and by the conflict response, so a
     refused save comes back as the same form carrying the staff member's own
     words -- not a JSON error that throws their typing away."""
-    template = (
-        "admin/document_edit_agreement.html"
-        if document.type == DocumentType.agreement
-        else "admin/document_edit_beo.html"
-    )
+    template = _editor_template_for(document.type)
     # Only on the document approval would actually write to. A superseded
     # (but still draft) version renders no panel, so the page cannot show
     # one document's values above a form that edits another.
