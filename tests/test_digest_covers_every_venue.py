@@ -13,6 +13,7 @@ import datetime as dt
 from decimal import Decimal
 
 from app.models import Space, Venue
+from app.seed import UNASSIGNED_SPACE_NAME
 from app.send_digest import _group_by_recipient
 from app.services.digest import build_digest, render_combined_digest
 
@@ -44,6 +45,13 @@ def _second_venue(db, *, slug="entrance", recipient=None):
     db.add(Space(
         venue_id=venue.id, name="Private Bar Function", capacity=80,
         standard_min_adults=40, min_food_spend=Decimal("1000"), is_bookable=True,
+    ))
+    # The triage space every public enquiry is filed against. Without it the
+    # venue's enquiry form 500s on submit -- so a fixture standing in for an
+    # operating venue has to have one.
+    db.add(Space(
+        venue_id=venue.id, name=UNASSIGNED_SPACE_NAME, capacity=0,
+        standard_min_adults=0, min_food_spend=Decimal("0"), is_bookable=False,
     ))
     db.flush()
     return venue

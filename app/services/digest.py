@@ -58,7 +58,9 @@ class DigestContent:
     # reported to a page somebody had to remember to open.
     findings: list = dataclasses.field(default_factory=list)
     flagged_bookings: list[Booking] = dataclasses.field(default_factory=list)
-    # The venue's own unfilled client-facing columns. NOT a reconciliation
+    # What this venue is missing before it can serve a client: unfilled
+    # client-facing columns, and the spaces without which its public enquiry
+    # form 500s. NOT a reconciliation
     # finding, because a finding hangs off a booking (ReconciliationFinding
     # joins Booking -> Space -> venue to find its venue at all) and this
     # condition has no booking -- it is the reason there may never be one.
@@ -133,8 +135,7 @@ def build_digest(db: Session, venue: Venue, *, as_of: dt.date | None = None) -> 
     """Imported here rather than at module scope: reconciliation imports
     booking_service, which imports this module's siblings, and a top-level
     import closes the cycle."""
-    from app.services import enquiry_classification, reconciliation
-    from app.seed import unfilled_columns
+    from app.services import enquiry_classification, reconciliation, venue_readiness
 
     return DigestContent(
         wizard_eligible=get_wizard_eligible_bookings(db, venue, as_of=as_of),
@@ -146,10 +147,10 @@ def build_digest(db: Session, venue: Venue, *, as_of: dt.date | None = None) -> 
         # simply absent tomorrow with nothing to mark as sent.
         findings=reconciliation.open_findings(db, venue),
         flagged_bookings=enquiry_classification.get_flagged_bookings_in_progress(db, venue),
-        # The SAME list the deploy log reports from, deliberately -- a
-        # second copy of "which columns matter" is how the two come to
-        # disagree about whether a venue is ready.
-        venue_gaps=unfilled_columns(venue),
+        # The SAME check /healthz folds to a boolean, and its column list is
+        # seed's -- a second copy of "which columns matter" is how a deploy
+        # log comes to say ready while an email says not.
+        venue_gaps=list(venue_readiness.check(db, venue).gaps),
     )
 
 
@@ -165,17 +166,21 @@ def _item_lines(content: DigestContent, *, dashboard_base_url: str) -> list[str]
         # is among the gaps it cannot take a booking or issue an invoice
         # at all -- so every other section here would be empty for the
         # wrong reason.
-        from app.seed import HARD_BLOCK_COLUMNS
+        from app.services.venue_readiness import BLOCKING_CONSEQUENCE, partition
 
-        blocking = [c for c in content.venue_gaps if c in HARD_BLOCK_COLUMNS]
-        lines.append(f"VENUE SET-UP INCOMPLETE ({len(content.venue_gaps)} unfilled)")
-        lines.append(f"  - {', '.join(content.venue_gaps)}")
-        lines.append("  - These print BLANK on invoices, agreements and Event Orders.")
-        if blocking:
-            lines.append(
-                f"  - {', '.join(blocking)} is worse than blank: this venue cannot take a "
-                "booking or issue an invoice until it is set."
-            )
+        # partition(), not a second comprehension over the same list -- the
+        # split is one implementation so the email and the Readiness object
+        # cannot come to disagree about which gaps are the serious ones.
+        blocking, cosmetic = partition(content.venue_gaps)
+        lines.append(f"VENUE SET-UP INCOMPLETE ({len(content.venue_gaps)})")
+        # BLOCKING FIRST, and each with its own sentence. A flat list reads as
+        # equally cosmetic, and a missing triage space is not cosmetic -- it is
+        # a 500 on the enquiry form with the lead lost.
+        for gap in blocking:
+            lines.append(f"  - {gap}: {BLOCKING_CONSEQUENCE[gap]}.")
+        if cosmetic:
+            lines.append(f"  - {', '.join(cosmetic)}")
+            lines.append("  - These print BLANK on invoices, agreements and Event Orders.")
         # No link: nothing in the admin edits a venue row (checked
         # 2026-09-14 -- there is no /admin/venues route), so a link here
         # would be a 404 in an email sent at 20:30.

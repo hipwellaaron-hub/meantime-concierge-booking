@@ -57,7 +57,7 @@ def test_a_fully_filled_venue_reads_ready(db, hamilton):
 
     body = _healthz(db)
 
-    assert body["checks"]["venues_client_ready"] is True
+    assert body["checks"]["venues_ready"] is True
 
 
 @pytest.mark.parametrize("column", ["abn", "bank_bsb", "contact_email", "reference_prefix"])
@@ -67,7 +67,7 @@ def test_one_unfilled_column_reads_not_ready_and_degrades(db, hamilton, column):
 
     body = _healthz(db)
 
-    assert body["checks"]["venues_client_ready"] is False, (
+    assert body["checks"]["venues_ready"] is False, (
         f"{column} is unfilled and /healthz still reports the venue ready"
     )
     assert body["status"] == "degraded"
@@ -80,7 +80,7 @@ def test_an_empty_string_counts_as_unfilled(db, hamilton):
     hamilton.abn = "   "
     db.flush()
 
-    assert _healthz(db)["checks"]["venues_client_ready"] is False
+    assert _healthz(db)["checks"]["venues_ready"] is False
 
 
 def test_a_second_venue_is_asked_too(db, hamilton):
@@ -90,7 +90,9 @@ def test_a_second_venue_is_asked_too(db, hamilton):
 
     Built complete and then broken, so the probe fails on the missing
     column rather than on the second venue merely existing."""
-    from app.models import Venue
+    from decimal import Decimal
+
+    from app.models import Space, Venue
 
     entrance = Venue(name="Meantime The Entrance", slug="entrance")
     for column in seed.CLIENT_FACING_COLUMNS:
@@ -98,8 +100,17 @@ def test_a_second_venue_is_asked_too(db, hamilton):
     entrance.reference_prefix = "ENT"
     db.add(entrance)
     db.flush()
+    db.add(Space(
+        venue_id=entrance.id, name="Private Bar Function", capacity=80,
+        standard_min_adults=40, min_food_spend=Decimal("1000"), is_bookable=True,
+    ))
+    db.add(Space(
+        venue_id=entrance.id, name=seed.UNASSIGNED_SPACE_NAME, capacity=0,
+        standard_min_adults=0, min_food_spend=Decimal("0"), is_bookable=False,
+    ))
+    db.flush()
 
-    assert _healthz(db)["checks"]["venues_client_ready"] is True, (
+    assert _healthz(db)["checks"]["venues_ready"] is True, (
         "a complete second venue already reads not-ready -- the probe below "
         "would pass for the wrong reason"
     )
@@ -112,12 +123,12 @@ def test_a_second_venue_is_asked_too(db, hamilton):
     # must fail for any implementation that asks fewer than all of them.
     entrance.reference_prefix = None
     db.flush()
-    broke_the_second = _healthz(db)["checks"]["venues_client_ready"]
+    broke_the_second = _healthz(db)["checks"]["venues_ready"]
 
     entrance.reference_prefix = "ENT"
     hamilton.reference_prefix = None
     db.flush()
-    broke_the_first = _healthz(db)["checks"]["venues_client_ready"]
+    broke_the_first = _healthz(db)["checks"]["venues_ready"]
 
     assert broke_the_second is False, (
         "a complete Hamilton folded a half-filled second venue into 'ready'"
@@ -269,5 +280,12 @@ def test_the_digest_and_the_endpoint_read_the_same_list(db, hamilton):
     endpoint_src = inspect.getsource(health.healthz)
     digest_src = inspect.getsource(digest.build_digest)
 
-    assert "seed.unfilled_columns" in endpoint_src
-    assert "unfilled_columns(venue)" in digest_src
+    assert "venue_readiness.check(db, v)" in endpoint_src
+    assert "venue_readiness.check(db, venue)" in digest_src
+
+    from app.services import venue_readiness
+
+    assert "unfilled_columns" in inspect.getsource(venue_readiness.check), (
+        "venue_readiness no longer reads seed's column list -- there are two "
+        "lists again"
+    )

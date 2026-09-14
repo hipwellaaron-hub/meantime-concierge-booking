@@ -26,10 +26,9 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
-from app import seed
 from app.database import get_db
 from app.models import Venue
-from app.services import ai_access, drafting, schema_audit
+from app.services import ai_access, drafting, schema_audit, venue_readiness
 from app.services import enquiry_classification, stripe_integration
 from app.services.notifications import is_gmail_smtp_configured
 
@@ -123,32 +122,30 @@ def healthz(db: Session = Depends(get_db)):
             for venue in venues
             if stripe_integration.is_configured_for(venue)
         )
-        # Has every venue been given the columns a CLIENT reads? There is no
-        # fallback for any of them on purpose -- nothing substitutes another
-        # company's bank details -- so an unfilled one prints blank on an
-        # invoice, an agreement or an Event Order. reference_prefix is worse
-        # than blank: the venue cannot take a booking (ValueError in
-        # booking.generate_reference_code) or issue an invoice (a RAISE in
-        # migration f3d9b7c1a468's trigger) at all.
+        # Can every venue actually serve a client? Unfilled client-facing
+        # columns (no fallback exists for any of them on purpose, so they
+        # print blank on documents), plus the two spaces without which the
+        # venue is worse than blank -- a venue with no "Unassigned (pending
+        # triage)" space serves its enquiry FORM as a 200 and 500s on the
+        # submit, losing the lead with no booking and no notification.
+        # Proven by running it, 2026-09-14. See app/services/venue_readiness.
         #
-        # The list existed and was CHECKED -- once, by `python -m app.seed`
-        # at deploy, into a log line read by whoever ran the deploy on the
-        # day they ran it. A second venue's row is typed in by hand, days
-        # after the deploy that would have reported on it.
+        # All of it was already knowable and none of it was being asked at
+        # runtime: `python -m app.seed` said it once, at deploy, into a log
+        # line. A second venue's row is typed in by hand, days later.
         #
         # A BOOLEAN ONLY, detail logged: same rule as schema_drift above,
-        # and the missing columns of a named company are not a fact a public
-        # monitoring URL hands out. Aaron reads the same gaps by name in the
-        # 20:30 digest (digest.DigestContent.venue_gaps), off the same list.
-        venue_gaps = {v.slug: seed.unfilled_columns(v) for v in venues}
-        venues_client_ready = not any(venue_gaps.values())
-        if not venues_client_ready:
-            for slug, gaps in venue_gaps.items():
-                if gaps:
-                    logger.warning(
-                        "venue %s has %d unfilled client-facing column(s): %s",
-                        slug, len(gaps), ", ".join(gaps),
-                    )
+        # and what a named company is missing is not a fact a public
+        # monitoring URL hands out. Aaron reads the gaps by name in the
+        # 20:30 digest, off the same check.
+        readiness = [venue_readiness.check(db, v) for v in venues]
+        venues_ready = all(r.is_ready for r in readiness)
+        for r in readiness:
+            if not r.is_ready:
+                logger.warning(
+                    "venue %s is not ready: %d gap(s) -- %s",
+                    r.slug, len(r.gaps), ", ".join(r.gaps),
+                )
         checks = {
             "database": True,
             "venues_present": True,
@@ -181,7 +178,7 @@ def healthz(db: Session = Depends(get_db)):
             # of what is unguarded.
             "schema_drift": schema_drifting,
             "stripe_account_pinned": stripe_account_pinned,
-            "venues_client_ready": venues_client_ready,
+            "venues_ready": venues_ready,
             # THE AI GATES, reported because they are now a DELIBERATE
             # long-lived state rather than a transient one: Aaron, 2026-09-14,
             # "keep AI draft off for both venues, it's something we can work
@@ -209,7 +206,7 @@ def healthz(db: Session = Depends(get_db)):
                 # DEGRADES, unlike the gates below it. An unfilled column is
                 # not a decision anybody made; it is a document that will go
                 # out wrong, or a venue that cannot take a booking.
-                or not venues_client_ready
+                or not venues_ready
             )
             else "ok"
         )
