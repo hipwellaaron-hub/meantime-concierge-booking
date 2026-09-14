@@ -183,6 +183,10 @@ def test_the_client_page_prints_what_is_payable_now_in_both_places(client, db, l
     )
     assert "Total Incl Tax</td><td>$1450.00" in page.text, "the record of what was asked for moved"
     assert "Less: deposit received" in page.text
+    # Nothing has been paid on THIS invoice. Seen on the dev preview of
+    # HAM-1018 printing "$0" here beside a column of "$1450.00"s: the
+    # coalesce'd sum arrives as an integer and Decimal(0) has no places.
+    assert "Received</td><td>$0.00" in page.text, "the Received figure is not two-place money"
 
 
 def test_the_page_names_the_invoice_the_deposit_sits_on(client, db, loft, contact):

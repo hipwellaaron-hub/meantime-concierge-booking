@@ -622,7 +622,12 @@ def get_total_paid(db: Session, invoice_id: uuid.UUID) -> Decimal:
     total = db.execute(
         select(func.coalesce(func.sum(Payment.amount), 0)).where(Payment.invoice_id == invoice_id)
     ).scalar_one()
-    return Decimal(total)
+    # Two places, always. coalesce(sum(...), 0) hands back the integer 0
+    # when nothing has been paid, and Decimal(0) renders as "$0" on the
+    # invoice beside a column of "$1450.00"s -- seen on HAM-1018's preview
+    # on 2026-09-14. Every other money figure on that page is 2dp; this one
+    # arriving from the database is not a reason for it to be the odd one.
+    return Decimal(total).quantize(Decimal("0.01"))
 
 
 def get_payment_summary(db: Session, invoice: Invoice) -> dict:
