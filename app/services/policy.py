@@ -171,6 +171,38 @@ def final_balance_due_date(event_date: dt.date | None, *, issued_on: dt.date) ->
 # gives no exact duration -- 21 days confirmed by Aaron.
 WIZARD_TOKEN_TTL_DAYS = 21
 
+# Grace on top of the date the client is TOLD to complete by. The resume
+# email names an absolute due date (event_date - WIZARD_TRIGGER_DAYS_
+# BEFORE_EVENT) while the link expired 21 days after it was created --
+# two unrelated clocks. Send a wizard early, as staff do when a client
+# asks months ahead, and the link dies before the date the client was
+# given, with the email still naming it. A few days past the due date
+# costs nothing and means the promise in the email is one the link can
+# keep. See wizard.get_or_create_session, which takes the later of the two.
+WIZARD_TOKEN_GRACE_DAYS_AFTER_DUE = 3
+
+
+def wizard_token_expiry(event_date, *, created_at):
+    """When a wizard link stops working: 21 days from issue, or a few days
+    past the due date the client is told, whichever is LATER.
+
+    An undated booking cannot have a due date, so the flat TTL stands --
+    and create_session already refuses to issue a link before the date is
+    confirmed, so that branch is for callers that bypass it.
+    """
+    import datetime as _dt
+
+    flat = created_at + _dt.timedelta(days=WIZARD_TOKEN_TTL_DAYS)
+    if event_date is None:
+        return flat
+    due = event_date - _dt.timedelta(days=WIZARD_TRIGGER_DAYS_BEFORE_EVENT)
+    covers_the_promise = _dt.datetime.combine(
+        due + _dt.timedelta(days=WIZARD_TOKEN_GRACE_DAYS_AFTER_DUE),
+        _dt.time(23, 59, 59),
+        tzinfo=created_at.tzinfo,
+    )
+    return max(flat, covers_the_promise)
+
 
 # --- Venue identity & banking -----------------------------------------------
 # Confirmed directly by Aaron, 2026-08-11 -- not in the Master Policy doc,

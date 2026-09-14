@@ -25,6 +25,7 @@ from app.models.menu_item import MenuItemCategory
 from app.models.wizard_session import WizardSession, WizardSessionStatus, WizardStep
 from app.services import catalogue, wizard_generation
 from app.services.food_guidance import FoodGuidance, generate_food_guidance
+from app.services import policy
 from app.services.policy import WIZARD_TOKEN_TTL_DAYS, WIZARD_TRIGGER_DAYS_BEFORE_EVENT
 from app.services.validation import (
     SETUP_ACCESS_STANDARD_TIME,
@@ -89,9 +90,16 @@ def get_or_create_session(db: Session, booking: Booking, *, actor: str) -> Wizar
     if contact is None or not is_valid_email(contact.email):
         raise ValueError("cannot send a wizard link: this booking has no contact with a valid email address on file")
 
+    # NEVER BEFORE THE DATE THE CLIENT IS TOLD. The resume email names an
+    # absolute due date derived from the event; the link used to expire a
+    # flat 21 days after issue. Two unrelated clocks, and a wizard sent
+    # early -- which is what staff do when a client asks months ahead --
+    # died before the date its own email named.
     session = WizardSession(
         booking_id=booking.id,
-        expires_at=dt.datetime.now(dt.timezone.utc) + dt.timedelta(days=WIZARD_TOKEN_TTL_DAYS),
+        expires_at=policy.wizard_token_expiry(
+            booking.event_date, created_at=dt.datetime.now(dt.timezone.utc)
+        ),
     )
     db.add(session)
     db.flush()
