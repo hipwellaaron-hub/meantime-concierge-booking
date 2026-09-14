@@ -33,6 +33,12 @@ from app.models.invoice import InvoiceStatus
 from app.services import invoicing
 from app.services.wizard import get_wizard_eligible_bookings
 
+# How many bookings are named under one reconciliation check before the
+# rest are summarised. Enough that a small, urgent group is listed in
+# full; small enough that a standing group of thirty cannot push the
+# urgent one off the screen of a phone read first thing.
+FINDINGS_LISTED_PER_CHECK = 5
+
 
 @dataclasses.dataclass
 class OverdueInvoice:
@@ -45,10 +51,34 @@ class OverdueInvoice:
 class DigestContent:
     wizard_eligible: list[Booking]
     overdue_invoices: list[OverdueInvoice]
+    # Aaron, 2026-09-14: "If a check fires and I don't hear about it, we've
+    # built a log, not a safeguard." Until now the digest carried the two
+    # sections above and nothing else, so every reconciliation check and
+    # every flag -- including the overpayment guard shipped this morning --
+    # reported to a page somebody had to remember to open.
+    findings: list = dataclasses.field(default_factory=list)
+    flagged_bookings: list[Booking] = dataclasses.field(default_factory=list)
 
     @property
     def is_empty(self) -> bool:
-        return not (self.wizard_eligible or self.overdue_invoices)
+        return not (
+            self.wizard_eligible
+            or self.overdue_invoices
+            or self.findings
+            or self.flagged_bookings
+        )
+
+    @property
+    def item_count(self) -> int:
+        """What the subject line counts. One implementation, so the number
+        in the subject cannot disagree with the number of lines in the
+        body -- the two used to be computed separately."""
+        return (
+            len(self.wizard_eligible)
+            + len(self.overdue_invoices)
+            + len(self.findings)
+            + len(self.flagged_bookings)
+        )
 
 
 def get_overdue_invoices(db: Session, venue: Venue, *, as_of: dt.date | None = None) -> list[OverdueInvoice]:
@@ -76,9 +106,21 @@ def get_overdue_invoices(db: Session, venue: Venue, *, as_of: dt.date | None = N
 
 
 def build_digest(db: Session, venue: Venue, *, as_of: dt.date | None = None) -> DigestContent:
+    """Imported here rather than at module scope: reconciliation imports
+    booking_service, which imports this module's siblings, and a top-level
+    import closes the cycle."""
+    from app.services import enquiry_classification, reconciliation
+
     return DigestContent(
         wizard_eligible=get_wizard_eligible_bookings(db, venue, as_of=as_of),
         overdue_invoices=get_overdue_invoices(db, venue, as_of=as_of),
+        # The SAME helpers Triage renders, deliberately. The digest and the
+        # page cannot then disagree about what is open -- the module's own
+        # rule, and the reason every section here is self-clearing: this
+        # reports current state, so a finding resolved during the day is
+        # simply absent tomorrow with nothing to mark as sent.
+        findings=reconciliation.open_findings(db, venue),
+        flagged_bookings=enquiry_classification.get_flagged_bookings_in_progress(db, venue),
     )
 
 
@@ -103,6 +145,51 @@ def _item_lines(content: DigestContent, *, dashboard_base_url: str) -> list[str]
             )
         lines.append("")
 
+    if content.flagged_bookings:
+        # Flags first among the new sections: a flag is raised by a person
+        # or by something that just happened to money (the overpayment
+        # guard raises one), where a finding is a standing condition.
+        lines.append(f"FLAGGED, STILL OPEN ({len(content.flagged_bookings)})")
+        for b in content.flagged_bookings:
+            lines.append(
+                f"  - {b.event_name} ({format_date_dmy(b.event_date) if b.event_date else 'date TBD'}) "
+                f"-- {dashboard_base_url}/admin/bookings/{b.id}"
+            )
+        lines.append("")
+
+    if content.findings:
+        # GROUPED BY CHECK, and that is the whole design of this section.
+        # Listing every finding flat is what made Triage unreadable: 37
+        # migration-era CONFIRMED_WITHOUT_GATES rows buried four IMMINENT
+        # bookings inside a fortnight, and Aaron nearly missed them. Grouped,
+        # the 37 collapse to one line with a count and the urgent check gets
+        # its own heading.
+        by_check: dict[str, list] = {}
+        for f in content.findings:
+            by_check.setdefault(f.check_code, []).append(f)
+
+        lines.append(f"RECONCILIATION ({len(content.findings)} open)")
+        # Smallest groups first: a check with three bookings is nearly always
+        # the one that needs reading, and a check with thirty is nearly
+        # always a standing condition somebody already knows about.
+        for check_code, group in sorted(by_check.items(), key=lambda kv: (len(kv[1]), kv[0])):
+            label = check_code.replace("_", " ").title()
+            lines.append(f"  {label} ({len(group)})")
+            for f in group[:FINDINGS_LISTED_PER_CHECK]:
+                booking = f.booking
+                lines.append(
+                    f"    - {booking.event_name} "
+                    f"({format_date_dmy(booking.event_date) if booking.event_date else 'date TBD'}): "
+                    f"{f.detail} -- {dashboard_base_url}/admin/bookings/{booking.id}"
+                )
+            remaining = len(group) - FINDINGS_LISTED_PER_CHECK
+            if remaining > 0:
+                # Said out loud rather than silently truncated: a section
+                # that quietly shows five of thirty reads as "there are
+                # five".
+                lines.append(f"    ... and {remaining} more on Triage")
+        lines.append("")
+
     return lines
 
 
@@ -113,7 +200,7 @@ def render_digest_text(content: DigestContent, *, dashboard_base_url: str) -> tu
     Plain text, not HTML -- this is an internal operational email read in an
     inbox, not a client-facing document; it always renders correctly
     everywhere and needs no template."""
-    total = len(content.wizard_eligible) + len(content.overdue_invoices)
+    total = content.item_count
     subject = f"Meantime Concierge: {total} item{'s' if total != 1 else ''} need attention" if total else "Meantime Concierge: all clear"
 
     lines = _item_lines(content, dashboard_base_url=dashboard_base_url)
@@ -141,10 +228,11 @@ def render_combined_digest(
     the one that matters after a venue is added and something fails to wire
     up.
     """
-    totals = {
-        venue.id: len(content.wizard_eligible) + len(content.overdue_invoices)
-        for venue, content in per_venue
-    }
+    # content.item_count, not a second hand-written sum: the single-venue
+    # renderer already computes this one way, and two copies of "how many
+    # items is that" is exactly how a subject line comes to disagree with
+    # the body it summarises.
+    totals = {venue.id: content.item_count for venue, content in per_venue}
     total = sum(totals.values())
     subject = (
         f"Meantime Concierge: {total} item{'s' if total != 1 else ''} need attention"
