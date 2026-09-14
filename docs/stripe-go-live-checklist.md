@@ -65,13 +65,24 @@ in the sequence where a real live payment could go unreconciled:
    moment, invoice pages start generating live Payment Links, and the
    webhook secret needed to verify the resulting events is already in
    place — no gap between the two.
-5. **Redeploy** (or restart) the service. Both values are read once, at
-   process start, via `os.environ.get(...)` in `app/services/
-   stripe_integration.py` and `app/api/webhooks.py` — they are **not**
-   re-read from Railway on the fly, and (confirmed while building the mode
-   indicator) they are also **not** sourced from a local `.env` file the
-   way `DATABASE_URL` is. A stale process will keep using whatever it
-   already had in memory.
+5. **Redeploy** (or restart) the service — Railway does this for you when
+   you change a variable, so in practice this step is confirming it
+   happened, not doing it.
+
+   This step used to say both values were "read once, at process start"
+   and that a stale process would keep using what it had in memory. That
+   stopped being true on 2026-09-14. Both are read LIVE now:
+   `stripe_integration._process_stripe_key()` and
+   `stripe_integration.process_webhook_secret()` call `os.environ.get(...)`
+   on every use, so a rotated secret takes effect on the next request with
+   no restart. The old behaviour was a real hazard rather than a detail —
+   a webhook arriving in the gap between setting the secret and the
+   process seeing it failed verification, was retried by Stripe for about
+   three days, and was then dropped: a client charged, an invoice still
+   saying unpaid, nothing raised on either side.
+
+   Still **not** sourced from a local `.env` the way `DATABASE_URL` is —
+   that part was and remains correct.
 6. **Confirm the mode indicator now reads "Stripe live"** in the admin
    dashboard header/banner. If it still says test or not-configured, stop —
    the redeploy didn't pick up the new key, or the wrong variable was set.

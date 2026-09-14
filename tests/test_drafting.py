@@ -716,7 +716,10 @@ def test_the_prompt_marks_which_rooms_the_gate_lets_it_offer(db, hamilton, loft,
     assert offerable["The Loft"] is False
     assert offerable["The Mezzanine"] is True
     assert row.prompt_version == "p2.2"
-    assert "ROOMS. Offer only a room whose availability entry says" in drafting.SYSTEM_PROMPT
+    # The TEMPLATE, not a Hamilton-built constant: this sentence is
+    # venue-independent instruction text, and the constant it used to
+    # read was Hamilton's prompt baked at import.
+    assert "ROOMS. Offer only a room whose availability entry says" in drafting._SYSTEM_PROMPT_TEMPLATE
     assert row.facts["event"]["room"] is None
 
 

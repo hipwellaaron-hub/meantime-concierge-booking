@@ -100,7 +100,12 @@ def build_system_prompt(profile: venue_profile.VenueProfile) -> str:
 
 
 # Hamilton's prompt, for anything that wants to read it without a booking.
-SYSTEM_PROMPT = build_system_prompt(venue_profile.default())
+# NO MODULE-LEVEL SYSTEM_PROMPT. There was one, built from Hamilton's
+# profile at import, and draft_for_booking never used it -- it builds the
+# prompt per call from the booking's own venue (see build_system_prompt
+# below its call site). One test read it, which is how it survived. A
+# Hamilton-shaped prompt sitting in module scope in a two-venue codebase is
+# the same trap draft_rules.REQUIRED_SIGNATURE_* was.
 
 
 def _serialise(value):

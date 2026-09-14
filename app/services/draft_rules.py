@@ -45,13 +45,15 @@ RULES_ERROR = "rules_error"
 
 # The sign-off and the venue-specific figures come from the venue profile
 # (app.services.venue_profile), never from literals here -- see
-# validate(profile=...). These module constants remain as Hamilton's
-# values for anything that imported them.
+# validate(profile=...).
+#
+# REQUIRED_SIGNATURE_NAME/VENUE/EMAIL used to sit here, computed at import
+# from Hamilton's profile, "for anything that imported them". Nothing did.
+# Three Hamilton values in a two-venue codebase, alive only as a trap: the
+# next person needing a signature name would have found them and put
+# Hamilton's on an Entrance draft. Deleted rather than kept for a caller
+# that never arrived.
 from app.services import venue_profile as _venue_profile  # noqa: E402
-
-REQUIRED_SIGNATURE_NAME = _venue_profile.default().contact_name
-REQUIRED_SIGNATURE_VENUE = _venue_profile.default().trading_name
-REQUIRED_SIGNATURE_EMAIL = _venue_profile.default().contact_email
 
 # Walkthroughs are Wednesday to Sunday, 3-5pm. A client once arrived on a
 # closed Monday because the closure was left out, so a draft that offers a
@@ -223,7 +225,19 @@ def _validate(draft: str, *, client_asked_for_figures: bool, profile=None, rooms
             RuleViolation(EM_DASH, BLOCK, "Contains an em dash. Use commas, full stops or brackets.")
         )
 
-    profile = profile or _venue_profile.default()
+    if profile is None:
+        # A CALLER THAT FORGOT. The live path (drafting.draft_for_booking)
+        # always passes the booking's own venue, so reaching here in
+        # production means an Entrance draft is about to be checked against
+        # Hamilton's signature lines and walkthrough hours -- and pass.
+        # Tests call validate() without one deliberately; production must
+        # never do it silently.
+        logger.warning(
+            "draft_rules.validate called with no venue profile -- falling back to %s's. "
+            "A draft for another venue would be checked against the wrong house rules.",
+            _venue_profile.default().trading_name,
+        )
+        profile = _venue_profile.default()
     lowered = text.lower()
     missing_signature = [
         label for label in profile.signature_lines if label.lower() not in lowered
