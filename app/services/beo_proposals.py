@@ -431,6 +431,12 @@ def final_invoice_prefill(document) -> list[dict]:
             "description": name,
             "quantity": raw.get("quantity") or 1,
             "unit_price": raw.get("unit_price") or "",
+            # Carried so the invoice built from this form stays catalogue-
+            # built: sync_final_invoice_from_food only refreshes a draft
+            # whose every charge line has one. Without it, an invoice made
+            # from the Event Order's own food order was never auto-syncable
+            # -- it only looked as though it came from there.
+            "menu_item_id": raw.get("menu_item_id") or "",
         })
     return rows
 

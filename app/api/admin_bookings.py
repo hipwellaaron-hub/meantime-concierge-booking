@@ -1689,12 +1689,15 @@ def create_final_invoice(
     description: list[str] = Form(...),
     quantity: list[str] = Form(...),
     unit_price: list[str] = Form(...),
+    # Hidden, and optional on purpose -- see _parse_invoice_line_items on why
+    # a short or absent array must not truncate the real charge lines.
+    menu_item_id: list[str] = Form(default=[]),
     db: Session = Depends(get_db),
     staff: StaffUser = Depends(require_staff),
 ):
     booking = _get_booking_or_404(request, db, booking_id)
 
-    line_items = _parse_invoice_line_items(description, quantity, unit_price)
+    line_items = _parse_invoice_line_items(description, quantity, unit_price, menu_item_id)
 
     try:
         invoicing.create_final_invoice(db, booking, line_items=line_items, due_date=due_date, actor=_actor(staff))
@@ -1772,14 +1775,42 @@ def preview_invoice(
 
 
 def _parse_invoice_line_items(
-    description: list[str], quantity: list[str], unit_price: list[str]
+    description: list[str], quantity: list[str], unit_price: list[str],
+    menu_item_id: list[str] | None = None,
 ) -> list[dict]:
     """Shared by the create and edit invoice forms: turns the parallel
     description/quantity/unit_price arrays into line-item dicts, skipping
     blank rows and rejecting unparseable numbers. A negative unit_price is
-    allowed on purpose -- that's how a discount line is entered."""
+    allowed on purpose -- that's how a discount line is entered.
+
+    MENU_ITEM_ID SURVIVES A ROUND TRIP, and until 2026-09-14 it did not.
+    This function built {description, quantity, unit_price} and nothing
+    else, and neither invoice template posted an id back -- so opening the
+    edit form and pressing Save with nothing changed stripped every id from
+    the invoice. That matters because beo_proposals._is_catalogue_built
+    refreshes a draft final invoice only while EVERY charge line carries
+    one: a booking that was auto-syncable became permanently manual, and
+    the trigger was being careful enough to open the form and look.
+
+    The identical hazard was found and fixed on the Event Order edit form
+    and never carried across to the invoice ones.
+
+    The array is OPTIONAL and short arrays are tolerated, because the id is
+    a hidden field: a form that does not render it, an older cached page,
+    or a row a staff member added with the Add-line button all post fewer
+    ids than descriptions. zip() would silently truncate the whole line set
+    to the shorter array and drop real charge lines, so the ids are indexed
+    positionally against the row and default to absent.
+
+    An id is only ever carried FORWARD from what the form was given. A
+    blank one stays blank -- nothing here resolves a description back to a
+    catalogue item, because a staff member who retyped a description meant
+    to change it, and guessing the id back would reattach a line to an item
+    it no longer names.
+    """
+    ids = list(menu_item_id or [])
     line_items = []
-    for desc, qty, price in zip(description, quantity, unit_price):
+    for row, (desc, qty, price) in enumerate(zip(description, quantity, unit_price)):
         desc = desc.strip()
         if not desc:
             continue
@@ -1788,7 +1819,11 @@ def _parse_invoice_line_items(
             parsed_price = Decimal(price)
         except InvalidOperation:
             raise HTTPException(status_code=422, detail=f"Invalid quantity or unit price for line item '{desc}'")
-        line_items.append({"description": desc, "quantity": str(parsed_qty), "unit_price": str(parsed_price)})
+        item = {"description": desc, "quantity": str(parsed_qty), "unit_price": str(parsed_price)}
+        carried = ids[row].strip() if row < len(ids) else ""
+        if carried:
+            item["menu_item_id"] = carried
+        line_items.append(item)
     if not line_items:
         raise HTTPException(status_code=422, detail="At least one line item is required")
     return line_items
@@ -1840,6 +1875,9 @@ def edit_invoice(
     description: list[str] = Form(...),
     quantity: list[str] = Form(...),
     unit_price: list[str] = Form(...),
+    # Hidden, and optional on purpose -- see _parse_invoice_line_items on why
+    # a short or absent array must not truncate the real charge lines.
+    menu_item_id: list[str] = Form(default=[]),
     db: Session = Depends(get_db),
     staff: StaffUser = Depends(require_staff),
 ):
@@ -1847,7 +1885,7 @@ def edit_invoice(
     invoice = db.get(Invoice, invoice_id)
     if invoice is None or invoice.booking_id != booking_id:
         raise HTTPException(status_code=404, detail="Invoice not found on this booking")
-    line_items = _parse_invoice_line_items(description, quantity, unit_price)
+    line_items = _parse_invoice_line_items(description, quantity, unit_price, menu_item_id)
     try:
         invoicing.update_invoice(db, invoice, line_items=line_items, due_date=due_date, actor=_actor(staff))
     except ValueError as exc:

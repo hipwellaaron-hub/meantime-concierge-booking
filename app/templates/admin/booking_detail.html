@@ -575,14 +575,14 @@
          and the proposal path that creates the invoice outright. #}
       {% for row in final_invoice_prefill %}
       <div class="field-row">
-        <div><label>Description</label><input type="text" name="description" value="{{ row.description }}"></div>
+        <div><label>Description</label><input type="text" name="description" value="{{ row.description }}"><input type="hidden" name="menu_item_id" value="{{ row.menu_item_id }}"></div>
         <div style="flex:0 0 90px;"><label>Qty</label><input type="text" name="quantity" value="{{ row.quantity }}"></div>
         <div style="flex:0 0 120px;"><label>Unit price</label><input type="text" name="unit_price" value="{{ row.unit_price }}"></div>
       </div>
       {% endfor %}
       {% for i in range([6 - (final_invoice_prefill | length if final_invoice_prefill else 0), 2] | max) %}
       <div class="field-row">
-        <div><label>Description</label><input type="text" name="description"></div>
+        <div><label>Description</label><input type="text" name="description"><input type="hidden" name="menu_item_id" value=""></div>
         <div style="flex:0 0 90px;"><label>Qty</label><input type="text" name="quantity" value="1"></div>
         <div style="flex:0 0 120px;"><label>Unit price</label><input type="text" name="unit_price"></div>
       </div>
