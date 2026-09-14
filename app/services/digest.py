@@ -58,6 +58,13 @@ class DigestContent:
     # reported to a page somebody had to remember to open.
     findings: list = dataclasses.field(default_factory=list)
     flagged_bookings: list[Booking] = dataclasses.field(default_factory=list)
+    # The venue's own unfilled client-facing columns. NOT a reconciliation
+    # finding, because a finding hangs off a booking (ReconciliationFinding
+    # joins Booking -> Space -> venue to find its venue at all) and this
+    # condition has no booking -- it is the reason there may never be one.
+    # It lived in one line of the deploy log, which is read once, by
+    # whoever ran the deploy, on the day it ran.
+    venue_gaps: list[str] = dataclasses.field(default_factory=list)
 
     @property
     def is_empty(self) -> bool:
@@ -66,6 +73,7 @@ class DigestContent:
             or self.overdue_invoices
             or self.findings
             or self.flagged_bookings
+            or self.venue_gaps
         )
 
     @property
@@ -78,6 +86,12 @@ class DigestContent:
             + len(self.overdue_invoices)
             + len(self.findings)
             + len(self.flagged_bookings)
+            # ONE item, not one per column. Fourteen unfilled columns on a
+            # venue that has not been set up yet is one job for one person,
+            # and counting them individually would put "15 items need
+            # attention" in the subject line over a single new venue and
+            # bury the bookings under it.
+            + (1 if self.venue_gaps else 0)
         )
 
 
@@ -120,6 +134,7 @@ def build_digest(db: Session, venue: Venue, *, as_of: dt.date | None = None) -> 
     booking_service, which imports this module's siblings, and a top-level
     import closes the cycle."""
     from app.services import enquiry_classification, reconciliation
+    from app.seed import unfilled_columns
 
     return DigestContent(
         wizard_eligible=get_wizard_eligible_bookings(db, venue, as_of=as_of),
@@ -131,6 +146,10 @@ def build_digest(db: Session, venue: Venue, *, as_of: dt.date | None = None) -> 
         # simply absent tomorrow with nothing to mark as sent.
         findings=reconciliation.open_findings(db, venue),
         flagged_bookings=enquiry_classification.get_flagged_bookings_in_progress(db, venue),
+        # The SAME list the deploy log reports from, deliberately -- a
+        # second copy of "which columns matter" is how the two come to
+        # disagree about whether a venue is ready.
+        venue_gaps=unfilled_columns(venue),
     )
 
 
@@ -139,6 +158,29 @@ def _item_lines(content: DigestContent, *, dashboard_base_url: str) -> list[str]
     looks like -- both the one-venue and the combined renderers go through
     it, so they cannot drift."""
     lines: list[str] = []
+
+    if content.venue_gaps:
+        # FIRST, above the bookings. A venue that cannot produce a correct
+        # document outranks a reminder about one, and if reference_prefix
+        # is among the gaps it cannot take a booking or issue an invoice
+        # at all -- so every other section here would be empty for the
+        # wrong reason.
+        from app.seed import HARD_BLOCK_COLUMNS
+
+        blocking = [c for c in content.venue_gaps if c in HARD_BLOCK_COLUMNS]
+        lines.append(f"VENUE SET-UP INCOMPLETE ({len(content.venue_gaps)} unfilled)")
+        lines.append(f"  - {', '.join(content.venue_gaps)}")
+        lines.append("  - These print BLANK on invoices, agreements and Event Orders.")
+        if blocking:
+            lines.append(
+                f"  - {', '.join(blocking)} is worse than blank: this venue cannot take a "
+                "booking or issue an invoice until it is set."
+            )
+        # No link: nothing in the admin edits a venue row (checked
+        # 2026-09-14 -- there is no /admin/venues route), so a link here
+        # would be a 404 in an email sent at 20:30.
+        lines.append("  - Set on the venues row directly; no admin page edits these yet.")
+        lines.append("")
 
     if content.wizard_eligible:
         lines.append(f"READY FOR THE GUIDED WIZARD ({len(content.wizard_eligible)})")

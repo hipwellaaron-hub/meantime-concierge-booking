@@ -18,9 +18,26 @@ from app.services.digest import build_digest, render_combined_digest
 
 
 def _second_venue(db, *, slug="entrance", recipient=None):
+    """FULLY SET UP, deliberately. This fixture used to carry a trading name
+    and a reference prefix and nothing else -- a venue that could not print
+    its own bank details on an invoice. Since 2026-09-14 the digest reports
+    that as its own section, which is the correct answer and made these
+    tests fail: they are about whether every venue gets a SECTION and
+    whether the subject counts across venues, not about a half-typed row.
+    A fixture that is not a venue anybody would operate cannot stand in for
+    one."""
     venue = Venue(
         name="The Entrance", slug=slug, trading_name="Meantime The Entrance",
-        reference_prefix="ENT", digest_recipient_email=recipient,
+        reference_prefix="ENT" if slug == "entrance" else slug[:3].upper(),
+        digest_recipient_email=recipient,
+        legal_name="Nice Try Events Pty Ltd", abn="00 000 000 000",
+        address="The Entrance NSW", phone="02 0000 0000",
+        contact_name="Aaron", contact_email=f"{slug}@example.test",
+        bank_account_name="Nice Try Events Pty Ltd",
+        bank_bsb="000-000", bank_account_number="00000000",
+        trading_days=[2, 3, 4, 5, 6],
+        stripe_secret_key_env=f"STRIPE_SECRET_KEY_{slug.upper()}",
+        stripe_webhook_secret_env=f"STRIPE_WEBHOOK_SECRET_{slug.upper()}",
     )
     db.add(venue)
     db.flush()

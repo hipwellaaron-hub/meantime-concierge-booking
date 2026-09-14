@@ -20,16 +20,20 @@ information leak.
 """
 
 import datetime as dt
+import logging
 
 from fastapi import APIRouter, Depends
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
+from app import seed
 from app.database import get_db
 from app.models import Venue
 from app.services import ai_access, drafting, schema_audit
 from app.services import enquiry_classification, stripe_integration
 from app.services.notifications import is_gmail_smtp_configured
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["health"])
 
@@ -68,7 +72,10 @@ def healthz(db: Session = Depends(get_db)):
         # No venue is NAMED in the response: this endpoint is public, its own
         # docstring forbids leaking config, and which companies operate here
         # is not a fact a monitoring URL should hand out. One folded boolean.
-        venues = db.scalars(select(Venue)).all()
+        # Ordered, so the log lines below come out in the same order as
+        # seed.report_every_venue's -- the deploy log and the runtime one
+        # are read side by side when a venue is being set up.
+        venues = db.scalars(select(Venue).order_by(Venue.slug)).all()
         if not venues:
             # A database with no venue cannot serve anybody. Degraded, loudly.
             return {
@@ -116,6 +123,32 @@ def healthz(db: Session = Depends(get_db)):
             for venue in venues
             if stripe_integration.is_configured_for(venue)
         )
+        # Has every venue been given the columns a CLIENT reads? There is no
+        # fallback for any of them on purpose -- nothing substitutes another
+        # company's bank details -- so an unfilled one prints blank on an
+        # invoice, an agreement or an Event Order. reference_prefix is worse
+        # than blank: the venue cannot take a booking (ValueError in
+        # booking.generate_reference_code) or issue an invoice (a RAISE in
+        # migration f3d9b7c1a468's trigger) at all.
+        #
+        # The list existed and was CHECKED -- once, by `python -m app.seed`
+        # at deploy, into a log line read by whoever ran the deploy on the
+        # day they ran it. A second venue's row is typed in by hand, days
+        # after the deploy that would have reported on it.
+        #
+        # A BOOLEAN ONLY, detail logged: same rule as schema_drift above,
+        # and the missing columns of a named company are not a fact a public
+        # monitoring URL hands out. Aaron reads the same gaps by name in the
+        # 20:30 digest (digest.DigestContent.venue_gaps), off the same list.
+        venue_gaps = {v.slug: seed.unfilled_columns(v) for v in venues}
+        venues_client_ready = not any(venue_gaps.values())
+        if not venues_client_ready:
+            for slug, gaps in venue_gaps.items():
+                if gaps:
+                    logger.warning(
+                        "venue %s has %d unfilled client-facing column(s): %s",
+                        slug, len(gaps), ", ".join(gaps),
+                    )
         checks = {
             "database": True,
             "venues_present": True,
@@ -148,6 +181,7 @@ def healthz(db: Session = Depends(get_db)):
             # of what is unguarded.
             "schema_drift": schema_drifting,
             "stripe_account_pinned": stripe_account_pinned,
+            "venues_client_ready": venues_client_ready,
             # THE AI GATES, reported because they are now a DELIBERATE
             # long-lived state rather than a transient one: Aaron, 2026-09-14,
             # "keep AI draft off for both venues, it's something we can work
@@ -172,6 +206,10 @@ def healthz(db: Session = Depends(get_db)):
                 or drafting_failures > 0
                 or schema_drifting
                 or not stripe_account_pinned
+                # DEGRADES, unlike the gates below it. An unfilled column is
+                # not a decision anybody made; it is a document that will go
+                # out wrong, or a venue that cannot take a booking.
+                or not venues_client_ready
             )
             else "ok"
         )

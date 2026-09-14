@@ -152,9 +152,46 @@ CLIENT_FACING_COLUMNS = (
 )
 
 
+# Of the above, the ones that do not merely print blank -- they REFUSE.
+# Both raises are deliberate and both are correct (a default would stamp
+# the other company's letters on a reference nobody can rewrite), which is
+# exactly why the gap has to be visible before the venue takes its first
+# enquiry rather than as a 500 on it:
+#
+#   * booking.generate_reference_code raises ValueError, so the venue
+#     cannot take a BOOKING at all.
+#   * migration f3d9b7c1a468's invoice trigger RAISEs in Postgres, so it
+#     cannot issue an INVOICE either.
+HARD_BLOCK_COLUMNS = ("reference_prefix",)
+
+
+def _is_blank(value) -> bool:
+    """WHITESPACE IS BLANK, and the two enforcement sites already agree:
+    booking.generate_reference_code does `(... or "").strip()` and refuses,
+    and migration f3d9b7c1a468's trigger does `btrim(COALESCE(...))` and
+    RAISEs. Until 2026-09-14 this helper did not, so a reference_prefix of
+    "  " -- which is what a hand-typed row gets far more often than NULL --
+    reported the venue ready while both of those refused it.
+
+    trading_days is a list, not a string; `not []` already answers for it
+    and strip() would raise.
+    """
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return not value.strip()
+    return not value
+
+
 def unfilled_columns(venue) -> list[str]:
     """Which of the above this venue has not been given."""
-    return [c for c in CLIENT_FACING_COLUMNS if not getattr(venue, c, None)]
+    return [c for c in CLIENT_FACING_COLUMNS if _is_blank(getattr(venue, c, None))]
+
+
+def blocking_columns(venue) -> list[str]:
+    """The subset of the venue's gaps that stop it working, not just
+    printing blank."""
+    return [c for c in unfilled_columns(venue) if c in HARD_BLOCK_COLUMNS]
 
 
 def report_gaps(venue) -> str:
