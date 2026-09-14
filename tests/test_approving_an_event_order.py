@@ -74,7 +74,16 @@ def test_a_sent_event_order_offers_approval(client, db, loft):
     assert page.status_code == 200
     assert "Approve this Event Order" in page.text
     assert 'name="accept_lock" value="yes" required' in page.text, "the browser half of the two-layer rule"
-    assert "locks this Event Order" in page.text, "the lock has to be said before they tick it"
+    # WHAT IT LOCKS, precisely. It used to say "approving locks this Event
+    # Order" full stop -- while the billing block on the same page moves
+    # as payments land, by design (templating.beo_billing). A client who
+    # ticked that box and then watched a dollar figure change was right to
+    # wonder which of the two statements was true. The order and the
+    # arrangements lock; the payment record keeps up.
+    assert "locks the order and arrangements on this Event Order" in page.text, (
+        "the lock has to be said, and said accurately, before they tick it"
+    )
+    assert "keep updating as they are paid" in page.text
     assert "including the event date" in page.text
     assert "Accept &amp; Sign" not in page.text, "that is the agreement's wording, not this document's"
 
@@ -125,7 +134,7 @@ def test_the_lock_must_be_accepted_on_the_server_not_only_in_the_browser(client,
     resp = client.post(f"/d/{sent.access_token}/sign", data={"signer_name": "Caitlin Hobday"})
 
     assert resp.status_code == 422
-    assert "locks this Event Order" in resp.text
+    assert "locks the order and arrangements on this Event Order" in resp.text
     db.refresh(sent)
     assert sent.status == DocumentStatus.sent, "approved without accepting the lock"
     assert has_approved_beo(db, booking) is False

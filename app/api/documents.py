@@ -198,7 +198,7 @@ def sign_document(
         raise HTTPException(
             status_code=422,
             detail="To approve, please tick the box confirming the details and the date are correct "
-            "and that approval locks this Event Order.",
+            "and that approval locks the order and arrangements on this Event Order.",
         )
 
     try:
