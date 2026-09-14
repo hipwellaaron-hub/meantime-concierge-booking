@@ -66,7 +66,11 @@ def _signing_secret_for(db: Session, venue_slug: str | None) -> tuple[str | None
             venue_slug,
         )
         return None, None
-    name = getattr(venue, "stripe_webhook_secret_env", None)
+    # STRIPPED, same as stripe_integration.secret_key_for and
+    # webhook_secret_configured_for: the column is hand-typed, and a
+    # readiness check that strips while the endpoint does not would read
+    # green over an endpoint that refuses every event.
+    name = (getattr(venue, "stripe_webhook_secret_env", None) or "").strip()
     if not name:
         logger.error(
             "Stripe webhook refused: venue %r has not named its signing-secret variable "

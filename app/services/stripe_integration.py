@@ -103,7 +103,13 @@ def secret_key_for(venue) -> str:
     payment against an invoice that has not been paid. Refusing costs a
     card button on a venue nobody has finished setting up.
     """
-    name = getattr(venue, "stripe_secret_key_env", None)
+    # STRIPPED. The column is typed in by hand on a venue row, and
+    # " STRIPE_SECRET_KEY_ENTRANCE " is not a variable name anybody has
+    # set -- os.environ.get would miss it and this would refuse a venue
+    # that is correctly configured apart from two spaces. Same strip in
+    # webhooks._signing_secret_for and webhook_secret_configured_for, so
+    # all three resolve the same variable from the same column.
+    name = (getattr(venue, "stripe_secret_key_env", None) or "").strip()
     if not name:
         slug = getattr(venue, "slug", None)
         if slug != LEGACY_STRIPE_VENUE_SLUG:
@@ -121,6 +127,32 @@ def secret_key_for(venue) -> str:
             f"{getattr(venue, 'slug', 'this venue')!r}"
         )
     return key
+
+
+def webhook_secret_configured_for(venue) -> bool:
+    """Can this venue's completion events actually be VERIFIED?
+
+    The mirror of is_configured_for, and it was the half nobody asked. A
+    venue can mint a payment link with a perfectly good key and have no
+    signing secret set for the endpoint its account posts to -- and nothing
+    finds out until a client has paid. `_signing_secret_for` refuses, which
+    is right and is logged, but the loudness lands on Stripe's delivery
+    history and in a log file: Stripe retries for about three days and then
+    drops the event, leaving a client charged, an invoice still saying
+    unpaid, and nothing raised on either side.
+
+    Asked before the money instead. Same resolution as the webhook handler
+    itself -- the variable the venue NAMES, read live, with the shared
+    variable only for the venue that names it (which is Hamilton, by
+    seed.py) -- so the answer here cannot differ from the answer the
+    endpoint gives.
+    """
+    name = (getattr(venue, "stripe_webhook_secret_env", None) or "").strip()
+    if not name:
+        # Named nothing. The per-venue endpoint refuses outright, and the
+        # shared endpoint is not this venue's to borrow.
+        return False
+    return bool(os.environ.get(name))
 
 
 def assert_key_belongs_to(venue, api_key: str) -> None:

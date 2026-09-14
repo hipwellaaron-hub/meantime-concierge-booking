@@ -122,6 +122,31 @@ def healthz(db: Session = Depends(get_db)):
             for venue in venues
             if stripe_integration.is_configured_for(venue)
         )
+        # Can every venue's completion events be VERIFIED? A venue can mint
+        # a payment link with a perfectly good key and have no signing
+        # secret set for the endpoint its own Stripe account posts to. The
+        # webhook handler refuses, correctly -- but the refusal lands in
+        # Stripe's delivery history and a log line, and Stripe retries for
+        # about three days and then drops the event: a client charged, an
+        # invoice still saying unpaid, nothing raised on either side.
+        #
+        # Only asked of venues that CAN mint a link. A venue with no Stripe
+        # key at all is not taking money yet and has nothing to verify. That
+        # makes it vacuously true wherever Stripe is unconfigured -- which
+        # is every test environment, so the probes patch is_configured_for,
+        # the same trap the preview test fell into on 2026-09-14.
+        #
+        # NOT in the digest, and that is not an oversight. This reads
+        # environment variables, and the digest runs in a DIFFERENT Railway
+        # service: meantime-concierge-digest holds no Stripe variables at
+        # all (read back from Railway, 2026-09-14), so the same check there
+        # would report every venue unverifiable every night. An env answer
+        # is only true about the process that answers it.
+        stripe_webhook_ready = all(
+            stripe_integration.webhook_secret_configured_for(venue)
+            for venue in venues
+            if stripe_integration.is_configured_for(venue)
+        )
         # Can every venue actually serve a client? Unfilled client-facing
         # columns (no fallback exists for any of them on purpose, so they
         # print blank on documents), plus the two spaces without which the
@@ -178,6 +203,7 @@ def healthz(db: Session = Depends(get_db)):
             # of what is unguarded.
             "schema_drift": schema_drifting,
             "stripe_account_pinned": stripe_account_pinned,
+            "stripe_webhook_ready": stripe_webhook_ready,
             "venues_ready": venues_ready,
             # THE AI GATES, reported because they are now a DELIBERATE
             # long-lived state rather than a transient one: Aaron, 2026-09-14,
@@ -203,6 +229,7 @@ def healthz(db: Session = Depends(get_db)):
                 or drafting_failures > 0
                 or schema_drifting
                 or not stripe_account_pinned
+                or not stripe_webhook_ready
                 # DEGRADES, unlike the gates below it. An unfilled column is
                 # not a decision anybody made; it is a document that will go
                 # out wrong, or a venue that cannot take a booking.
