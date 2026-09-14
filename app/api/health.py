@@ -27,7 +27,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models import Venue
-from app.services import drafting, schema_audit
+from app.services import ai_access, drafting, schema_audit
 from app.services import enquiry_classification, stripe_integration
 from app.services.notifications import is_gmail_smtp_configured
 
@@ -83,6 +83,25 @@ def healthz(db: Session = Depends(get_db)):
         )
         drafting_failures = drafting.recent_failure_count(db)
         schema_drifting = schema_audit.drifting(db)
+        # Read through the service, not off the row, so the ENV override
+        # counts: ai_access.access_enabled returns False when the env var
+        # says so whatever the database holds, and a page that reported the
+        # row alone would say the gate was open while it was shut.
+        ai_row = ai_access.get_settings_row(db)
+        ai_gate_open = ai_access.access_enabled(db)
+        ai_gates = {
+            "ai_access_enabled": ai_gate_open,
+            "ai_writes_enabled": ai_access.writes_enabled(db),
+            # THE EFFECTIVE gate, not the row's own column -- the same
+            # expression drafting.draft_for_booking:332 evaluates before it
+            # will write a draft. Reporting the column alone would read
+            # "drafting on" while the master switch above it was shut. Which
+            # of the two is shut stays derivable, because ai_access_enabled
+            # is reported beside it.
+            "ai_drafting_enabled": bool(
+                ai_gate_open and ai_row.drafting_enabled
+            ),
+        }
         # Is every Stripe key pinned to the account it must belong to?
         # stripe_integration.assert_key_belongs_to is the guard between a
         # mis-keyed credential and a payment recorded as successful for
@@ -129,6 +148,22 @@ def healthz(db: Session = Depends(get_db)):
             # of what is unguarded.
             "schema_drift": schema_drifting,
             "stripe_account_pinned": stripe_account_pinned,
+            # THE AI GATES, reported because they are now a DELIBERATE
+            # long-lived state rather than a transient one: Aaron, 2026-09-14,
+            # "keep AI draft off for both venues, it's something we can work
+            # on in a few months". A switch meant to stay off for months is
+            # exactly the kind that comes back on without anyone noticing --
+            # a database restore, a self-heal, a future session.
+            #
+            # They are SINGLETON and global, not per-venue: one ai_settings
+            # row gates both companies, so this is the whole answer rather
+            # than Hamilton's half of it.
+            #
+            # Reported, NOT degraded. A gate being open is a decision, not a
+            # fault, and an endpoint that sits amber over a deliberate state
+            # is one people stop reading. What this buys is that a change is
+            # visible on the page already being watched.
+            **ai_gates,
         }
         status = (
             "degraded"
