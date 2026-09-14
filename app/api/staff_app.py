@@ -27,7 +27,7 @@ from app.rate_limit import InMemoryRateLimiter, rate_limit_dependency
 from app.services import beo_rules
 from app.services import documents as documents_service
 from app.services import staff_auth
-from app.services.document_generation import format_date_long
+from app.services.document_generation import format_date_long, format_time_12h
 from app.services.pdf import render_html_to_pdf
 from app.templating import templates, venue_identity
 
@@ -215,6 +215,26 @@ def _floor_drift(document: Document, booking: Booking) -> list[str]:
     then_name = ref.get("event_name")
     if then_name and then_name != booking.event_name:
         drift.append(f"the event is now named {booking.event_name!r} (this version says {then_name!r})")
+    # THE TIMES, which this compared none of -- while the same app's booking
+    # detail screen shows every time LIVE. So a start or end time moved
+    # after approval was invisible on the run sheet AND absent from the
+    # note, and the two screens a bartender flicks between disagreed with
+    # nothing saying so. The timeline stores display strings, so the live
+    # value is formatted the same way before comparing.
+    for label, live_time, stored_key in (
+        ("start", booking.start_time, "start_time_display"),
+        ("end", booking.end_time, "end_time_display"),
+    ):
+        then_display = timeline.get(stored_key)
+        live_display = format_time_12h(live_time) if live_time else None
+        if then_display and live_display and then_display != live_display:
+            drift.append(f"the {label} time is now {live_display} (this version says {then_display})")
+    # The bar credit is a promise the floor has to honour on the night, and
+    # it is frozen into the document like the rest of the order. Raise it
+    # after approval and the team is reading the old figure.
+    then_credit = content.get("bar_credit")
+    if then_credit is not None and str(then_credit) != str(booking.bar_credit):
+        drift.append(f"the bar credit is now ${booking.bar_credit} (this version says ${then_credit})")
     return drift
 
 
@@ -397,8 +417,16 @@ def booking_beo_pdf(
     left on a bar, and the billing summary is a conversation for me")."""
     booking = _get_visible_booking_or_404(request, db, booking_id)
     document, _newer = _get_floor_beo_or_404(db, booking)
+    # THE SAME THREE WARNINGS THE SCREEN CARRIES. This is the copy that
+    # gets printed and left on a bar, and it had none of them: no "not yet
+    # approved", no RSA line, no note that the booking has moved since this
+    # version. The block in document.html was gated on is_floor_app, which
+    # this route does not pass.
     html = templates.get_template("document.html").render(
         document=document, booking=booking, is_pdf=True, floor_pdf=True,
+        floor_newer_version=_newer,
+        floor_drift=_floor_drift(document, booking),
+        floor_rsa_gap=_floor_rsa_gap(document, booking),
         **venue_identity(booking.venue),
     )
     filename = f"{booking.reference_code}-BEO-v{document.version}.pdf"
