@@ -449,7 +449,7 @@
       <td class="right">
         <span class="k">Event Order:</span> EO-{{ booking.reference_code }}-v{{ document.version }}<br>
         <span class="k">Booking Reference:</span> {{ booking.reference_code }}{% if not floor_pdf %}<br>
-        <span class="k">Total Paid:</span> {# Live, like the billing summary further down. This read content._reference.total_paid -- the legacy iVvy snapshot, which is empty for anything Concierge generated -- so on Adam Williams the header printed a dash while the summary below it printed $500.00. One document, two different statements about money. #}{{ ("A$" + billing.deposit_paid) if billing.deposit_paid else "—" }}{% endif %}
+        <span class="k">Total Paid:</span> {# Live, like the billing summary further down. This read content._reference.total_paid -- the legacy iVvy snapshot, which is empty for anything Concierge generated -- so on Adam Williams the header printed a dash while the summary below it printed $500.00. One document, two different statements about money. #}{{ ("A$" + billing.total_paid) if billing.total_paid else "—" }}{% endif %}
       </td>
     </tr>
   </table>
@@ -490,7 +490,7 @@
          for anything Concierge generated, which is why it printed a dash
          on a booking whose deposit was sitting in the invoices table. #}
       <tr><td>Food total</td><td style="text-align:right;">{{ ("$" + billing.total) if billing.total else "—" }}</td></tr>
-      <tr><td>Total paid</td><td style="text-align:right;">{{ ("$" + billing.deposit_paid) if billing.deposit_paid else "—" }}</td></tr>
+      <tr><td>Total paid</td><td style="text-align:right;">{{ ("$" + billing.total_paid) if billing.total_paid else "—" }}</td></tr>
       <tr><td><b>Balance owing</b></td><td style="text-align:right;"><b>{{ ("$" + billing.balance_due) if billing.balance_due else "—" }}</b></td></tr>
     </table>
   </div>
@@ -640,7 +640,7 @@
     <div class="right">
       <span class="k">Event Order:</span> EO-{{ booking.reference_code }}-v{{ document.version }}<br>
       <span class="k">Booking Reference:</span> {{ booking.reference_code }}{% if not withhold %}<br>
-      <span class="k">Total Paid:</span> {# Live, like the billing summary further down. This read content._reference.total_paid -- the legacy iVvy snapshot, which is empty for anything Concierge generated -- so on Adam Williams the header printed a dash while the summary below it printed $500.00. One document, two different statements about money. #}{{ ("A$" + billing.deposit_paid) if billing.deposit_paid else "—" }}{% endif %}
+      <span class="k">Total Paid:</span> {# Live, like the billing summary further down. This read content._reference.total_paid -- the legacy iVvy snapshot, which is empty for anything Concierge generated -- so on Adam Williams the header printed a dash while the summary below it printed $500.00. One document, two different statements about money. #}{{ ("A$" + billing.total_paid) if billing.total_paid else "—" }}{% endif %}
     </div>
   </div>
 
@@ -674,7 +674,7 @@
          for anything Concierge generated, which is why it printed a dash
          on a booking whose deposit was sitting in the invoices table. #}
       <tr><td>Food total</td><td style="text-align:right;">{{ ("$" + billing.total) if billing.total else "—" }}</td></tr>
-      <tr><td>Total paid</td><td style="text-align:right;">{{ ("$" + billing.deposit_paid) if billing.deposit_paid else "—" }}</td></tr>
+      <tr><td>Total paid</td><td style="text-align:right;">{{ ("$" + billing.total_paid) if billing.total_paid else "—" }}</td></tr>
       <tr><td><b>Balance owing</b></td><td style="text-align:right;"><b>{{ ("$" + billing.balance_due) if billing.balance_due else "—" }}</b></td></tr>
     </table>
   </div>

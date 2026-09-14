@@ -304,15 +304,37 @@ def beo_billing(document) -> dict:
         return {
             "total": total,
             "deposit_paid": stored.get("deposit_paid"),
+            # The stored block never carried a total; the deposit is the
+            # best a detached object can say, and it is never worse than
+            # the frozen figure this branch already returns beside it.
+            "total_paid": stored.get("deposit_paid"),
             "balance_due": stored.get("balance_due"),
         }
 
+    from sqlalchemy import select
+
+    from app.models import Invoice
     from app.services import invoicing
 
     deposit_paid = invoicing.get_deposit_paid(db, document.booking)
+    # EVERY payment on the booking, not just the deposit. "Total paid" and
+    # "Balance owing" printed deposit_paid, so a part payment against the
+    # FINAL invoice -- money the client had handed over -- was invisible on
+    # their own Event Order: paid understated, owing overstated, on the
+    # screen and the PDF. The "Less deposit paid" bullet keeps deposit_paid;
+    # that line is about the deposit. These two are about everything.
+    total_paid = sum(
+        (
+            invoicing.get_total_paid(db, inv.id)
+            for inv in db.scalars(
+                select(Invoice).where(Invoice.booking_id == document.booking_id)
+            ).all()
+        ),
+        Decimal("0.00"),
+    )
     balance_due = None
     if total is not None:
-        balance_due = Decimal(str(total)) - deposit_paid
+        balance_due = Decimal(str(total)) - total_paid
 
     return {
         "total": total,
@@ -320,6 +342,7 @@ def beo_billing(document) -> dict:
         # which is a different statement from "we cannot tell". The same
         # distinction beo_proposals._deposit_paid_for records.
         "deposit_paid": f"{deposit_paid:.2f}",
+        "total_paid": f"{total_paid:.2f}",
         "balance_due": f"{balance_due:.2f}" if balance_due is not None else None,
     }
 
