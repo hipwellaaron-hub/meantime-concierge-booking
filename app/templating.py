@@ -382,6 +382,14 @@ def beo_timeline_bullets(document) -> list:
     ONLY the qualifier moves. The bullet's time, vendor name and contact
     stay exactly as they were composed -- this is not a rebuild of the
     timeline, which would discard anything a person typed into it.
+
+    BOTH QUALIFIERS. build_event_timeline composes two of them and they are
+    worded differently: a vendor bump-in says "(requested — not yet
+    confirmed)" and setup access says "(requested, pending confirmation)",
+    one line apart in the same function. The first version of this repaired
+    only the vendor one, so an Event Order went on saying setup access was
+    unconfirmed after staff had confirmed it -- the identical fault, in the
+    bullet directly above the one that was fixed.
     """
     content = document.content or {}
     bullets = list((content.get("event_timeline") or {}).get("bullets") or [])
@@ -396,24 +404,74 @@ def beo_timeline_bullets(document) -> list:
     confirmed_now = {
         v.name for v in booking.vendors if v.bump_in_confirmed and v.bump_in_time is not None
     }
-    if not confirmed_now:
+    setup_confirmed = bool(
+        booking.setup_access_time is not None and booking.setup_access_confirmed
+    )
+    if not confirmed_now and not setup_confirmed:
         return bullets
 
     out = []
     for line in bullets:
-        # Matched on the frozen wording build_vendor_snapshot composes, and
-        # on the vendor's own name -- so a bullet for a vendor still
-        # genuinely unconfirmed is left alone.
-        if "(requested — not yet confirmed)" in line and any(name in line for name in confirmed_now):
+        # ANCHORED ON THE SEPARATOR, not on a bare substring. The composed
+        # shape is "... (state) — {name}{, contact}", so the name is
+        # matched where build_vendor_snapshot actually puts it. A plain
+        # `name in line` matched a vendor called "DJ" against every line
+        # mentioning a DJ, and confirmed all of them.
+        if "(requested — not yet confirmed)" in line and any(
+            f"— {name}" == line[line.rfind("— "):][: len(name) + 2]
+            or line.endswith(f"— {name}")
+            or f"— {name}," in line
+            for name in confirmed_now
+        ):
             line = line.replace("(requested — not yet confirmed)", "(confirmed)")
+        # The setup-access bullet names no vendor: booking.setup_access_
+        # confirmed is the whole question, and build_event_timeline writes
+        # exactly one such bullet.
+        elif setup_confirmed and "(requested, pending confirmation)" in line:
+            line = line.replace("(requested, pending confirmation)", "(confirmed)")
         out.append(line)
     return out
+
+
+def beo_av_deadline(document) -> str | None:
+    """The USB deadline an Event Order prints, recomputed from the event
+    date AT RENDER.
+
+    build_av froze `event_date - AV_USB_DEADLINE_DAYS_BEFORE_EVENT` into
+    the document as a display string. Postpone the event and the client is
+    still told to get their slideshow in by a date derived from the old
+    one -- an instruction with a deadline, wrong in the client's favour or
+    against it depending on which way the date moved, and silent either
+    way.
+
+    Same mechanism as beo_billing and the timeline qualifiers above: read
+    here, so every Event Order that already exists is right without being
+    regenerated. Falls back to the stored display when there is no event
+    date to compute from, which is the honest answer rather than a blank.
+    """
+    content = document.content or {}
+    av = content.get("av")
+    stored = av.get("usb_deadline_display") if isinstance(av, dict) else None
+    if not isinstance(av, dict):
+        return None
+
+    booking = getattr(document, "booking", None)
+    event_date = getattr(booking, "event_date", None) if booking is not None else None
+    if event_date is None:
+        return stored
+
+    from app.services import policy
+    from app.services.document_generation import format_day_date
+
+    deadline = event_date - dt.timedelta(days=policy.AV_USB_DEADLINE_DAYS_BEFORE_EVENT)
+    return format_day_date(deadline)
 
 
 templates.env.filters["beo_billing"] = beo_billing
 # The bump-in qualifier, read at render from booking_vendors rather than
 # the copy frozen when the Event Order was generated.
 templates.env.filters["beo_timeline_bullets"] = beo_timeline_bullets
+templates.env.filters["beo_av_deadline"] = beo_av_deadline
 from app.config import settings as _settings  # noqa: E402
 
 # Browser tags render only in production (or locally, where the ids are

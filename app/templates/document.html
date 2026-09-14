@@ -274,15 +274,21 @@
 </div>
 {% endmacro %}
 
-{% macro beo_av(content) %}
+{% macro beo_av(content, document) %}
 {% if content.av %}
+{# The USB deadline is recomputed from the event date at render. It was
+   frozen at generation as `event_date - 14 days`, so postponing the event
+   left the client with an instruction whose deadline came from the old
+   date -- silently, and wrong in either direction. Same mechanism as the
+   billing block and the timeline qualifiers. #}
+{% set usb_due = document | beo_av_deadline %}
 <div class="beo-sec">
   <div class="beo-h">AV / Screen</div>
   <ul class="beo-bullets">
     <li>Video/slideshow: {{ "yes" if content.av.video_slideshow else "no" }}</li>
     <li>{{ content.av.format_note }}</li>
-    {% if content.av.video_slideshow and content.av.usb_deadline_display %}
-    <li>USB due by {{ content.av.usb_deadline_display }}</li>
+    {% if content.av.video_slideshow and usb_due %}
+    <li>USB due by {{ usb_due }}</li>
     {% endif %}
     <li>Microphones for speeches: {{ "yes" if content.av.microphones_for_speeches else "no" }}</li>
     {% if content.av.notes %}<li>{{ content.av.notes }}</li>{% endif %}
@@ -306,7 +312,7 @@
 {{ beo_section("Room Layout Notes", content.room_layout_notes, staff) }}
 {{ beo_section("Music", content.music or content.music_entertainment, staff) }}
 {{ beo_section("Entertainment", content.entertainment, staff) }}
-{{ beo_av(content) }}
+{{ beo_av(content, document) }}
 {{ beo_section("Dietaries", content.get("dietaries") or NO_DIETARIES, staff, always=true) }}
 {{ beo_section("Accessibility", content.accessibility, staff) }}
 {{ beo_section("Decorations", content.decorations, staff) }}
@@ -422,6 +428,24 @@
 {% set ref = content._reference %}{% set billing = document | beo_billing %}
 {% set client_name = (ref.get("client_name") or (booking.contact.name if booking.contact else None)) | person_name %}
 <div class="card">
+  {# THE FLOOR'S PRINTED COPY gets the same three warnings its screen
+     carries. This is the copy that is printed and left on a bar, and it
+     had none of them: the screen's block lives in the is_floor_app branch
+     below, and a PDF renders here. Gated on floor_pdf, so a client PDF and
+     a staff PDF are untouched. #}
+  {% if floor_pdf %}
+  <div style="margin:0 0 14px; padding:9px 12px; border:1px solid {{ "#c9a96e" if document.status.value == "signed" else "#999" }}; border-radius:6px; font-size:0.95rem;">
+    {% if document.status.value == "signed" %}
+    <strong>Approved by the client</strong> &mdash; v{{ document.version }}, {{ document.signer_name }}{% if document.signed_at %}, {{ document.signed_at | sydney_time("%d %b %Y") }}{% endif %}.
+    {% if floor_newer_version %}A newer version (v{{ floor_newer_version.version }}, {{ floor_newer_version.status.value }}) exists and has <strong>not</strong> been approved &mdash; work from this one.{% endif %}
+    {% else %}
+    v{{ document.version }} &mdash; not yet approved by the client.
+    {% if floor_newer_version %}A newer version (v{{ floor_newer_version.version }}, {{ floor_newer_version.status.value }}) is being prepared and has not gone out yet &mdash; this is the last one sent.{% endif %}
+    {% endif %}
+    {% if floor_rsa_gap %}<div style="margin-top:6px;"><strong>RSA:</strong> {{ floor_rsa_gap }}</div>{% endif %}
+    {% if floor_drift %}<div style="margin-top:6px;"><strong>The booking has changed since this version:</strong> {{ floor_drift | join("; ") }}.</div>{% endif %}
+  </div>
+  {% endif %}
   <table class="beo-header">
     <tr>
       <td>
