@@ -221,6 +221,40 @@ GENERATED_PLACEHOLDERS = frozenset({
 })
 
 
+def printed_legacy_music(content: dict) -> str | None:
+    """The older merged music/entertainment value, but ONLY when it is what
+    the Event Order actually PRINTS.
+
+    document.html shows `music` if there is one and falls back to the
+    merged field otherwise, so a merged value sitting behind a split
+    `music` is dead weight. And the generator's own "[REVIEW] add
+    music/entertainment detail" prompt is not a value a person wrote --
+    treating either as legacy text refused every proposal that touched
+    Music on a freshly generated Event Order.
+
+    ONE IMPLEMENTATION since 2026-09-14. This rule lived twice, here and as
+    beo_proposals._printed_legacy_music, and read_music_as_split's own
+    docstring said so ("the same two exclusions beo_proposals._printed_
+    legacy_music makes for the same reason") -- which is a comment noticing
+    a duplicate rather than removing it. Two copies of "is this the value
+    that prints" can disagree the day either is edited, and one of them
+    decides whether a proposal may overwrite a person's words.
+
+    THE PREFIX TEST HERE IS THE DELIBERATE EXCEPTION to is_disposable's
+    exact-membership rule, and it is the only one left in app/services (a
+    test enforces that). It is safe HERE and nowhere else: the value being
+    asked about is a generated merged field, where the marker genuinely
+    does begin the generated sentence -- never a free-text note a person
+    typed into a box.
+    """
+    if content.get("music"):
+        return None
+    legacy = content.get("music_entertainment")
+    if not isinstance(legacy, str) or not legacy.strip() or legacy.lstrip().startswith(REVIEW):
+        return None
+    return legacy
+
+
 def read_music_as_split(content: dict) -> dict:
     """Content with a legacy merged music value read as `music`.
 
@@ -270,10 +304,8 @@ def read_music_as_split(content: dict) -> dict:
     words -- the same two exclusions beo_proposals._printed_legacy_music
     makes for the same reason.
     """
-    legacy = content.get("music_entertainment")
-    if content.get("music") or not isinstance(legacy, str):
-        return content
-    if not legacy.strip() or legacy.lstrip().startswith(REVIEW):
+    legacy = printed_legacy_music(content)
+    if legacy is None:
         return content
     promoted = {**content, "music": legacy, "music_entertainment": None}
     if "music_entertainment" in content_authorship.authored(content):
@@ -283,9 +315,28 @@ def read_music_as_split(content: dict) -> dict:
     return promoted
 
 
-def _is_disposable(rendered: str) -> bool:
-    """True when the current value holds nothing a human would miss."""
+def is_disposable(rendered: str) -> bool:
+    """True when the current value holds nothing a human would miss.
+
+    PUBLIC since 2026-09-14, because a second place was asking the same
+    question a different way and getting it wrong. EXACT MEMBERSHIP is the
+    rule, settled by the 2026-09-06 review recorded above
+    GENERATED_PLACEHOLDERS: a prefix or substring test reads "[REVIEW] with
+    the kitchen: nut allergy, read it back" -- a person's own sentence
+    carrying a follow-up -- as a placeholder nobody would miss, and
+    silently regenerates over it.
+
+    beo_proposals' AI-approval panel still had the prefix version three
+    days later (its `replaces_text`), so a staff note beginning [REVIEW]
+    was offered for overwrite WITHOUT the warning that exists for exactly
+    that case. One implementation now, so the two cannot disagree again.
+    """
     return not rendered or rendered in GENERATED_PLACEHOLDERS
+
+
+# The old private name, kept as an alias so nothing in this module had to
+# move in the same commit that made it public.
+_is_disposable = is_disposable
 
 
 def _was_cleared(stored: object, rendered: str) -> bool:

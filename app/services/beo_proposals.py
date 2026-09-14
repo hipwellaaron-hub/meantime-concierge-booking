@@ -1036,20 +1036,15 @@ def _supersede_older(db: Session, booking_id: uuid.UUID, *, actor: str) -> None:
         db.expire(proposal)
 
 
-def _printed_legacy_music(content: dict) -> str | None:
-    """The older merged music/entertainment value, but only when it is
-    what the Event Order actually prints: the template shows `music` if
-    there is one and falls back to the merged field otherwise. A merged
-    value behind a split `music` is dead weight, and the generator's own
-    "[REVIEW] add music/entertainment detail" prompt is not a value a
-    person wrote -- treating either as legacy text refused every proposal
-    that touched Music on a freshly generated Event Order."""
-    if content.get("music"):
-        return None
-    legacy = content.get("music_entertainment")
-    if not isinstance(legacy, str) or not legacy.strip() or legacy.lstrip().startswith(REVIEW):
-        return None
-    return legacy
+# The rule moved to document_regeneration.printed_legacy_music on
+# 2026-09-14 and this is the same function under its old name. It was a
+# verbatim second copy of the one read_music_as_split applies, and that
+# function's docstring already NAMED this one as making "the same two
+# exclusions ... for the same reason" -- a comment noticing a duplicate
+# instead of removing it. One of the two decides whether an AI proposal
+# may overwrite a person's words, so a day where they disagree is a day
+# somebody's sentence is quietly replaced.
+_printed_legacy_music = document_regeneration.printed_legacy_music
 
 
 def _rule_context(booking: Booking, document: Document | None = None) -> dict:
@@ -1604,7 +1599,20 @@ def review_rows(db: Session, booking_id: uuid.UUID, *, document: Document | None
                 "current": existing,
                 # A generation placeholder is not content anyone wrote, so
                 # overwriting it is not the risky case the warning is for.
-                "replaces_text": bool(existing.strip()) and not existing.lstrip().startswith("[REVIEW]"),
+                #
+                # EXACT MEMBERSHIP, via document_regeneration.is_disposable.
+                # This was `not existing.lstrip().startswith("[REVIEW]")`, a
+                # PREFIX test -- the same test the 2026-09-06 review removed
+                # from the regenerate path for silently writing over a
+                # person's sentence, and it was still here three days later.
+                # A staff member typing "[REVIEW] with the kitchen: nut
+                # allergy, read it back" into Dietaries had their own words
+                # offered for overwrite under the muted "Replaces a
+                # generation placeholder", instead of the ember-coloured
+                # "Replaces text already on the Event Order" that exists for
+                # exactly that case.
+                "replaces_text": bool(existing.strip())
+                and not document_regeneration.is_disposable(existing.strip()),
             }
         )
     return rows
