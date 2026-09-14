@@ -506,45 +506,18 @@ def generate_beo_and_invoice(db: Session, session: WizardSession, *, actor: str)
             for loss in at_risk
         ]
 
-    if current is not None:
-        # The record travels across EVERY rebuild, not only the ones that
-        # kept something. Doing this inside the `at_risk` branch meant a
-        # document whose recorded fields were all unchanged lost its record
-        # entirely, and the next regenerate treated those values as the
-        # generator's -- the guard holding for exactly one round.
-        #
-        # A name is forgotten when the wizard's value REPLACED the person's:
-        # leaving it recorded would claim they wrote what the wizard just
-        # produced. Compared value by value rather than as "authored minus
-        # kept", because a field the wizard rebuilds identically still holds
-        # their words.
-        #
-        # Read the SAME way losses() and apply_choices() just read it. A
-        # legacy Event Order's merged music value has been promoted into
-        # `music` above, and the record renamed with it; carrying from the
-        # RAW content would bring the old name forward instead, and the
-        # forget below would then drop it for a key that is now None --
-        # leaving the person's words sitting in `music` under an empty
-        # record, which says nobody wrote anything here.
-        #
-        # One reading, used for all three, so the question, the answer and
-        # the record agree. Only the carry is observable: once the record
-        # names `music`, forgetting `music_entertainment` is a no-op, so
-        # the basis the forget compares against cannot be caught by a test
-        # (mutation-checked -- reverting those two survives). They stay on
-        # the same reading because two bases for one comparison is how the
-        # original defect got in, not because a test would notice.
-        previous_content = document_regeneration.read_music_as_split(current.content or {})
-        beo_content = content_authorship.carry(beo_content, previous=previous_content)
-        beo_content = content_authorship.forget(
-            beo_content,
-            content_authorship.differing_fields(
-                previous_content,
-                beo_content,
-                candidates=content_authorship.authored(previous_content),
-                placeholders=document_regeneration.GENERATED_PLACEHOLDERS,
-            ),
-        )
+    # The record travels across EVERY rebuild, not only the ones that kept
+    # something: doing this inside the `at_risk` branch above meant a
+    # document whose recorded fields were all unchanged lost its record
+    # entirely, and the next regenerate read those values as the
+    # generator's -- the guard holding for exactly one round.
+    #
+    # These two steps lived HERE, inline, and the staff Regenerate had
+    # neither, so every staff rebuild dropped the record. They are
+    # document_regeneration.carry_authorship now, called by both: a rule
+    # with no name is a rule nobody can reuse, and the reasoning (why the
+    # forget is needed, and why all three reads must agree) lives with it.
+    beo_content = document_regeneration.carry_authorship(beo_content, current)
 
     document = documents_service.create_new_version(db, booking, DocumentType.beo, beo_content, actor=actor)
 

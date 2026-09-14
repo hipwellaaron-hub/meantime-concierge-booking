@@ -776,6 +776,58 @@ def apply_choices(fresh: dict, document: Document, keep_fields: set[str]) -> dic
     return content
 
 
+def carry_authorship(fresh: dict, document: Document | None) -> dict:
+    """`fresh` with the previous version's authorship record brought
+    forward, minus the names whose values this rebuild replaced.
+
+    WHY IT IS HERE RATHER THAN AT EACH CALL SITE. The wizard did exactly
+    this, inline, in two parts, and the STAFF Regenerate did neither -- so
+    every staff rebuild dropped the record entirely and the next one read
+    a person's words as the generator's. Two reachable consequences, both
+    of them a value a human chose being quietly undone:
+
+      * A FIELD SOMEBODY CLEARED ON PURPOSE comes back. losses() only
+        reports an emptied field as a loss when the record names it; with
+        the record gone, the next regenerate refills it from the booking
+        without asking. The band cancelled, Music cleared and saved, one
+        Regenerate later the Event Order names the DJ again.
+      * A HAND-PRICED FOOD ORDER is silently re-priced. Keeping a
+        negotiated line through the confirmation screen writes the value
+        but not the record, so the price guard reads those lines as the
+        catalogue's on the next pass.
+
+    TWO PARTS, and the second is what stops the opposite error. Carrying
+    alone would leave the record claiming a person wrote values this
+    rebuild has just replaced, so every name whose value actually changed
+    is forgotten. Compared value by value rather than as "authored minus
+    kept": a field the rebuild happens to produce identically still holds
+    their words.
+
+    READ THE SAME WAY losses() and apply_choices() read it. A legacy
+    Event Order's merged music value is promoted into `music` by
+    read_music_as_split and the record renamed with it; carrying from the
+    RAW content would bring the old name forward, and the forget would then
+    drop it for a key that is now None -- leaving the words in `music`
+    under an empty record, which positively asserts that nobody wrote
+    anything here.
+
+    A first version has nothing to carry, so `document` may be None.
+    """
+    if document is None:
+        return fresh
+    previous = read_music_as_split(document.content or {})
+    carried = content_authorship.carry(fresh, previous=previous)
+    return content_authorship.forget(
+        carried,
+        content_authorship.differing_fields(
+            previous,
+            carried,
+            candidates=content_authorship.authored(previous),
+            placeholders=GENERATED_PLACEHOLDERS,
+        ),
+    )
+
+
 def summarise(found: list[ContentLoss], keep_fields: set[str]) -> str:
     """One audit line: what a human chose to keep and what they let go."""
     kept = sorted(loss.label for loss in found if loss.field in keep_fields)

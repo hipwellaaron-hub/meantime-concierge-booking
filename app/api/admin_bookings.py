@@ -683,6 +683,12 @@ def generate_document(
     # that shows no screen at all is the one that silently invalidates it.
     if losses or pending or _supersedes_signed_agreement(doc_type, current):
         return _render_regenerate_confirmation(request, db, booking, doc_type, current, losses, staff, pending)
+    # THE RECORD TRAVELS. Every staff rebuild used to drop it -- the wizard
+    # carried it and this path did neither half -- so the version after a
+    # Regenerate said nobody had written anything, and the NEXT regenerate
+    # refilled a field somebody had deliberately cleared without asking.
+    # See document_regeneration.carry_authorship.
+    content = document_regeneration.carry_authorship(content, current)
     documents_service.create_new_version(db, booking, doc_type, content, actor=_actor(staff))
     return _redirect_to_detail(request, booking_id)
 
@@ -772,7 +778,11 @@ def generate_document_confirmed(
     superseding_signed = _supersedes_signed_agreement(doc_type, current)
     if not losses and not pending and not superseding_signed:
         # Nothing at risk and nothing outstanding: the ordinary one click,
-        # with no question asked and none to check.
+        # with no question asked and none to check. The record still
+        # travels -- "nothing at risk" is a statement about VALUES, and a
+        # document whose recorded fields all happen to be unchanged still
+        # has a record to keep.
+        content = document_regeneration.carry_authorship(content, current)
         documents_service.create_new_version(db, booking, doc_type, content, actor=_actor(staff))
         return _redirect_to_detail(request, booking_id)
     if document_regeneration.fingerprint(losses, pending) != expect:
@@ -796,6 +806,15 @@ def generate_document_confirmed(
     offered = {loss.field for loss in losses}
     keep_fields = {name for name in keep if name in offered}
     merged = document_regeneration.apply_choices(content, current, keep_fields)
+    # AFTER apply_choices, never before: carry_authorship forgets the names
+    # whose values this rebuild REPLACED, and a kept field's value has not
+    # been replaced. Run first, it would compare the person's value against
+    # the generator's, forget the name, and then apply_choices would write
+    # their words back under an empty record -- the kept value arriving as
+    # nobody's, which is the state that lets the next regenerate take it
+    # away without asking. This is the money case: a hand-priced food order
+    # kept through this screen was read as the catalogue's on the next pass.
+    merged = document_regeneration.carry_authorship(merged, current)
     documents_service.create_new_version(
         db, booking, doc_type, merged, actor=_actor(staff),
         # With no losses there was no keep decision, so there is none to
