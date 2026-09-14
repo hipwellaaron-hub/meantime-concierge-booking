@@ -753,12 +753,23 @@ def record_payment(
         from app.templating import venue_identity
 
         identity = venue_identity(invoice.booking.venue)
+        # EVERYTHING THE RECEIPT PRINTS ABOUT THE PAYEE, not just the bank
+        # block. The first version froze five keys and the template read
+        # three; the trading name, ABN and address in the header stayed
+        # live, so a receipt already recorded which ACCOUNT was paid while
+        # still reprinting whichever COMPANY the venue row named today --
+        # the same fault, one section up (adversarial review, 2026-09-14).
+        # The template asks one question, "what did this receipt say", and
+        # this is the whole answer.
         invoice.paid_to_account = {
             "account_name": identity.get("venue_bank_account_name"),
             "bsb": identity.get("venue_bank_bsb"),
             "account_number": identity.get("venue_bank_account_number"),
             "legal_name": identity.get("venue_legal_name"),
+            "trading_name": identity.get("venue_trading_name"),
             "abn": identity.get("venue_abn"),
+            "address": identity.get("venue_address"),
+            "frozen_at": received_at.isoformat(),
         }
         db.add(
             BookingEvent(

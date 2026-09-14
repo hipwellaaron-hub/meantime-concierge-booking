@@ -176,3 +176,116 @@ def test_a_pre_existing_paid_invoice_says_it_is_showing_todays_details(
         app.dependency_overrides.clear()
 
     assert "before the account paid to was recorded" in page.text
+
+
+# --- the whole payee, not just the bank block ---------------------------------
+
+
+def _client_page(db, invoice):
+    from fastapi.testclient import TestClient
+
+    from app.database import get_db
+    from app.main import app
+
+    app.dependency_overrides[get_db] = lambda: db
+    try:
+        page = TestClient(app).get(f"/i/{invoice.access_token}")
+    finally:
+        app.dependency_overrides.clear()
+    assert page.status_code == 200
+    return page.text
+
+
+def test_the_receipt_freezes_the_company_named_in_the_header(db, hamilton, loft, contact):
+    """The first version froze the bank block and left the header live: a
+    receipt that recorded which ACCOUNT was paid while reprinting whichever
+    COMPANY the venue row named today. Same fault, one section up."""
+    booking = _booking(db, loft, contact, name="ZZRECEIPT Header")
+    invoice = _paid_deposit(db, booking)
+    frozen_abn = invoice.paid_to_account["abn"]
+    frozen_name = invoice.paid_to_account["trading_name"]
+    assert frozen_abn and frozen_name, "the snapshot must carry the header's fields"
+
+    hamilton.abn = "11 111 111 111"
+    hamilton.trading_name = "Renamed Venue"
+    hamilton.address = "1 Elsewhere St, Nowhere NSW 0000"
+    db.flush()
+
+    html = _client_page(db, invoice)
+
+    assert frozen_abn in html and frozen_name in html
+    assert "11 111 111 111" not in html, "the receipt shows an ABN the client never paid"
+    assert "Renamed Venue" not in html
+    assert "Elsewhere" not in html
+
+
+def test_the_receipt_says_it_is_showing_the_recorded_account(db, hamilton, loft, contact):
+    booking = _booking(db, loft, contact, name="ZZRECEIPT Says")
+    invoice = _paid_deposit(db, booking)
+
+    html = _client_page(db, invoice)
+
+    assert "as recorded at the time of payment" in html
+    assert "paid before the account paid to was recorded" not in html
+
+
+def test_a_snapshot_of_blanks_falls_back_to_live_and_says_so(db, hamilton, loft, contact):
+    """A venue whose bank fields were empty when the invoice was paid
+    froze a dict of blanks -- truthy, so the old template suppressed BOTH
+    the live fallback and the disclosure line and printed nothing at all.
+    A record holding nothing usable is not a record."""
+    booking = _booking(db, loft, contact, name="ZZRECEIPT Blanks")
+    invoice = _paid_deposit(db, booking)
+    invoice.paid_to_account = {k: "" for k in invoice.paid_to_account}
+    db.flush()
+
+    html = _client_page(db, invoice)
+
+    assert hamilton.bank_bsb in html, "a blank snapshot left the client with no account at all"
+    assert "paid before the account paid to was recorded" in html
+
+
+def test_the_staff_preview_context_carries_the_receipt_identity(db, hamilton, loft, contact):
+    """The PDF and the staff preview come through the same function as the
+    client page; a fix on one path only is the mislabelled-page shape."""
+    from app.api.invoices import _build_invoice_context
+
+    booking = _booking(db, loft, contact, name="ZZRECEIPT Context")
+    invoice = _paid_deposit(db, booking)
+    hamilton.bank_bsb = "999999"
+    db.flush()
+
+    context = _build_invoice_context(db, invoice, include_card_payment=False)
+
+    assert context["receipt_identity"]["bsb"] == invoice.paid_to_account["bsb"]
+    assert context["receipt_identity"]["bsb"] != "999999"
+
+
+def test_an_unpaid_invoice_has_no_receipt_identity(db, hamilton, loft, contact):
+    from app.api.invoices import _build_invoice_context
+
+    booking = _booking(db, loft, contact, name="ZZRECEIPT NoReceipt")
+    inv = invoicing.create_deposit_invoice(
+        db, booking, due_date=dt.date.today() + dt.timedelta(days=7), actor="test"
+    )
+    db.flush()
+    invoicing.mark_sent(db, inv, actor="staff:test@meantime.com.au")
+    db.flush()
+    # FORCED. An unpaid invoice has no snapshot, so without this the status
+    # gate never decides anything and the assertion held with it deleted --
+    # mutation-checked, and this is what it caught. Nothing today writes a
+    # snapshot onto a sent invoice; a future un-pay or refund path could,
+    # and a receipt identity on an invoice that is not a receipt would print
+    # a frozen account to a client who has to pay TODAY's.
+    inv.paid_to_account = {"account_name": "Frozen Co", "bsb": "111111", "account_number": "22222222"}
+    db.flush()
+
+    assert _build_invoice_context(db, inv, include_card_payment=False)["receipt_identity"] is None
+
+
+def test_the_snapshot_records_when_it_was_frozen(db, hamilton, loft, contact):
+    booking = _booking(db, loft, contact, name="ZZRECEIPT When")
+    invoice = _paid_deposit(db, booking)
+
+    assert invoice.paid_to_account["frozen_at"] == invoice.paid_at.isoformat()
+    assert invoice.paid_to_account["address"] == hamilton.address

@@ -135,6 +135,25 @@ def _build_invoice_context(db: Session, invoice, *, include_card_payment: bool) 
         and invoicing.get_total_paid(db, inv.id) > 0
     ] if uncredited_deposit > 0 else []
 
+    # WHAT A RECEIPT SAYS ABOUT WHO WAS PAID. A paid invoice is a record of
+    # an account money actually went to and a company that was paid, so it
+    # prints the identity frozen at the moment it became paid -- not
+    # whatever the venue row says today. An unpaid invoice prints the
+    # current identity, because a client about to pay must be told where
+    # the money goes today (the rule app.templating.venue_identity states).
+    #
+    # DECIDED HERE, NOT IN THE TEMPLATE. The template used to test
+    # `invoice.paid_to_account` for truth, and a snapshot taken from a venue
+    # whose bank fields were blank is a dict of blanks: truthy, so it
+    # suppressed both the live fallback and the disclosure line and printed
+    # nothing at all. A snapshot with no usable value in it is not a record
+    # of anything, and the page falls back to live and says so.
+    receipt_identity = None
+    if invoice.status == InvoiceStatus.paid and isinstance(invoice.paid_to_account, dict):
+        frozen = {k: (v or "").strip() for k, v in invoice.paid_to_account.items() if isinstance(v, str)}
+        if any(frozen.get(k) for k in ("account_number", "bsb", "account_name", "abn", "trading_name")):
+            receipt_identity = frozen
+
     return {
         "invoice": invoice,
         "booking": invoice.booking,
@@ -142,6 +161,7 @@ def _build_invoice_context(db: Session, invoice, *, include_card_payment: bool) 
         "uncredited_deposit": uncredited_deposit,
         "payable_now": payable_now,
         "deposit_references": deposit_references,
+        "receipt_identity": receipt_identity,
         "gst_component": invoicing.gst_component(invoice.total),
         "line_items": invoicing.line_item_breakdown(invoice.line_items),
         "other_invoices": other_invoices,

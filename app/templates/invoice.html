@@ -86,9 +86,19 @@
     · <span class="status status-{{ invoice.status.value }}">{{ invoice.status.value }}</span>
   </div>
 
+  {# A PAID invoice is a receipt: it names the company that was paid, as it
+     was when it was paid. receipt_identity is that record, decided in
+     _build_invoice_context (None on an unpaid invoice, and None when the
+     record holds nothing usable). The bank block below reads the same
+     record, so the header and the account can never name two companies. #}
   <div class="venue-header">
+    {% if receipt_identity %}
+    {{ receipt_identity.trading_name or venue_trading_name }} &middot; ABN {{ receipt_identity.abn or venue_abn }}<br>
+    {{ receipt_identity.address or venue_address }}
+    {% else %}
     {{ venue_trading_name }} &middot; ABN {{ venue_abn }}<br>
     {{ venue_address }}
+    {% endif %}
   </div>
 
   <table class="box-row">
@@ -256,12 +266,19 @@
          An invoice paid before 2026-09-14 has no frozen account, so it
          falls back to live and says so rather than implying a record it
          does not have. #}
-      {% set paid_account = invoice.paid_to_account if invoice.status.value == "paid" else None %}
-      <tr><td class="label">Account name</td><td>{{ paid_account.account_name if paid_account else venue_bank_account_name }}</td></tr>
-      <tr><td class="label">BSB</td><td>{{ paid_account.bsb if paid_account else venue_bank_bsb }}</td></tr>
-      <tr><td class="label">Account number</td><td>{{ paid_account.account_number if paid_account else venue_bank_account_number }}</td></tr>
-      {% if invoice.status.value == "paid" and not paid_account %}
+      {# receipt_identity is decided in _build_invoice_context, never here:
+         a snapshot of blank fields is a truthy dict, and testing
+         invoice.paid_to_account directly printed nothing at all -- no
+         account, and no line saying why. #}
+      <tr><td class="label">Account name</td><td>{{ receipt_identity.account_name if receipt_identity else venue_bank_account_name }}</td></tr>
+      <tr><td class="label">BSB</td><td>{{ receipt_identity.bsb if receipt_identity else venue_bank_bsb }}</td></tr>
+      <tr><td class="label">Account number</td><td>{{ receipt_identity.account_number if receipt_identity else venue_bank_account_number }}</td></tr>
+      {% if invoice.status.value == "paid" %}
+      {% if receipt_identity %}
+      <tr><td class="label"></td><td class="muted" style="font-size:0.85rem;">The account this invoice was paid to, as recorded at the time of payment.</td></tr>
+      {% else %}
       <tr><td class="label"></td><td class="muted" style="font-size:0.85rem;">Showing today&rsquo;s account details &mdash; this invoice was paid before the account paid to was recorded.</td></tr>
+      {% endif %}
       {% endif %}
       <tr><td class="label">Reference</td><td>{{ booking.reference_code }}</td></tr>
     </table>
