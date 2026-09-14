@@ -38,7 +38,13 @@ class WizardBasicsStep(BaseModel):
     start_time: dt.time
     end_time: dt.time
     food_service_time: dt.time
-    setup_access_time: dt.time
+    # OPTIONAL since 2026-09-15 (Aaron). Blank means "no early access
+    # asked for", which is a real answer and the common one; a time means
+    # the client is asking for one, which is what setup_access_confirmed
+    # tracks. The field used to be required AND pre-filled with the 2pm
+    # standard, so every wizard submitted a request nobody had made and
+    # the booking page offered a Confirm button for it.
+    setup_access_time: dt.time | None = None
     adult_count: int = Field(ge=0, le=5000)
     child_count: int = Field(ge=0, le=5000)
     # Guests frequently arrive later than the host's own access/start time.

@@ -226,6 +226,10 @@ MUSIC_TYPE_LINES = {
     "own_playlist": "Client's own Spotify playlist — set to public, playlist name given to the team on the night (no links).",
     "dj": "DJ.",
     "musician": "Musician (venue-arranged).",
+    # A POSITIVE STATEMENT, not a blank. The floor needs to know the
+    # silence is intended rather than that nobody filled the step in --
+    # the same distinction the gaps list draws everywhere else.
+    "none": "No music — the client has asked for none.",
 }
 
 

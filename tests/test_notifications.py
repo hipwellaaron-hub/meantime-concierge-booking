@@ -140,9 +140,14 @@ def test_body_includes_every_client_describing_field():
     assert "12-09-2026" in body  # day-first, per Aaron
     assert "Evening" in body
     assert "45 total (40 adults, 5 children)" in body
-    assert "Acme Pty Ltd" in body
     assert "WHAT THEY WROTE" in body
     assert "Wanting balloons please." in body
+    # "Acme Pty Ltd" used to be asserted here and is DELIBERATELY gone.
+    # It reached the email inside booking.notes, which is the field the
+    # booking page badges "never shown to the client" and which staff type
+    # into afterwards -- see test_body_never_carries_the_internal_notes.
+    # The company name is on the booking page this email links to in its
+    # own header, the same trade the FLAGS section was removed under.
 
 
 def test_body_never_carries_staff_only_content():
@@ -156,6 +161,24 @@ def test_body_never_carries_staff_only_content():
     assert "FLAGS" not in body
     assert "View in Concierge" not in body
     assert "/admin/bookings/" not in body
+
+
+def test_body_never_carries_the_internal_notes():
+    """booking.notes is the field the booking page badges "never shown to
+    the client", and this body went out under DETAILS carrying it.
+
+    At enquiry time it holds only derived facts, so nothing leaked. The
+    RESEND is the reachable one: staff type into notes on the booking page
+    believing the badge, somebody presses Resend, and this body -- quoted
+    in full under a reply addressed to the client -- carries their working
+    notes back to them.
+    """
+    booking = _booking(notes="Ring Aaron first, this one haggles. Do NOT discount past 8k.")
+    body = notifications.build_enquiry_notification_body(booking)
+
+    assert "DETAILS" not in body
+    assert "haggles" not in body
+    assert "Do NOT discount" not in body
 
 
 def test_body_omits_what_they_wrote_when_nothing_was_written():

@@ -246,8 +246,23 @@ def build_enquiry_notification_body(booking: Booking) -> str:
         f"Guests: {guest_total} total ({booking.adult_count} adults, {booking.child_count} children)",
     ]
 
-    if booking.notes:
-        lines += ["", "DETAILS", booking.notes]
+    # booking.notes IS NOT PRINTED HERE, and that is this function's own
+    # rule finally applied to itself: "Nothing staff-only belongs in this
+    # function." The booking page badges that field "never shown to the
+    # client", and this email put it under DETAILS -- in a body that gets
+    # quoted in FULL the moment Aaron hits Reply, because Reply-To points
+    # at the client.
+    #
+    # At enquiry time the field holds only derived facts (Company: X,
+    # Dates flexible: yes), so nothing has leaked. But the manual RESEND
+    # (enquiry_classification.resend_enquiry_notification) sends this same
+    # body later, by which time staff have typed into notes on the booking
+    # page -- believing the badge. One click, and their working notes are
+    # quoted back to the client.
+    #
+    # The derived facts go with it. They are on the booking page, which
+    # this email links to in its own header, and that is the same trade the
+    # FLAGS section was removed under (Aaron, 2026-09-15).
 
     if booking.enquiry_text:
         lines += ["", "WHAT THEY WROTE", booking.enquiry_text]

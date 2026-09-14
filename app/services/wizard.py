@@ -52,6 +52,14 @@ class MusicType(str, enum.Enum):
     dj = "dj"
     # Arranged by the venue at the same rate as a DJ.
     musician = "musician"
+    # AN EXPLICIT ANSWER, not an absence (Aaron, 2026-09-15). The step
+    # rejects an empty selection, so a client holding a function with no
+    # music at all had no truthful way through it: claim a playlist, a DJ
+    # or a musician they are not having, or abandon the wizard -- and
+    # whichever they ticked printed on the run sheet. Chosen rather than
+    # allowing an empty save, so "no music" and "nobody answered" stay
+    # different things on the Event Order.
+    none = "none"
 
 
 class CakeChoiceType(str, enum.Enum):
@@ -306,7 +314,7 @@ def save_basics_step(
     start_time: dt.time,
     end_time: dt.time,
     food_service_time: dt.time,
-    setup_access_time: dt.time,
+    setup_access_time: dt.time | None,
     adult_count: int,
     child_count: int,
     actor: str,
@@ -346,16 +354,24 @@ def save_basics_step(
             )
             setattr(booking, field, new_value)
 
-    # ALWAYS a request pending staff confirmation, never auto-promised --
-    # same semantics as a vendor's bump-in time (per Aaron, 28 Aug 2026:
-    # "setup access is a request, not a confirmation"; previously
-    # standard-or-later times auto-confirmed). Staff confirm via
-    # app.services.booking.confirm_setup_access, and the Event Order
+    # A TIME GIVEN is always a request pending staff confirmation, never
+    # auto-promised -- same semantics as a vendor's bump-in time (per
+    # Aaron, 28 Aug 2026: "setup access is a request, not a confirmation";
+    # before that, standard-or-later times auto-confirmed). Staff confirm
+    # via app.services.booking.confirm_setup_access, and the Event Order
     # renders the requested/confirmed qualifier either way.
-    booking.setup_access_confirmed = False
+    #
+    # NO TIME is NULL, which is the tri-state's "never requested" -- not
+    # False, which means "asked for and waiting on Aaron". The field used
+    # to be required and pre-filled with the 2pm standard, so every single
+    # wizard submitted a request the client had not made and left a
+    # Confirm button on the booking page for it (Aaron, 2026-09-15: don't
+    # pre-fill it).
+    booking.setup_access_confirmed = False if setup_access_time is not None else None
 
     warnings = validate_booking_time(booking.event_date, start_time, end_time)
-    warnings += validate_setup_access_time(setup_access_time)
+    if setup_access_time is not None:
+        warnings += validate_setup_access_time(setup_access_time)
     warnings += validate_trading_hours(booking.event_date, end_time, start_time)
 
     _advance_step(session, WizardStep.basics)
@@ -505,7 +521,11 @@ def save_music_step(
     _lock_and_guard_editable(db, session)
     selected = list(music_types) if music_types else ([music_type] if music_type else [])
     if not selected:
-        raise ValueError("pick at least one music option")
+        raise ValueError("pick at least one music option, or 'No music'")
+    if MusicType.none in selected and len(selected) > 1:
+        # "No music" and a DJ is not an answer anybody means, and letting
+        # it through would put both lines on the run sheet.
+        raise ValueError("'No music' cannot be combined with another music option")
     session.music_response = {
         "music_types": [m.value for m in selected],
         "music_type": selected[0].value,  # legacy mirror

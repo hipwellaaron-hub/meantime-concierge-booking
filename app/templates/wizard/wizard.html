@@ -255,7 +255,12 @@
       start_time: (DATA.booking.start_time || "").slice(0, 5),
       end_time: (DATA.booking.end_time || "").slice(0, 5),
       food_service_time: (DATA.booking.food_service_time || "").slice(0, 5),
-      setup_access_time: (DATA.booking.setup_access_time || "14:00").slice(0, 5),
+      // NOT pre-filled with the 2pm standard any more (Aaron, 2026-09-15).
+      // Seeding it meant every client submitted a set-up request they had
+      // not made, and the booking page then showed "requested 14:00
+      // (earlier than standard) -- pending confirmation" with a Confirm
+      // button, over a time that IS the standard.
+      setup_access_time: (DATA.booking.setup_access_time || "").slice(0, 5),
       guest_arrival_time: (DATA.booking.guest_arrival_time || "").slice(0, 5),
       key_moments: (DATA.booking.key_moments || []).map(function (m) { return { time: (m.time || "").slice(0, 5), label: m.label }; }),
       adult_count: DATA.booking.adult_count,
@@ -338,7 +343,7 @@
       '<div><label class="first">Event finish time</label><input type="time" id="f-end" required></div>' +
       '</div>' +
       '<label>Food service time</label><input type="time" id="f-food-time" required>' +
-      '<label>Set-up access time</label><input type="time" id="f-setup-time" required>' +
+      '<label>Set-up access time <span class="field-hint">optional &mdash; leave blank unless you need in before 2pm</span></label><input type="time" id="f-setup-time">' +
       '<p class="field-hint" id="setup-hint">We aim for 2:00pm access. This is a request only — the team will confirm your access time closer to the event.</p>' +
       '<label>Guest arrival time</label><input type="time" id="f-guest-arrival">' +
       '<p class="field-hint">When your guests arrive — often different from your own access time. Leave blank if it\'s the same as your arrival.</p>' +
@@ -659,11 +664,12 @@
   // so these toggle independently rather than replacing each other.
   function renderMusic() {
     root.innerHTML =
-      '<div class="card"><h2>Music</h2><p class="step-intro">Pick everything that applies — a playlist and a DJ together is common.</p>' +
+      '<div class="card"><h2>Music</h2><p class="step-intro">Pick everything that applies — a playlist and a DJ together is common. Not having any? Pick <b>No music</b>.</p>' +
       '<div class="option-grid" id="music-options">' +
       '<div class="option-card" data-key="own_playlist"><div class="opt-title">Own playlist</div><div class="opt-desc">Spotify only — phones, iPads and laptops can\'t connect to the venue system. Set the playlist to public and give the team its name on the night — never a link.</div></div>' +
       '<div class="option-card" data-key="dj"><div class="opt-title">DJ</div><div class="opt-desc">Yours or ours. Add your DJ\'s details on the Suppliers &amp; Vendors step.</div></div>' +
       '<div class="option-card" data-key="musician"><div class="opt-title">Musician</div><div class="opt-desc">Live music, arranged by the venue at the same rate as a DJ.</div></div>' +
+      '<div class="option-card" data-key="none"><div class="opt-title">No music</div><div class="opt-desc">No playlist, DJ or musician. Pick this on its own.</div></div>' +
       "</div>" +
       '<label>Notes</label><textarea id="f-music-notes" placeholder="Playlist name, requests, do-not-plays..."></textarea>' +
       '<label>Bump-in notes</label><textarea id="f-bump-in" placeholder="Equipment, arrival time for the DJ, etc."></textarea>' +
@@ -679,7 +685,16 @@
       el.addEventListener("click", function () {
         var key = el.getAttribute("data-key");
         var index = state.music.music_types.indexOf(key);
-        if (index >= 0) { state.music.music_types.splice(index, 1); } else { state.music.music_types.push(key); }
+        if (index >= 0) {
+          state.music.music_types.splice(index, 1);
+        } else if (key === "none") {
+          // On its own: "no music" plus a DJ is not an answer anybody
+          // means, and the server refuses the combination anyway.
+          state.music.music_types = ["none"];
+        } else {
+          state.music.music_types = state.music.music_types.filter(function (k) { return k !== "none"; });
+          state.music.music_types.push(key);
+        }
         refresh();
       });
     });
