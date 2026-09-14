@@ -27,7 +27,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models import Venue
-from app.services import drafting
+from app.services import drafting, schema_audit
 from app.services import enquiry_classification, stripe_integration
 from app.services.notifications import is_gmail_smtp_configured
 
@@ -82,6 +82,7 @@ def healthz(db: Session = Depends(get_db)):
             for venue in venues
         )
         drafting_failures = drafting.recent_failure_count(db)
+        schema_drifting = schema_audit.drifting(db)
         checks = {
             "database": True,
             "venues_present": True,
@@ -102,8 +103,23 @@ def healthz(db: Session = Depends(get_db)):
             # notification signal beside it: a count that flips the
             # endpoint, so a monitor sees it.
             "ai_drafting_failing": drafting_failures > 0,
+            # Does the database carry what the migrations promised? Twice on
+            # 2026-09-14 it did not, both times because a fix was made by
+            # editing a migration that had already run -- so alembic read the
+            # database as current, skipped the file, and nothing ever asked
+            # the database itself. A passing test and a reviewed diff are not
+            # evidence of applied state.
+            #
+            # A BOOLEAN ONLY. The detail is logged, because this endpoint is
+            # public and a list of the triggers a database is missing is a map
+            # of what is unguarded.
+            "schema_drift": schema_drifting,
         }
-        status = "degraded" if (notification_failures > 0 or drafting_failures > 0) else "ok"
+        status = (
+            "degraded"
+            if (notification_failures > 0 or drafting_failures > 0 or schema_drifting)
+            else "ok"
+        )
     except Exception:
         # A real DB connection but something else broke -- still report
         # what we could confirm rather than raising a 500 for a monitor
