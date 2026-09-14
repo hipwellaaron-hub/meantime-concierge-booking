@@ -374,16 +374,32 @@ def current_food_lines(document: Document | None) -> list[dict]:
     return out
 
 
+LINE_SOURCE_PROPOSAL = "food_proposal"
+
+
 def _is_catalogue_built(invoice) -> bool:
     """Whether every charge line on this invoice came from this sync.
 
-    A catalogue line carries its menu_item_id; nothing else writes one.
-    So this answers "is this invoice entirely mine to rebuild?" -- and
-    only then is replacing its lines safe. The staff invoice form, and
-    the wizard's own line builder, both write lines WITHOUT an id, which
-    is why the id is the right question and "is it food?" is not: the
-    wizard's platters and its priced in-house cake would pass a food
-    test and be double-billed by a merge (review, 2026-09-11)."""
+    It used to ask "does every line carry a menu_item_id?", on the stated
+    grounds that nothing else wrote one -- the staff form and the wizard's
+    line builder both left it out, so the id doubled as an ownership mark.
+    That stopped being true on 2026-09-14, when the wizard started naming
+    its catalogue item so a price move could reach its lines. One key was
+    carrying two meanings -- "priced from this item" and "the sync wrote
+    this" -- which is the exact shape of fault the stale-copy register is
+    about, and the moment a second writer produced the key, an approval
+    would have rebuilt a wizard-built invoice and dropped its in-house
+    cake (test_a_wizard_built_draft_is_left_alone_rather_than_double_billed
+    caught it).
+
+    So ownership is now its own key. Every line this sync writes -- onto
+    the Event Order in _apply and onto the invoice here -- carries
+    source=LINE_SOURCE_PROPOSAL, the prefill and both invoice forms carry
+    it through a round trip exactly as they carry the id, and this asks the
+    question it always meant to: is every charge line one of mine? The
+    wizard's lines, a staff member's, a migrated record's: none are, and
+    none ever get rebuilt.
+    """
     from app.services import invoicing
 
     charges = [
@@ -394,7 +410,7 @@ def _is_catalogue_built(invoice) -> bool:
     # An EMPTY draft (no charge lines at all) counts as mine: there is
     # nothing on it to lose, and refusing to fill it would raise a banner
     # asking somebody to reconcile an invoice with nothing on it.
-    return all(line.get("menu_item_id") for line in charges)
+    return all(line.get("source") == LINE_SOURCE_PROPOSAL for line in charges)
 
 
 def final_invoice_prefill(document) -> list[dict]:
@@ -437,6 +453,10 @@ def final_invoice_prefill(document) -> list[dict]:
             # from the Event Order's own food order was never auto-syncable
             # -- it only looked as though it came from there.
             "menu_item_id": raw.get("menu_item_id") or "",
+            # And the ownership mark beside it, for the same reason: the
+            # id says which item priced the line, the source says who wrote
+            # it, and _is_catalogue_built asks the second question.
+            "source": raw.get("source") or "",
         })
     return rows
 
@@ -467,6 +487,9 @@ def sync_final_invoice_from_food(db: Session, booking: Booking, lines: list[dict
             "unit_price": ln["unit_price"],
             "category": ln["category"],
             "menu_item_id": ln["menu_item_id"],
+            # The ownership mark _is_catalogue_built reads. Written only
+            # here and in _apply; carried, never minted, everywhere else.
+            "source": LINE_SOURCE_PROPOSAL,
         }
         for ln in lines
     ]
@@ -1200,6 +1223,10 @@ def _apply(
                         "unit_price": ln["unit_price"],
                         "category": ln["category"],
                         "menu_item_id": ln["menu_item_id"],
+                        # Ownership, carried by final_invoice_prefill onto
+                        # the invoice form so a prefilled invoice is still
+                        # the sync's to rebuild -- see _is_catalogue_built.
+                        "source": LINE_SOURCE_PROPOSAL,
                     }
                     for ln in lines
                 ],

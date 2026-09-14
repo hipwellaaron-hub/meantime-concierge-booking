@@ -135,7 +135,14 @@ def test_in_house_cake_becomes_a_priced_dessert_line(db, loft, menu_items):
     line_items, outstanding = build_food_line_items(db, booking, {"platters": [], "pizzas": []}, extras)
     assert outstanding == []
     assert line_items == [
-        {"description": "Tiramisu Cake — celebration cake", "quantity": 1, "unit_price": "80.00", "category": "dessert"}
+        {
+            "description": "Tiramisu Cake — celebration cake", "quantity": 1, "unit_price": "80.00",
+            "category": "dessert",
+            # Named since 2026-09-14 so a catalogue price move can reach a
+            # wizard-built line. No `source`: the wizard is not the approval
+            # sync, and only the sync's lines carry the ownership mark.
+            "menu_item_id": str(tiramisu.id),
+        }
     ]
 
 

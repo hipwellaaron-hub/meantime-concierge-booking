@@ -262,7 +262,7 @@
     <div id="line-items">
       {% for item in form_content.food_order.line_items %}
       <div class="field-row line-item">
-        <div style="flex:2;"><label>Item</label><input type="text" name="item_descriptions" value="{{ item.description or item.item }}" maxlength="255"><input type="hidden" name="item_menu_item_ids" value="{{ item.get('menu_item_id', '') }}"></div>
+        <div style="flex:2;"><label>Item</label><input type="text" name="item_descriptions" value="{{ item.description or item.item }}" maxlength="255"><input type="hidden" name="item_menu_item_ids" value="{{ item.get('menu_item_id', '') }}"><input type="hidden" name="item_sources" value="{{ item.get('source', '') }}"></div>
         <div>
           <label>Category</label>
           <select name="item_categories">
@@ -384,7 +384,7 @@
 </script>
 <template id="line-item-template">
   <div class="field-row line-item">
-    <div style="flex:2;"><label>Item</label><input type="text" name="item_descriptions" value="" maxlength="255"><input type="hidden" name="item_menu_item_ids" value=""></div>
+    <div style="flex:2;"><label>Item</label><input type="text" name="item_descriptions" value="" maxlength="255"><input type="hidden" name="item_menu_item_ids" value=""><input type="hidden" name="item_sources" value=""></div>
     <div>
       <label>Category</label>
       <select name="item_categories">

@@ -2509,11 +2509,15 @@ def test_approving_the_food_order_writes_the_lines_and_the_total_from_the_catalo
     document = beo_proposals.approve_field(db, _food_row(proposal), actor="staff:aaron")
 
     lines = document.content["food_order"]["line_items"]
+    # Plus `source`: the sync's ownership mark, distinct from the id since
+    # 2026-09-14 when the wizard started writing ids too. Only lines the
+    # sync writes carry it, and it is what _is_catalogue_built reads.
+    own = beo_proposals.LINE_SOURCE_PROPOSAL
     assert lines == [
-        {"description": "Grazing Platter", "quantity": 2, "unit_price": "250.00", "category": "platter", "menu_item_id": str(menu_items["Grazing Platter"].id)},
-        {"description": "Pork Belly Bites", "quantity": 3, "unit_price": "100.00", "category": "platter", "menu_item_id": str(menu_items["Pork Belly Bites"].id)},
-        {"description": "Tiramisu Cake", "quantity": 1, "unit_price": "80.00", "category": "dessert", "menu_item_id": str(menu_items["Tiramisu Cake"].id)},
-    ], "the shape every reader of food_order knows, plus the item id; a cake prints under Desserts"
+        {"description": "Grazing Platter", "quantity": 2, "unit_price": "250.00", "category": "platter", "menu_item_id": str(menu_items["Grazing Platter"].id), "source": own},
+        {"description": "Pork Belly Bites", "quantity": 3, "unit_price": "100.00", "category": "platter", "menu_item_id": str(menu_items["Pork Belly Bites"].id), "source": own},
+        {"description": "Tiramisu Cake", "quantity": 1, "unit_price": "80.00", "category": "dessert", "menu_item_id": str(menu_items["Tiramisu Cake"].id), "source": own},
+    ], "the shape every reader of food_order knows, plus the item id and the sync's mark; a cake prints under Desserts"
     assert document.content["food_order"]["note"] is None
     assert document.content["total_food_spend"]["total"] == "880.00", "the heading is rebuilt with the lines"
     assert "food_order" in document.content["_authored"], "an approval is a person putting these lines on the document"
@@ -2841,6 +2845,12 @@ def test_the_edit_form_keeps_the_catalogue_id_and_a_no_op_save_changes_nothing(a
     draft = beo_proposals.approve_field(db, _food_row(proposal), actor="staff:aaron")
     page = admin_client.get(f"/admin/bookings/{booking.id}/documents/{draft.id}/edit").text
     assert f'name="item_menu_item_ids" value="{menu_items["Grazing Platter"].id}"' in page
+    # And the ownership mark beside it, on the same terms: rendered into a
+    # hidden input so a no-op save hands it back. Dropping it would make
+    # the stored dict differ from the posted one, which records the food
+    # order as a person's -- and refresh_draft_food_prices would then
+    # freeze a generated price at send.
+    assert f'name="item_sources" value="{beo_proposals.LINE_SOURCE_PROPOSAL}"' in page
 
     data = {
         "csrf_token": _csrf_of(admin_client, f"/admin/bookings/{booking.id}/documents/{draft.id}/edit"),
@@ -2848,6 +2858,7 @@ def test_the_edit_form_keeps_the_catalogue_id_and_a_no_op_save_changes_nothing(a
         "item_descriptions": "Grazing Platter", "item_categories": "platter",
         "item_quantities": "2", "item_unit_prices": "250.00",
         "item_menu_item_ids": str(menu_items["Grazing Platter"].id),
+        "item_sources": beo_proposals.LINE_SOURCE_PROPOSAL,
     }
     for name in ("catering_order_and_service_style", "bar_structure", "room_layout_notes", "music", "entertainment",
                  "dietaries", "accessibility", "decorations", "special_notes", "onsite_contact", "internal_notes",
@@ -3014,8 +3025,15 @@ def test_a_draft_carrying_anything_this_sync_did_not_write_is_left_alone(admin_c
 
 
 def test_a_wizard_built_draft_is_left_alone_rather_than_double_billed(db, loft, menu_items):
-    """The wizard's own lines carry no catalogue id, so a merge keyed on
-    'has no id' would have kept its platters AND appended the AI's."""
+    """The wizard's lines are not the sync's to rebuild.
+
+    Until 2026-09-14 that was encoded by the wizard writing NO catalogue
+    id, and _is_catalogue_built asking "does every line carry one?". The
+    wizard now names its item so a price move can reach its lines, and
+    that would have made this invoice look like the sync's -- an approval
+    would have rebuilt it and dropped the in-house cake. This test caught
+    it. Ownership is its own key now (source=LINE_SOURCE_PROPOSAL), written
+    only by the sync, and the wizard's lines never carry it."""
     from app.services import invoicing, policy
     from app.services.wizard_generation import build_food_line_items
 
@@ -3023,7 +3041,10 @@ def test_a_wizard_built_draft_is_left_alone_rather_than_double_billed(db, loft, 
     wizard_lines, _ = build_food_line_items(
         db, booking, {"platters": [{"menu_item_id": str(menu_items["Grazing Platter"].id), "quantity": 2}]}
     )
-    assert all("menu_item_id" not in ln for ln in wizard_lines), "the wizard writes no catalogue id"
+    assert all(ln.get("menu_item_id") for ln in wizard_lines), "the wizard names its catalogue item"
+    assert all(ln.get("source") != beo_proposals.LINE_SOURCE_PROPOSAL for ln in wizard_lines), (
+        "a wizard line must never carry the sync's ownership mark"
+    )
     wizard_invoice = invoicing.create_final_invoice(
         db, booking, line_items=wizard_lines,
         due_date=policy.final_balance_due_date(booking.event_date, issued_on=dt.date.today()), actor="wizard_client:test",

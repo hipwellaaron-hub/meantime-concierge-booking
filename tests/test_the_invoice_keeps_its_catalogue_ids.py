@@ -98,10 +98,16 @@ def test_the_prefilled_form_posts_the_id_back(admin_client, db, hamilton, loft, 
 def test_a_no_op_save_keeps_the_ids(admin_client, db, hamilton, loft, contact):
     """THE one. Open the edit form, change nothing, press Save."""
     booking = _booking(db, loft, contact, name="ZZNOOP Save")
+    # The sync's ownership mark alongside the id. Since 2026-09-14 the id
+    # alone no longer says "the sync wrote this" -- the wizard writes ids
+    # too -- so a line the sync would own carries `source`, and the form
+    # must hand THAT back as well or the same de-sync-by-being-careful
+    # hazard reopens one key over.
+    own = beo_proposals.LINE_SOURCE_PROPOSAL
     invoice = invoicing.create_final_invoice(
         db, booking,
         line_items=[{"description": "Grazing Platter", "quantity": 1,
-                     "unit_price": "250.00", "menu_item_id": MENU_ID}],
+                     "unit_price": "250.00", "menu_item_id": MENU_ID, "source": own}],
         due_date=dt.date.today() + dt.timedelta(days=10), actor="test",
     )
     db.flush()
@@ -119,6 +125,8 @@ def test_a_no_op_save_keeps_the_ids(admin_client, db, hamilton, loft, contact):
     quantities = re.findall(r'name="quantity" value="([^"]*)"', page.text)
     prices = re.findall(r'name="unit_price" value="([^"]*)"', page.text)
     ids = re.findall(r'name="menu_item_id" value="([^"]*)"', page.text)
+    sources = re.findall(r'name="source" value="([^"]*)"', page.text)
+    assert own in sources, "the form does not render the ownership mark, so it cannot post it back"
 
     resp = admin_client.post(
         f"/admin/hamilton/bookings/{booking.id}/invoices/{invoice.id}/edit",
@@ -129,6 +137,7 @@ def test_a_no_op_save_keeps_the_ids(admin_client, db, hamilton, loft, contact):
             "quantity": quantities,
             "unit_price": prices,
             "menu_item_id": ids,
+            "source": sources,
         },
         follow_redirects=False,
     )
@@ -138,6 +147,9 @@ def test_a_no_op_save_keeps_the_ids(admin_client, db, hamilton, loft, contact):
     charge = [li for li in invoice.line_items if not li["description"].startswith("Less:")]
     assert [li.get("menu_item_id") for li in charge] == [MENU_ID], (
         "a save with nothing changed stripped the catalogue id"
+    )
+    assert [li.get("source") for li in charge] == [own], (
+        "a save with nothing changed stripped the sync's ownership mark"
     )
     assert beo_proposals._is_catalogue_built(invoice) is True, (
         "the booking fell out of auto-sync by being looked at"

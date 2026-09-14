@@ -23,7 +23,7 @@
     <div id="line-items">
       {% for li in editable_lines %}
       <div class="field-row line-item">
-        <div style="flex:2;"><label>Description</label><input type="text" name="description" value="{{ li.description }}" maxlength="255"><input type="hidden" name="menu_item_id" value="{{ li.get('menu_item_id', '') }}"></div>
+        <div style="flex:2;"><label>Description</label><input type="text" name="description" value="{{ li.description }}" maxlength="255"><input type="hidden" name="menu_item_id" value="{{ li.get('menu_item_id', '') }}"><input type="hidden" name="source" value="{{ li.get('source', '') }}"></div>
         <div style="flex:0 0 90px;"><label>Qty</label><input type="text" name="quantity" value="{{ li.quantity }}"></div>
         <div style="flex:0 0 120px;"><label>Unit price</label><input type="text" name="unit_price" value="{{ li.unit_price }}"></div>
         <div><label>Line total</label><div class="line-total muted" style="padding-top:9px;">&mdash;</div></div>
@@ -31,7 +31,7 @@
       {% endfor %}
       {# One spare blank row so a discount can be added without the JS. #}
       <div class="field-row line-item">
-        <div style="flex:2;"><label>Description</label><input type="text" name="description" value="" maxlength="255" placeholder="e.g. Loyalty discount"><input type="hidden" name="menu_item_id" value=""></div>
+        <div style="flex:2;"><label>Description</label><input type="text" name="description" value="" maxlength="255" placeholder="e.g. Loyalty discount"><input type="hidden" name="menu_item_id" value=""><input type="hidden" name="source" value=""></div>
         <div style="flex:0 0 90px;"><label>Qty</label><input type="text" name="quantity" value="1"></div>
         <div style="flex:0 0 120px;"><label>Unit price</label><input type="text" name="unit_price" value="" placeholder="-150.00"></div>
         <div><label>Line total</label><div class="line-total muted" style="padding-top:9px;">&mdash;</div></div>
@@ -57,7 +57,7 @@
 
 <template id="line-item-template">
   <div class="field-row line-item">
-    <div style="flex:2;"><label>Description</label><input type="text" name="description" value="" maxlength="255"><input type="hidden" name="menu_item_id" value=""></div>
+    <div style="flex:2;"><label>Description</label><input type="text" name="description" value="" maxlength="255"><input type="hidden" name="menu_item_id" value=""><input type="hidden" name="source" value=""></div>
     <div style="flex:0 0 90px;"><label>Qty</label><input type="text" name="quantity" value="1"></div>
     <div style="flex:0 0 120px;"><label>Unit price</label><input type="text" name="unit_price" value=""></div>
     <div><label>Line total</label><div class="line-total muted" style="padding-top:9px;">&mdash;</div></div>

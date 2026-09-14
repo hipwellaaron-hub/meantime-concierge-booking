@@ -1064,7 +1064,9 @@ def edit_document_form(
 _FOOD_CATEGORIES = ("platter", "pizza", "side", "dessert")
 
 
-def _food_order_from_form(descriptions, quantities, unit_prices, categories, menu_item_ids=(), *, strict: bool) -> dict:
+def _food_order_from_form(
+    descriptions, quantities, unit_prices, categories, menu_item_ids=(), sources=(), *, strict: bool
+) -> dict:
     """The food order this form posted, in the stored shape.
 
     ONE walk for both readers of the form. `strict` is the whole difference:
@@ -1092,9 +1094,17 @@ def _food_order_from_form(descriptions, quantities, unit_prices, categories, men
     # "changed the food order" because the stored dict no longer matches
     # what the form posts (review, 2026-09-11).
     padded_ids = list(menu_item_ids) + [""] * (len(descriptions) - len(menu_item_ids))
+    # The ownership mark, on the same terms as the id. Dropping it on a
+    # no-op save would do two things at once: the sync would stop owning a
+    # prefilled invoice built from these lines, and the stored dict would
+    # no longer match what the form posts -- so content_authorship would
+    # record the food order as a PERSON'S, and refresh_draft_food_prices
+    # would then freeze a stale price at send on a document nobody typed
+    # into. Carried, never minted, exactly like menu_item_id.
+    padded_sources = list(sources) + [""] * (len(descriptions) - len(sources))
     line_items = []
-    for description, quantity, unit_price, category, menu_item_id in zip(
-        descriptions, quantities, unit_prices, padded, padded_ids
+    for description, quantity, unit_price, category, menu_item_id, source in zip(
+        descriptions, quantities, unit_prices, padded, padded_ids, padded_sources
     ):
         if not description.strip():
             continue  # a blanked-out row is how the form deletes a line item
@@ -1105,6 +1115,8 @@ def _food_order_from_form(descriptions, quantities, unit_prices, categories, men
             "quantity": quantity,
             "unit_price": unit_price,
         }
+        if (source or "").strip():
+            entry["source"] = source.strip()
         if strict:
             try:
                 entry["quantity"] = int(quantity)
@@ -1165,6 +1177,7 @@ def save_document_edit(
     item_unit_prices: list[str] = Form(default=[]),
     item_categories: list[str] = Form(default=[]),
     item_menu_item_ids: list[str] = Form(default=[]),
+    item_sources: list[str] = Form(default=[]),
     content_expect: str = Form(default=""),
     db: Session = Depends(get_db),
     staff: StaffUser = Depends(require_staff),
@@ -1218,7 +1231,8 @@ def save_document_edit(
             # moved, and hands back the stored lines over the ones this staff
             # member just typed.
             "food_order": _food_order_from_form(
-                item_descriptions, item_quantities, item_unit_prices, item_categories, item_menu_item_ids, strict=False
+                item_descriptions, item_quantities, item_unit_prices, item_categories, item_menu_item_ids,
+                item_sources, strict=False
             ),
         }
         if document.type == DocumentType.agreement:
@@ -1302,7 +1316,8 @@ def save_document_edit(
         # price is a 422 that changes nothing rather than a 422 with the
         # timeline already updated.
         food_order = _food_order_from_form(
-            item_descriptions, item_quantities, item_unit_prices, item_categories, item_menu_item_ids, strict=True
+            item_descriptions, item_quantities, item_unit_prices, item_categories, item_menu_item_ids,
+            item_sources, strict=True
         )
 
         # Timeline facts write through to the Booking itself (per-field
@@ -1697,12 +1712,13 @@ def create_final_invoice(
     # Hidden, and optional on purpose -- see _parse_invoice_line_items on why
     # a short or absent array must not truncate the real charge lines.
     menu_item_id: list[str] = Form(default=[]),
+    source: list[str] = Form(default=[]),
     db: Session = Depends(get_db),
     staff: StaffUser = Depends(require_staff),
 ):
     booking = _get_booking_or_404(request, db, booking_id)
 
-    line_items = _parse_invoice_line_items(description, quantity, unit_price, menu_item_id)
+    line_items = _parse_invoice_line_items(description, quantity, unit_price, menu_item_id, source)
 
     try:
         invoicing.create_final_invoice(db, booking, line_items=line_items, due_date=due_date, actor=_actor(staff))
@@ -1811,6 +1827,7 @@ def preview_invoice(
 def _parse_invoice_line_items(
     description: list[str], quantity: list[str], unit_price: list[str],
     menu_item_id: list[str] | None = None,
+    source: list[str] | None = None,
 ) -> list[dict]:
     """Shared by the create and edit invoice forms: turns the parallel
     description/quantity/unit_price arrays into line-item dicts, skipping
@@ -1843,6 +1860,12 @@ def _parse_invoice_line_items(
     it no longer names.
     """
     ids = list(menu_item_id or [])
+    # The ownership mark, carried on exactly the terms the id is: optional,
+    # positional against the ROW, never minted here. A staff save that
+    # dropped it would turn a sync-built invoice into one the sync refuses
+    # to touch -- the de-sync-by-being-careful hazard 1ee89f5 closed for
+    # the id, reopened one key over.
+    sources = list(source or [])
     line_items = []
     for row, (desc, qty, price) in enumerate(zip(description, quantity, unit_price)):
         desc = desc.strip()
@@ -1857,6 +1880,9 @@ def _parse_invoice_line_items(
         carried = ids[row].strip() if row < len(ids) else ""
         if carried:
             item["menu_item_id"] = carried
+        carried_source = sources[row].strip() if row < len(sources) else ""
+        if carried_source:
+            item["source"] = carried_source
         line_items.append(item)
     if not line_items:
         raise HTTPException(status_code=422, detail="At least one line item is required")
@@ -1912,6 +1938,7 @@ def edit_invoice(
     # Hidden, and optional on purpose -- see _parse_invoice_line_items on why
     # a short or absent array must not truncate the real charge lines.
     menu_item_id: list[str] = Form(default=[]),
+    source: list[str] = Form(default=[]),
     db: Session = Depends(get_db),
     staff: StaffUser = Depends(require_staff),
 ):
@@ -1919,7 +1946,7 @@ def edit_invoice(
     invoice = db.get(Invoice, invoice_id)
     if invoice is None or invoice.booking_id != booking_id:
         raise HTTPException(status_code=404, detail="Invoice not found on this booking")
-    line_items = _parse_invoice_line_items(description, quantity, unit_price, menu_item_id)
+    line_items = _parse_invoice_line_items(description, quantity, unit_price, menu_item_id, source)
     try:
         invoicing.update_invoice(db, invoice, line_items=line_items, due_date=due_date, actor=_actor(staff))
     except ValueError as exc:
