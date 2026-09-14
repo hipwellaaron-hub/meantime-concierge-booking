@@ -27,7 +27,7 @@ because the whole point of doing this BEFORE The Entrance's row exists is
 that the case cannot arise.
 
 Revision ID: f3d9b7c1a468
-Revises: e8a1c6f4b209
+Revises: b7e4a91c3f20
 Create Date: 2026-09-13 00:00:00.000000
 """
 from typing import Sequence, Union
@@ -36,7 +36,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "f3d9b7c1a468"
-down_revision: Union[str, Sequence[str], None] = "c2f8d61a94b7"
+down_revision: Union[str, Sequence[str], None] = "b7e4a91c3f20"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

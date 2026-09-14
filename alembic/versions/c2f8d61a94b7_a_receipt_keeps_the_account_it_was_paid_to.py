@@ -23,25 +23,42 @@ row would be asserting a fact nobody knows. Those keep rendering live, and
 the template says which it is showing.
 
 Revision ID: c2f8d61a94b7
-Revises: b7e4a91c3f20
+Revises: f3d9b7c1a468
 Create Date: 2026-09-14 05:00:00.000000
 """
 from typing import Sequence, Union
 
-import sqlalchemy as sa
 from alembic import op
-from sqlalchemy.dialects import postgresql
 
 revision: str = "c2f8d61a94b7"
-down_revision: Union[str, Sequence[str], None] = "b7e4a91c3f20"
+down_revision: Union[str, Sequence[str], None] = "f3d9b7c1a468"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "invoices",
-        sa.Column("paid_to_account", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
+    # IF NOT EXISTS, and this one is not defensive padding -- THIS REVISION
+    # HAS BEEN APPLIED UNDER TWO DIFFERENT PARENTS.
+    #
+    # It was first written between b7e4a91c3f20 and f3d9b7c1a468. A local
+    # history reorder then pushed f3d9b7c1a468 to production WITHOUT this
+    # file, so production ran the register migration straight after
+    # b7e4a91c3f20 and stamped f3d9b7c1a468 -- which alembic reads as "and
+    # everything before it", so this revision would never have run there
+    # again. Re-parenting it to f3d9b7c1a468 is what makes it reachable.
+    #
+    # The cost is that a database which DID apply it under the old parent
+    # is stamped f3d9b7c1a468 with the column already present, and would
+    # meet it a second time. Observed, not theorised, on 2026-09-14:
+    #
+    #     production        f3d9b7c1a468, paid_to_account absent
+    #     concierge_dev     f3d9b7c1a468, paid_to_account absent
+    #     concierge_test    f3d9b7c1a468, paid_to_account PRESENT
+    #
+    # The same reasoning the downgrade below already gives, for the same
+    # reason: the schema is not always what the graph says.
+    op.execute(
+        "ALTER TABLE invoices ADD COLUMN IF NOT EXISTS paid_to_account JSONB"
     )
 
 
