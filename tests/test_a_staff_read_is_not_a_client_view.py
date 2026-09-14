@@ -199,6 +199,74 @@ def test_the_staff_read_of_an_invoice_leaves_no_client_view(
     assert invoice.viewed_at is None, "a staff read stamped the invoice viewed_at"
 
 
+def test_the_staff_preview_never_mints_a_payment_link(
+    admin_client, db, hamilton, loft, contact, monkeypatch
+):
+    """My own regression, caught in the sweep rather than in review. The
+    first version of this fix had the preview build the client's context
+    WITH the card payment link, so staff would see what the client sees.
+    But stripe_integration mints a fresh Payment Link on every invoice-page
+    view and record_payment_link APPENDS it to the invoice -- so a staff
+    read would have written client-facing state and created a live payable
+    link, which is the exact fault the route was repointed to avoid.
+
+    The preview says the client has a card option instead of proving it.
+
+    STRIPE IS DELIBERATELY MADE TO LOOK CONFIGURED HERE. Without this the
+    test passes for the wrong reason -- is_configured_for returns False in
+    the test environment, so nothing would mint whatever the route did, and
+    the assertion would hold with the guard deleted. Proved: with the mint
+    restored and these patches absent, the test still passed."""
+    from app.services import stripe_integration
+
+    minted = []
+
+    def _fake_link(invoice, amount):
+        minted.append(invoice.id)
+        return ("https://pay.example/test", "plink_test", "acct_test")
+
+    monkeypatch.setattr(stripe_integration, "is_configured_for", lambda venue: True)
+    monkeypatch.setattr(stripe_integration, "create_payment_link", _fake_link)
+
+    booking = _booking(db, loft, contact, name="ZZNOMINT Booking")
+    invoice = _sent_invoice(db, booking)
+    before = list(invoice.stripe_payment_link_ids or [])
+
+    page = admin_client.get(
+        f"/admin/hamilton/bookings/{booking.id}/invoices/{invoice.id}/preview",
+        follow_redirects=True,
+    )
+
+    assert page.status_code == 200
+    db.refresh(invoice)
+    assert minted == [], "a staff preview called Stripe to mint a payment link"
+    assert list(invoice.stripe_payment_link_ids or []) == before, (
+        "a staff preview recorded a payment link against the invoice"
+    )
+
+
+def test_the_staff_preview_says_the_client_can_pay_by_card(
+    admin_client, db, hamilton, loft, contact, monkeypatch
+):
+    """Not minting must not become "silently omit the Pay by card line",
+    which would read as "this client has no way to pay"."""
+    from app.services import stripe_integration
+
+    monkeypatch.setattr(stripe_integration, "is_configured_for", lambda venue: True)
+
+    booking = _booking(db, loft, contact, name="ZZCARDNOTE Booking")
+    invoice = _sent_invoice(db, booking)
+
+    page = admin_client.get(
+        f"/admin/hamilton/bookings/{booking.id}/invoices/{invoice.id}/preview",
+        follow_redirects=True,
+    )
+
+    assert page.status_code == 200
+    assert "Pay by card" in page.text, "the preview hides that the client can pay by card"
+    assert "not created for a staff preview" in page.text
+
+
 def test_no_invoice_view_link_points_at_the_client_url():
     """Structural, for the same reason as the document one: the invoice
     rows are a loop and a behavioural test only covers the invoice the

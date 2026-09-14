@@ -1709,26 +1709,38 @@ def preview_invoice(
     stamps viewed_at. Staff checking their own work were being recorded as
     the client opening the invoice.
 
-    Builds the client's own context rather than a second copy of it. The
-    previous hand-built dict hardcoded stripe off with the reasoning that a
-    card link is "irrelevant for a draft nobody can pay yet, and a wasted
-    API call on every preview" -- true of a draft, and false the moment
-    staff arrive here for a sent one: the preview would silently omit the
-    Pay by card button the client actually has, and a staff member could
-    reasonably conclude the client had no way to pay. So the card link is
-    included for anything that is not a draft, exactly as the client sees
-    it, and skipped for a draft exactly as before."""
+    Builds the client's own context rather than a second copy of it.
+
+    NEVER MINTS A PAYMENT LINK, and that is a deliberate correction to my
+    own first attempt at this. stripe_integration creates a FRESH Stripe
+    Payment Link on every invoice-page view and invoicing.record_payment_link
+    APPENDS it to invoice.stripe_payment_link_ids -- so minting one here
+    would make a staff read write client-facing state and create a live
+    payable link, which is the exact class of fault this route was just
+    repointed to avoid.
+
+    But the preview must not silently omit the Pay by card line either: a
+    staff member who cannot see it could reasonably conclude the client has
+    no way to pay. So the template is told the client HAS that option and
+    prints a note in place of the link, rather than a button that was never
+    minted or nothing at all."""
     _get_booking_or_404(request, db, booking_id)
     invoice = db.get(Invoice, invoice_id)
     if invoice is None or invoice.booking_id != booking_id:
         raise HTTPException(status_code=404, detail="Invoice not found on this booking")
     from app.api.invoices import _build_invoice_context
+    from app.services import stripe_integration
 
-    context = _build_invoice_context(
-        db, invoice, include_card_payment=invoice.status != InvoiceStatus.draft
+    context = _build_invoice_context(db, invoice, include_card_payment=False)
+    card_available = (
+        invoice.status != InvoiceStatus.draft
+        and not context["summary"]["is_fully_paid"]
+        and stripe_integration.is_configured_for(invoice.booking.venue)
     )
     return templates.TemplateResponse(
-        request, "invoice.html", {**context, "is_staff_preview": True}
+        request,
+        "invoice.html",
+        {**context, "is_staff_preview": True, "card_payment_offered": card_available},
     )
 
 

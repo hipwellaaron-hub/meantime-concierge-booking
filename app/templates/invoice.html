@@ -238,6 +238,12 @@
     </table>
     {% if stripe_configured %}
     <p>Prefer to pay by card? <a href="{{ card_payment_url }}">Pay ${{ card_payment_amount }} by card</a>.</p>
+    {% elif card_payment_offered %}
+    {# Staff preview only. A Stripe Payment Link is minted per view and
+       recorded against the invoice, so previewing must not create one --
+       but saying nothing here would read as "this client cannot pay by
+       card", which is the opposite of the truth. #}
+    <p class="muted">Prefer to pay by card? — the client sees a working <b>Pay by card</b> link here. It is created fresh each time they open the invoice, so it is deliberately not created for a staff preview.</p>
     {% else %}
     <p>Card payment is available on request — please contact us.</p>
     {% endif %}
