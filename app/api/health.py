@@ -130,8 +130,15 @@ def healthz(db: Session = Depends(get_db)):
         # about three days and then drops the event: a client charged, an
         # invoice still saying unpaid, nothing raised on either side.
         #
-        # Only asked of venues that CAN mint a link. A venue with no Stripe
-        # key at all is not taking money yet and has nothing to verify. That
+        # Only asked of venues that CAN mint a link, and that asymmetry with
+        # `stripe_configured` below is deliberate rather than an oversight:
+        # "can this venue take a card" is a business state a venue is allowed
+        # to be in (reported, not degrading), while "this venue already takes
+        # cards and cannot record the payments" is a fault. A venue taking no
+        # cards loses nothing. A venue taking cards it cannot record loses
+        # money silently. That is what tells the two apart.
+        #
+        # A venue with no Stripe key at all has nothing to verify. That
         # makes it vacuously true wherever Stripe is unconfigured -- which
         # is every test environment, so the probes patch is_configured_for,
         # the same trap the preview test fell into on 2026-09-14.

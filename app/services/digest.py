@@ -21,6 +21,7 @@ it was sent.
 
 import dataclasses
 import datetime as dt
+import logging
 
 from app.utils import format_date_dmy
 from decimal import Decimal
@@ -38,6 +39,8 @@ from app.services.wizard import get_wizard_eligible_bookings
 # full; small enough that a standing group of thirty cannot push the
 # urgent one off the screen of a phone read first thing.
 FINDINGS_LISTED_PER_CHECK = 5
+
+logger = logging.getLogger(__name__)
 
 
 @dataclasses.dataclass
@@ -67,6 +70,18 @@ class DigestContent:
     # It lived in one line of the deploy log, which is read once, by
     # whoever ran the deploy, on the day it ran.
     venue_gaps: list[str] = dataclasses.field(default_factory=list)
+    # Sections that RAISED while being built. Empty is the normal case.
+    #
+    # Until 2026-09-14 one exception anywhere in build_digest took the whole
+    # email down -- for every venue, not just the one that failed -- and a
+    # digest that does not arrive is indistinguishable from a quiet night.
+    # That is the wrong way round for the one channel Aaron says is how he
+    # finds out something is wrong.
+    #
+    # The important half is not that the email survives. It is that an empty
+    # section must never read as "nothing to do" when the truth is "nobody
+    # could look".
+    failed_sections: list[str] = dataclasses.field(default_factory=list)
 
     @property
     def is_empty(self) -> bool:
@@ -76,6 +91,7 @@ class DigestContent:
             or self.findings
             or self.flagged_bookings
             or self.venue_gaps
+            or self.failed_sections
         )
 
     @property
@@ -94,6 +110,10 @@ class DigestContent:
             # attention" in the subject line over a single new venue and
             # bury the bookings under it.
             + (1 if self.venue_gaps else 0)
+            # One item per broken section, because each is a list of unknown
+            # length that nobody can see. "All clear" over a section that
+            # failed is the exact failure this exists to stop.
+            + len(self.failed_sections)
         )
 
 
@@ -134,23 +154,63 @@ def get_overdue_invoices(db: Session, venue: Venue, *, as_of: dt.date | None = N
 def build_digest(db: Session, venue: Venue, *, as_of: dt.date | None = None) -> DigestContent:
     """Imported here rather than at module scope: reconciliation imports
     booking_service, which imports this module's siblings, and a top-level
-    import closes the cycle."""
+    import closes the cycle.
+
+    EVERY SECTION IS BUILT INDEPENDENTLY and a failure is reported, not
+    raised. Until 2026-09-14 this was five expressions inside one
+    constructor call: any one of them raising took down the whole email --
+    for every venue, since send_digest builds them in a list comprehension
+    -- and the cron simply failed. A digest that does not arrive looks
+    exactly like a quiet night, which is the wrong way round for the one
+    channel Aaron says is how he finds out something is wrong.
+
+    A failed section is named in the email and counted as an item, so an
+    empty section is never read as "nothing to do" when the truth is
+    "nobody could look".
+    """
     from app.services import enquiry_classification, reconciliation, venue_readiness
 
+    failed: list[str] = []
+
+    def section(name: str, build, fallback):
+        try:
+            return build()
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "Digest section %r failed for venue %s; the rest of the digest continues",
+                name, getattr(venue, "slug", "?"),
+            )
+            failed.append(name)
+            return fallback
+
     return DigestContent(
-        wizard_eligible=get_wizard_eligible_bookings(db, venue, as_of=as_of),
-        overdue_invoices=get_overdue_invoices(db, venue, as_of=as_of),
+        wizard_eligible=section(
+            "Ready for the guided wizard",
+            lambda: get_wizard_eligible_bookings(db, venue, as_of=as_of), [],
+        ),
+        overdue_invoices=section(
+            "Overdue invoices",
+            lambda: get_overdue_invoices(db, venue, as_of=as_of), [],
+        ),
         # The SAME helpers Triage renders, deliberately. The digest and the
         # page cannot then disagree about what is open -- the module's own
         # rule, and the reason every section here is self-clearing: this
         # reports current state, so a finding resolved during the day is
         # simply absent tomorrow with nothing to mark as sent.
-        findings=reconciliation.open_findings(db, venue),
-        flagged_bookings=enquiry_classification.get_flagged_bookings_in_progress(db, venue),
+        findings=section(
+            "Reconciliation", lambda: reconciliation.open_findings(db, venue), [],
+        ),
+        flagged_bookings=section(
+            "Flagged, still open",
+            lambda: enquiry_classification.get_flagged_bookings_in_progress(db, venue), [],
+        ),
         # The SAME check /healthz folds to a boolean, and its column list is
         # seed's -- a second copy of "which columns matter" is how a deploy
         # log comes to say ready while an email says not.
-        venue_gaps=list(venue_readiness.check(db, venue).gaps),
+        venue_gaps=section(
+            "Venue set-up", lambda: list(venue_readiness.check(db, venue).gaps), [],
+        ),
+        failed_sections=failed,
     )
 
 
@@ -159,6 +219,18 @@ def _item_lines(content: DigestContent, *, dashboard_base_url: str) -> list[str]
     looks like -- both the one-venue and the combined renderers go through
     it, so they cannot drift."""
     lines: list[str] = []
+
+    if content.failed_sections:
+        # FIRST, above everything, including the set-up gaps. Every line
+        # below this one is a claim about current state, and this line says
+        # some of those claims could not be made. A reader who skims and
+        # sees nothing under a heading has to know the difference between
+        # "none" and "unknown".
+        lines.append(f"COULD NOT BE CHECKED ({len(content.failed_sections)})")
+        for name in content.failed_sections:
+            lines.append(f"  - {name} -- this section FAILED to build; treat it as unknown, not empty.")
+        lines.append("  - The reason is in the digest service's log for this run.")
+        lines.append("")
 
     if content.venue_gaps:
         # FIRST, above the bookings. A venue that cannot produce a correct

@@ -24,6 +24,8 @@ wired up, and means a misconfigured schedule doesn't need special-casing.
     python -m app.send_digest
 """
 
+import logging
+
 from sqlalchemy import select
 
 from app.config import settings
@@ -31,6 +33,8 @@ from app.database import SessionLocal
 from app.models import Venue
 from app.services import notifications
 from app.services.digest import build_digest, render_combined_digest
+
+logger = logging.getLogger(__name__)
 
 
 def _group_by_recipient(db) -> dict[str | None, list[Venue]]:
@@ -67,21 +71,43 @@ def main() -> None:
                 "not set -- printing instead of sending."
             )
 
+        # ONE GROUP'S FAILURE MUST NOT SILENCE THE OTHERS. Until 2026-09-14
+        # this loop had no guard at all: a raise anywhere -- building a
+        # section, rendering, or an SMTP error on the first recipient --
+        # ended the run, and every later group got no email and no notice.
+        # build_digest now reports a broken section rather than raising, so
+        # what is left here is the send itself and anything unforeseen.
+        failures: list[str] = []
+
         for recipient, venues in groups.items():
-            per_venue = [(venue, build_digest(db, venue)) for venue in venues]
-            subject, body = render_combined_digest(
-                per_venue, dashboard_base_url=settings.dashboard_base_url
+            where = recipient or "DIGEST_RECIPIENT_EMAIL"
+            try:
+                per_venue = [(venue, build_digest(db, venue)) for venue in venues]
+                subject, body = render_combined_digest(
+                    per_venue, dashboard_base_url=settings.dashboard_base_url
+                )
+
+                if not configured:
+                    print(f"\n--- to: {where} ---")
+                    print(f"Subject: {subject}\n")
+                    print(body)
+                    continue
+
+                notifications.send_digest_email(subject, body, recipient=recipient)
+                covered = ", ".join(v.trading_name or v.name for v in venues)
+                print(f"Digest sent to {where} covering {covered}: {subject}")
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("Digest for %s failed", where)
+                failures.append(f"{where}: {exc}")
+                print(f"DIGEST FAILED for {where}: {exc}")
+
+        if failures:
+            # A NON-ZERO EXIT, so the cron run shows as failed rather than
+            # as a quiet success that sent nothing. The groups that did
+            # send have already sent by this point.
+            raise SystemExit(
+                f"{len(failures)} digest group(s) failed: " + "; ".join(failures)
             )
-
-            if not configured:
-                print(f"\n--- to: {recipient or 'DIGEST_RECIPIENT_EMAIL'} ---")
-                print(f"Subject: {subject}\n")
-                print(body)
-                continue
-
-            notifications.send_digest_email(subject, body, recipient=recipient)
-            covered = ", ".join(v.trading_name or v.name for v in venues)
-            print(f"Digest sent to {recipient or 'DIGEST_RECIPIENT_EMAIL'} covering {covered}: {subject}")
     finally:
         db.close()
 
