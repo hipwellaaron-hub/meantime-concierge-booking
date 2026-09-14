@@ -777,6 +777,17 @@ def mark_sent(db: Session, document: Document, *, actor: str) -> Document:
         raise ValueError(
             "cannot send: this booking has no contact with a valid email address on file"
         )
+    if document.type == DocumentType.beo:
+        # The moment a draft becomes a quote. A catalogue-priced line that
+        # sat while the catalogue moved goes out at a withdrawn figure and
+        # the invoice built from it bills that figure -- unless a person
+        # set the price, in which case it is theirs and stays. Inside the
+        # row lock and before the transition, so the refreshed lines and
+        # the status flip commit together. Lazy import: beo_proposals
+        # imports this module.
+        from app.services import beo_proposals
+
+        beo_proposals.refresh_draft_food_prices(db, document, actor=actor)
     document = _transition(db, document, DocumentStatus.sent, actor=actor)
 
     if document.type == DocumentType.agreement:

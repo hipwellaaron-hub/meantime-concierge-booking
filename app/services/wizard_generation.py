@@ -100,6 +100,13 @@ def build_food_line_items(
                     "quantity": entry["quantity"],
                     "unit_price": str(price),
                     "category": menu_item.category.value,
+                    # The item was in hand and the id was dropped on the
+                    # floor -- so a wizard-built line, which is most of
+                    # them, was invisible to check_food_price_drift and to
+                    # refresh_draft_food_prices, both of which key on this.
+                    # The approval path and the invoice prefill carry it;
+                    # this was the one builder that did not.
+                    "menu_item_id": str(menu_item.id),
                 }
             )
 
@@ -119,6 +126,9 @@ def build_food_line_items(
                         "quantity": 1,
                         "unit_price": str(cake_price),
                         "category": "dessert",
+                        # Same as the platter/pizza line above: keyed to its
+                        # catalogue item so a price move can reach it.
+                        "menu_item_id": str(cake_item.id),
                     }
                 )
 

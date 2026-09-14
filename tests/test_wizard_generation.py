@@ -169,6 +169,28 @@ def test_unpriced_legacy_pizza_excluded_from_invoice_and_beo_flagged_not_embedde
     assert all("Vegetarian" not in str(li) for li in beo_food_lines)
 
 
+def test_a_wizard_built_food_line_carries_its_catalogue_id(db, loft, menu_items):
+    """The builder had the MenuItem in hand and dropped the id on the
+    floor, so a wizard-built line -- most of them -- was invisible to
+    check_food_price_drift and to refresh_draft_food_prices, both of which
+    key on menu_item_id. The approval path and the invoice prefill carried
+    it; this was the one builder that did not."""
+    booking = _make_booking(db, loft, event_date=dt.date(2027, 3, 6))
+    change_status(db, booking, BookingStatus.confirmed, actor="test")
+    _pay_deposit(db, booking, amount=Decimal("500.00"))
+
+    session = wizard_service.get_or_create_session(db, booking, actor="test")
+    _complete_all_steps(db, session, menu_items)
+    session, result = wizard_service.submit_review(db, session, actor="test")
+
+    lines = result.document.content["food_order"]["line_items"]
+    grazing = [li for li in lines if li["description"] == "Grazing Platter"]
+    assert len(grazing) == 1
+    assert grazing[0]["menu_item_id"] == str(menu_items["Grazing Platter"].id), (
+        "the wizard's food line does not name the catalogue item it was priced from"
+    )
+
+
 def test_accessibility_escalation_blocks_clean_even_with_auto_route_on(db, loft, menu_items):
     booking = _make_booking(db, loft, event_date=dt.date(2027, 3, 6))
     change_status(db, booking, BookingStatus.confirmed, actor="test")

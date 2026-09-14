@@ -30,7 +30,7 @@ import datetime as dt
 import json
 import logging
 import uuid
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from sqlalchemy import select, update, text
 from sqlalchemy.orm import Session
@@ -586,6 +586,137 @@ def _deposit_paid_for(db: Session, document: Document) -> Decimal:
     from app.services import invoicing
 
     return invoicing.get_deposit_paid(db, document.booking)
+
+
+def a_person_wrote_the_food_order(db: Session, document: Document) -> bool:
+    """Whether the food order on THIS draft is somebody's, as far as
+    anything recorded it.
+
+    Two records, and both are consulted because each misses a case the
+    other catches:
+
+      * content_authorship names the protected fields a person changed,
+        and food_order is protected. But the record is only ever written
+        by the two document writers and CARRIED by a regenerate -- a
+        freshly generated draft, wizard or otherwise, has no record at all.
+        The module's own docstring says what to do about that: "telling
+        those apart needs the booking's audit trail, which is the
+        caller's".
+      * The audit trail. Both writers stamp a document_edited event on the
+        version they touched, and since 2026-09-08 its old_value names the
+        fields that moved. An approval passes its own event type, so this
+        is exactly the hand-edits.
+
+    Either saying yes is enough. Nothing saying yes means the lines are
+    the generator's, priced from the catalogue on the day they were built.
+    """
+    from app.services import content_authorship
+
+    if FOOD_ORDER_FIELD in content_authorship.authored(document.content):
+        return True
+    edits = db.scalars(
+        select(BookingEvent.old_value).where(
+            BookingEvent.booking_id == document.booking_id,
+            BookingEvent.event_type == "document_edited",
+            BookingEvent.field_name == f"{document.type.value}_version",
+            BookingEvent.new_value == str(document.version),
+        )
+    ).all()
+    return any(
+        FOOD_ORDER_FIELD in {name.strip() for name in (fields or "").split(",")}
+        for fields in edits
+    )
+
+
+def refresh_draft_food_prices(db: Session, document: Document, *, actor: str) -> list[str]:
+    """Bring a DRAFT Event Order's catalogue-priced lines up to today's
+    price, when nobody has quoted anything.
+
+    A food line's unit_price is frozen when the item is selected. For a
+    SENT Event Order that is exactly right: it is what the client was
+    quoted. For a draft that sat while the catalogue moved, it means the
+    draft goes out at a withdrawn figure and the invoice built from it
+    bills that figure -- and platters have no legacy variant, so a platter
+    price change reaches every booking immediately. check_food_price_drift
+    reports it; this is the repair, at the one moment a draft becomes a
+    quote.
+
+    ONLY WHEN THE LINES ARE THE GENERATOR'S. A price a person typed is a
+    commercial decision -- a negotiated figure, a deliberate hold at the
+    old rate -- and a_person_wrote_the_food_order says whether one did.
+    Where it does, nothing here moves and the nightly check keeps saying
+    so; where it does not, the catalogue was the only author and the
+    catalogue is what the client should be quoted.
+
+    Never a hand-typed line (no menu_item_id -- there is nothing to price
+    it against), never a retired item (its price is no longer offered, and
+    catalogue.get_by_id_any's rule is that an existing order keeps
+    resolving), never a line whose price cannot be resolved.
+
+    The total block travels with the lines, as it does everywhere else the
+    lines change: keeping the heading while the items moved is the
+    2026-09-08 defect again. Returns what moved, for the audit event and
+    the caller; an empty list is "nothing to do", not an error.
+    """
+    if document.type != DocumentType.beo or document.status != DocumentStatus.draft:
+        return []
+    if a_person_wrote_the_food_order(db, document):
+        return []
+
+    content = document.content or {}
+    order = content.get(FOOD_ORDER_FIELD)
+    if not isinstance(order, dict) or not order.get("line_items"):
+        return []
+
+    moved: list[str] = []
+    new_lines: list[dict] = []
+    for raw in order["line_items"]:
+        line = dict(raw) if isinstance(raw, dict) else raw
+        new_lines.append(line)
+        if not isinstance(line, dict) or not line.get("menu_item_id"):
+            continue
+        try:
+            item = db.get(MenuItem, uuid.UUID(str(line["menu_item_id"])))
+        except ValueError:
+            continue
+        if item is None or not item.is_active:
+            continue
+        today = catalogue.resolve_price(item, document.booking)
+        if today is None:
+            continue
+        try:
+            quoted = Decimal(str(line.get("unit_price")))
+        except (InvalidOperation, TypeError):
+            continue
+        if quoted == today:
+            continue
+        line["unit_price"] = str(today)
+        moved.append(f"{item.name} ${quoted} -> ${today}")
+
+    if not moved:
+        return []
+
+    # A NEW dict, assigned, never mutated in place: content is a JSONB
+    # column with no mutation tracking, and SQLAlchemy emits the UPDATE
+    # only when the assigned value compares unequal to the loaded one
+    # (content_authorship's caller rule 2, learned the hard way there).
+    updated = dict(content)
+    updated[FOOD_ORDER_FIELD] = {**order, "line_items": new_lines}
+    updated["total_food_spend"] = build_total_food_spend(
+        compute_food_order_total(new_lines), _deposit_paid_for(db, document)
+    )
+    document.content = updated
+    db.add(
+        BookingEvent(
+            booking_id=document.booking_id,
+            event_type="food_prices_refreshed",
+            field_name=f"{document.type.value}_version",
+            old_value="; ".join(moved)[:500],
+            new_value=str(document.version),
+            actor=actor,
+        )
+    )
+    return moved
 
 
 def current_draft_beo(db: Session, booking_id: uuid.UUID) -> Document | None:
