@@ -83,6 +83,20 @@ def healthz(db: Session = Depends(get_db)):
         )
         drafting_failures = drafting.recent_failure_count(db)
         schema_drifting = schema_audit.drifting(db)
+        # Is every Stripe key pinned to the account it must belong to?
+        # stripe_integration.assert_key_belongs_to is the guard between a
+        # mis-keyed credential and a payment recorded as successful for
+        # the wrong company -- and it returns early when the venue has no
+        # stripe_account_id. That is a deliberate rollback window, a
+        # numbered go-live step, and deliberately absent from the seed's
+        # unfilled-columns report. It was also absent from everywhere else,
+        # so a guard that is a no-op today had nothing reminding anyone to
+        # arm it. A venue with no key has nothing to pin and is not counted.
+        stripe_account_pinned = all(
+            bool((getattr(venue, "stripe_account_id", None) or "").strip())
+            for venue in venues
+            if stripe_integration.is_configured_for(venue)
+        )
         checks = {
             "database": True,
             "venues_present": True,
@@ -114,10 +128,16 @@ def healthz(db: Session = Depends(get_db)):
             # public and a list of the triggers a database is missing is a map
             # of what is unguarded.
             "schema_drift": schema_drifting,
+            "stripe_account_pinned": stripe_account_pinned,
         }
         status = (
             "degraded"
-            if (notification_failures > 0 or drafting_failures > 0 or schema_drifting)
+            if (
+                notification_failures > 0
+                or drafting_failures > 0
+                or schema_drifting
+                or not stripe_account_pinned
+            )
             else "ok"
         )
     except Exception:
