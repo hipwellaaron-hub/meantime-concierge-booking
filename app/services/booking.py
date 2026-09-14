@@ -1076,6 +1076,26 @@ def _regenerate_reference_if_tbd(db: Session, booking: Booking, *, actor: str) -
     return True
 
 
+def _agreement_out(db: Session, booking: Booking):
+    """The current agreement, if a client can see it: sent, viewed or signed.
+
+    Both agreed minimums are frozen into the agreement at generation, so
+    once one is out the booking's figure and the contract's figure are two
+    copies of one term. assign_space_and_time asks this before reconciling
+    either figure to a new room: a copy a client holds is not something a
+    room move may quietly rewrite. A draft, or no agreement, and there is
+    nothing held."""
+    from app.models.document import DocumentStatus, DocumentType
+    from app.services import documents as documents_service
+
+    agreement = documents_service.get_current(db, booking.id, DocumentType.agreement)
+    if agreement is None or agreement.status not in (
+        DocumentStatus.sent, DocumentStatus.viewed, DocumentStatus.signed
+    ):
+        return None
+    return agreement
+
+
 def assign_space_and_time(
     db: Session,
     booking: Booking,
@@ -1130,8 +1150,16 @@ def assign_space_and_time(
 
     old_space = booking.space
     old_space_id, old_start, old_end = booking.space_id, booking.start_time, booking.end_time
+    # A figure the client already holds in a sent or signed agreement is
+    # not reconciled here. The move still happens; the booking is flagged,
+    # because the contract now names the old room's terms and re-issuing
+    # it is a person's call. Without this, moving the room after sending
+    # put one figure on the booking and another on the contract -- the
+    # 2026-09-05 two-halves fault, reintroduced by triage.
+    held_by = _agreement_out(db, booking) if space_id != old_space_id else None
     if (
         space_id != old_space_id
+        and held_by is None
         and booking.agreed_min_adults == old_space.standard_min_adults
         and booking.agreed_min_reduction_reason is None
         and space.standard_min_adults != booking.agreed_min_adults
@@ -1165,6 +1193,7 @@ def assign_space_and_time(
     # recorded, i.e. one nobody deliberately set.
     if (
         space_id != old_space_id
+        and held_by is None
         and booking.agreed_min_food_spend == old_space.min_food_spend
         and booking.agreed_min_food_spend_reason is None
         and space.min_food_spend != booking.agreed_min_food_spend
@@ -1178,6 +1207,25 @@ def assign_space_and_time(
                 field_name="agreed_min_food_spend",
                 old_value=str(old_spend),
                 new_value=str(space.min_food_spend),
+                actor=actor,
+            )
+        )
+    if held_by is not None and (
+        booking.agreed_min_adults != space.standard_min_adults
+        or booking.agreed_min_food_spend != space.min_food_spend
+    ):
+        db.add(
+            BookingEvent(
+                booking_id=booking.id,
+                event_type="enquiry_flagged",
+                field_name="manual_review",
+                new_value=(
+                    f"Moved to {space.name} while the {held_by.status.value} agreement (v{held_by.version}) "
+                    f"still names the previous room's minimums (guests {booking.agreed_min_adults}, "
+                    f"food spend ${booking.agreed_min_food_spend}). Neither figure was changed. "
+                    f"{space.name}'s standard is {space.standard_min_adults} guests and "
+                    f"${space.min_food_spend}; re-issue the agreement if the new room's terms apply."
+                ),
                 actor=actor,
             )
         )
