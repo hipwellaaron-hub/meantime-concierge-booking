@@ -277,11 +277,32 @@ def build_special_notes(extras_response: dict | None, booking: Booking | None = 
         lines.append(f"{booking.adult_count} adults, {booking.child_count} kids")
 
     cake = (extras_response or {}).get("cake_choice") or {}
+    cake_note = (cake.get("notes") or "").strip()
+    # THE NOTE TRAVELS WHATEVER THE CHOICE WAS. It used to reach the Event
+    # Order on the "outside" branch only, and the wizard stores it on all
+    # three -- one textarea under the cake cards, saved as cake_notes
+    # regardless of what is selected, and the review screen shows only the
+    # TYPE. So two things a client typed went nowhere:
+    #
+    #   * "please write Happy 40th Sarah in white" alongside an in-house
+    #     cake, which is the common case and the one the kitchen needs;
+    #   * anything typed when the catalogue has no cake cards to click, a
+    #     state the step itself describes as "our current cake options are
+    #     being finalized -- describe what you'd like below and we'll
+    #     confirm with you". With outside cake not permitted (the default)
+    #     there was nothing to select, so type stayed "none" and the
+    #     description the client was asked for reached nobody.
     if cake.get("type") == "in_house":
-        lines.append("Cake: in-house selection — see Desserts in the Food Order.")
+        lines.append(
+            f"Cake: in-house selection — see Desserts in the Food Order. {cake_note}".strip()
+        )
     elif cake.get("type") == "outside":
-        note = cake.get("notes") or ""
-        lines.append(f"Cake: client bringing their own (gluten-free only, stays on the cake table, not in the kitchen). {note}".strip())
+        lines.append(
+            "Cake: client bringing their own (gluten-free only, stays on the cake table, "
+            f"not in the kitchen). {cake_note}".strip()
+        )
+    elif cake_note:
+        lines.append(f"Cake: {cake_note} (described by the client, nothing selected — confirm)")
 
     # A vendor with a bump-in time renders on the Event Timeline instead
     # (a time the floor team acts on); one without still needs its name

@@ -37,19 +37,25 @@
   </table>
   {% else %}
   <p>
-    None of the fields on this form would read differently afterwards, so the
-    change was to something this comparison does not treat as a difference --
-    formatting, most likely. Reload if you want to be certain before saving.
+    Nothing above would read differently afterwards. That means a field MOVED
+    and came back to the same words: the check that refused this save compares
+    the values as they are <em>stored</em>, and this table compares them as they
+    <em>print</em>, so a clause list rebuilt in a different order refuses here
+    and shows nothing. Saving again applies what you wrote.
   </p>
   {% endif %}
+  {#- This card used to warn about the timeline, the vendors and the food order.
+      The AGREEMENT form has none of the three -- they are Event Order fields --
+      so it told a coordinator their work on them had been thrown away, on a page
+      that could not have touched it, and then told them to re-enter it here where
+      there is nowhere to put it. -#}
   <p>
-    Nothing has been written yet. Changes you made to the timeline, vendors or
-    food order were <strong>not</strong> carried over -- re-enter those before saving.
+    Nothing has been written yet, and nothing you typed above has been lost &mdash;
+    it is in the form below, ready to save again.
   </p>
   <p>
-    This check covers the written fields above only. The food order, vendors and
-    timeline are <strong>not</strong> compared, so a change somebody else made to
-    those will be replaced by whatever this form now holds, without a warning.
+    This check covers the written fields above, which is every field this form
+    has.
   </p>
 </div>
 {% endif %}

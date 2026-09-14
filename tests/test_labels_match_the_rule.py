@@ -161,3 +161,160 @@ def test_save_for_later_rethrows_a_real_failure_instead_of_reporting_safety():
 
     # And the reassurance is still downstream of it, which is the point.
     assert block.index("throw err") < block.index("Everything you\\'ve entered so far is safe")
+
+
+# ---------------------------------------------------------------------------
+# The 2026-09-14 sweep. Each of these described something the code does not do,
+# and each is pinned to the LINE that enforces it rather than to its own
+# wording -- a phrase assertion goes green the day somebody rewrites the
+# sentence into a different lie.
+# ---------------------------------------------------------------------------
+
+
+def test_the_pinned_badge_does_not_promise_the_date(admin_client, db, loft):
+    """A pin stops the FORWARD automations. It is deliberately ignored by
+    supersession -- booking.py says so in terms: "it must never keep a
+    booking's links alive after it has lost its date to someone who
+    actually paid."
+
+    The badge said "the automatic moves ... leave this booking alone", full
+    stop. A coordinator pinning an offered booking to hold it by hand while
+    a client decides, and reading that, has been told the room is held.
+    """
+    import inspect
+
+    from app.services import booking as booking_service
+
+    src = inspect.getsource(booking_service)
+    assert "status pin is deliberately IGNORED" in src, (
+        "supersession now honours the pin -- if that is deliberate, this badge "
+        "and this test are what has to change with it"
+    )
+
+    booking = _booking(db, loft, "Pinned Promise")
+    booking.status_pinned_at = dt.datetime.now(dt.timezone.utc)
+    db.flush()
+
+    page = admin_client.get(f"/admin/bookings/{booking.id}").text
+    banner = page[page.index("set by hand"):page.index("set by hand") + 900]
+
+    assert "superseded" in banner, (
+        "the pinned badge does not say that a rival confirmation still takes "
+        "the date"
+    )
+
+
+def test_the_bar_credit_label_does_not_claim_to_reach_existing_documents(admin_client, db, loft):
+    """set_bar_credit writes the booking column. A generated document keeps
+    the figure it was built with, so a manager who adds a credit to a
+    booking whose agreement is already out has changed nothing the client
+    will read."""
+    import inspect
+
+    from app.services import booking as booking_service
+
+    src = inspect.getsource(booking_service.set_bar_credit)
+    assert "document" not in src.lower(), (
+        "set_bar_credit now touches documents -- the label below should say so"
+    )
+
+    booking = _booking(db, loft, "Bar Credit Label")
+    booking.bar_credit = 500
+    db.flush()
+
+    page = admin_client.get(f"/admin/bookings/{booking.id}").text
+
+    assert "keep the figure they were built with" in page, (
+        "the bar credit label still implies saving reaches documents that "
+        "already exist"
+    )
+
+
+def test_the_event_order_edit_page_does_not_claim_the_untouchable_fields(admin_client, db, loft):
+    """setup_access_time and food_service_time are written by the wizard
+    and by nothing else. The page said every wizard answer was editable
+    there, which sends a coordinator hunting for a field that does not
+    exist."""
+    import pathlib
+
+    api = pathlib.Path("app/api/admin_bookings.py").read_text(encoding="utf-8")
+    for column in ("setup_access_time", "food_service_time"):
+        assert f"{column}=" not in api and f'"{column}"' not in api, (
+            f"admin now writes {column} -- the Event Order edit page's note "
+            "about it should change with this"
+        )
+
+    page = pathlib.Path("app/templates/admin/document_edit_beo.html").read_text(encoding="utf-8")
+    intro = page[:1600]
+    assert "Everything the client entered in the wizard is editable here" not in intro
+    assert "no staff edit for either" in intro, (
+        "the page no longer says which two wizard answers it cannot edit"
+    )
+
+
+def test_the_regenerate_all_clear_does_not_speak_for_the_av_block():
+    """losses() compares PROTECTED_FIELD_NAMES. `av` is not one of them and
+    IS rebuilt, so AV notes typed on the Event Order are destroyed by a
+    regenerate with no row on the confirmation screen."""
+    import pathlib
+
+    from app.services import document_regeneration
+
+    if "av" in document_regeneration.PROTECTED_FIELD_NAMES:
+        pytest.skip("av is protected now -- delete the caveat on the screen with this test")
+
+    page = pathlib.Path("app/templates/admin/regenerate_confirm.html").read_text(encoding="utf-8")
+
+    assert "Nothing else on this" not in page, (
+        "the all-clear speaks for the whole document again"
+    )
+    assert "Not compared:" in page and "AV" in page, (
+        "the screen no longer names the AV block as outside the comparison"
+    )
+
+
+def test_the_agreement_conflict_card_names_no_field_the_form_lacks():
+    """The agreement edit form has no timeline, no vendors and no food
+    order. Its conflict card told coordinators that edits to all three had
+    been discarded and to re-enter them here."""
+    import pathlib
+    import re
+
+    raw = pathlib.Path("app/templates/admin/document_edit_agreement.html").read_text(encoding="utf-8")
+    # JINJA COMMENTS STRIPPED FIRST. The note recording what this card used
+    # to warn about names all three fields, so a raw search finds them and
+    # fails on the explanation rather than on the screen. A {# #} block is
+    # not rendered and is not a label.
+    page = re.sub(r"\{#.*?#\}", "", raw, flags=re.S)
+    body = page[page.index("changed while you had it open"):]
+    card = body[: body.index("<form")]
+
+    for absent in ("timeline", "vendors", "food order"):
+        assert absent not in card.lower(), (
+            f"the agreement conflict card still warns about the {absent}, which "
+            "this form cannot touch"
+        )
+
+
+def test_the_wizard_food_step_names_every_section_it_renders():
+    """The step renders four priced sections. Its intro named two, so a
+    client could scroll past Sides and Desserts -- the only route to a
+    dessert platter."""
+    import pathlib
+
+    page = pathlib.Path("app/templates/wizard/wizard.html").read_text(encoding="utf-8")
+    start = page.index("function renderFood()")
+    block = page[start:start + 2500]
+
+    rendered = [s for s in ("Platters", "Pizzas", "Sides", "Desserts")
+                if f'catalogue-section-title">{s}<' in block]
+    assert len(rendered) == 4, f"the food step renders {rendered} -- update this test with it"
+
+    intro = block[block.index("step-intro"):block.index("catalogue-section-title")]
+    for section in rendered:
+        assert section.lower().rstrip("s") in intro.lower(), (
+            f"the food step renders {section} and its intro does not mention it"
+        )
+    assert "placeholder" not in intro.lower(), (
+        "the intro still calls the real venue photography placeholders"
+    )

@@ -78,10 +78,21 @@
 </div>
 {% else %}
 <div class="card">
-  <p style="margin:0; font-size:0.9rem;">Nothing else on this
-    {{ "Event Order" if doc_type.value == "beo" else "Agreement" }} would be lost &mdash; every other
-    field is unchanged, holds only a generated placeholder, or is empty &mdash; either with
+  <p style="margin:0; font-size:0.9rem;">None of the <b>compared</b> fields on this
+    {{ "Event Order" if doc_type.value == "beo" else "Agreement" }} would be lost &mdash; every one of them
+    is unchanged, holds only a generated placeholder, or is empty &mdash; either with
     nobody recorded as having written it, or with nothing but a placeholder to replace it.</p>
+  {%- if doc_type.value == "beo" %}
+  {#- Named rather than folded into the sentence above, which used to say
+      "nothing else ... would be lost" and spoke for the whole document. It
+      speaks for what losses() compares, and losses() compares the protected
+      fields. The AV block is not one of them and IS rebuilt, so AV notes a
+      staff member typed on the Event Order are replaced by this regenerate
+      with no row on this screen. -#}
+  <p style="margin:0.5rem 0 0; font-size:0.9rem;" class="muted"><b>Not compared:</b> the AV notes and
+    the two AV checkboxes are rebuilt from the booking and the client&rsquo;s wizard answer, so anything
+    typed into AV on the Event Order is replaced. Copy it out first if you need it.</p>
+  {%- endif %}
 </div>
 {% endif %}
 

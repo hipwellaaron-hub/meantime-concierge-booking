@@ -303,15 +303,25 @@ def content_fingerprint(content: object, fields: Iterable[str]) -> str:
     Both callers pass the protected free-text fields, so this protects the
     prose and NOT the rest of the form.
 
-    That is narrower than the form, and the difference is a real hole. The
-    edit form also writes the food order line items, the vendor rows, the
-    key moments, the guest arrival time and the AV block. A colleague's
-    change to any of those moves nothing this looks at, so the save is
-    accepted and reverts them without a word -- proved by putting four
-    platters on a document through one form and one platter through
-    another: the second save returned 303 and the quantity went back to
-    one, with the food total recomputed from the stale line (review of
-    85e326f). Money, on a client-facing document.
+    That is narrower than the form, and the difference is a real hole.
+    THE FOOD ORDER IS NO LONGER PART OF IT: food_order joined
+    PROTECTED_FIELD_NAMES on 2026-09-08 (ff13df0) and is covered. This
+    paragraph still named it as uncovered six days later, which is exactly
+    the drift the sentence below warns about.
+
+    Still outside, and still last-write-wins: the vendor rows, the key
+    moments, the guest arrival time, the pack-down notes and the AV block.
+    A colleague's change to any of those moves nothing this looks at, so
+    the save is accepted and reverts them without a word. And the blast
+    radius is wider than "the document": the vendor rows are reconciled by
+    DELETING any booking_vendors row the stale form did not re-post, and
+    the timeline facts are written onto the BOOKING with a field_changed
+    audit row naming the staff member whose save reverted them.
+
+    The original proof was on the food order, before it was covered: four
+    platters saved through one form and one platter through another, and
+    the second save returned 303 with the quantity back at one and the
+    food total recomputed from the stale line (review of 85e326f).
 
     Widening it is deliberate follow-up work rather than a line change,
     because it starts refusing saves that today succeed, and the vendor

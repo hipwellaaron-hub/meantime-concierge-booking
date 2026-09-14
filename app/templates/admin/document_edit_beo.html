@@ -6,8 +6,10 @@
 <p class="muted">
   Draft v{{ document.version }} &middot; {{ booking.reference_code }}.
   Event date and hire times come from the booking record. The food total and balance recalculate live below
-  and are saved with the document. Everything the client entered in the wizard is editable here &mdash;
-  phone corrections never require sending them back through the wizard.
+  and are saved with the document. Most of what the client entered in the wizard is editable here, so a
+  phone correction rarely means sending them back through it. Two answers are not: <b>set-up access time</b>
+  and <b>food service time</b> are written only by the wizard &mdash; there is no staff edit for either,
+  anywhere, so a correction to those has to come back through the client.
 </p>
 
 {% if beo_proposal and beo_review_rows %}
@@ -166,11 +168,21 @@
   </table>
   {% else %}
   <p>
-    None of the compared fields would read differently afterwards, so the change
-    was to something this comparison does not treat as a difference -- the
-    vendor rows, the timeline or the AV block, or else formatting. Reload if you
-    want to be certain before saving.
+    Nothing above would read differently afterwards. That means a protected field
+    MOVED and then came back to the same words &mdash; the check that refused this
+    save compares the values as they are <em>stored</em>, and this table compares
+    them as they <em>print</em>, so a quantity saved as 4 and re-posted as "4", or
+    a list rebuilt in a different order, refuses here and shows nothing.
+    Your own words are below and nothing of yours has been lost: saving again
+    applies them.
   </p>
+  {#- The old sentence here blamed "the vendor rows, the timeline or the AV
+      block". None of those can produce this banner: the fingerprint only ever
+      hashes the protected names (documents.content_fingerprint, and both call
+      sites pass PROTECTED_FIELD_NAMES), so a change to any of the three moves
+      nothing it looks at and the save is accepted silently. It pointed staff at
+      three fields that are innocent by construction, on the one screen whose
+      job is telling somebody the truth about what they are about to overwrite. -#}
   {% endif %}
   {#
     These two paragraphs are the ones that go stale. They said the food

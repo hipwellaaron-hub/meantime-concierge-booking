@@ -447,7 +447,20 @@ def test_the_banner_still_explains_when_no_field_reads_differently(db, booking, 
     assert "changed while you had it open" in response.text, "and never refuses silently"
     listed = re.findall(r"<td><strong>([^<]+)</strong></td>", response.text)
     assert listed == [], "nothing would actually read differently"
-    assert "does not treat as a difference" in response.text, "so it says why the table is empty"
+    # PINNED ON THE CAUSE, not on a phrase. The banner used to blame "the
+    # vendor rows, the timeline or the AV block", which cannot produce this
+    # screen at all: the fingerprint only ever hashes the protected names,
+    # so a change to any of those three moves nothing it looks at and the
+    # save is accepted silently. The true cause is the one this test's own
+    # docstring gives -- stored values versus printed ones -- and that is
+    # what the banner has to say.
+    assert "stored" in response.text and "print" in response.text, (
+        "the banner no longer says why the table is empty, or blames something "
+        "that cannot have caused it"
+    )
+    assert "vendor rows" not in response.text, (
+        "the banner points at fields the fingerprint never looks at"
+    )
 
 
 def test_an_agreement_conflict_shows_clauses_not_a_python_repr(db, booking, admin_client):

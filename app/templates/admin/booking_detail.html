@@ -210,7 +210,8 @@
   {% if booking.status_pinned %}
   <div style="margin-top:12px; padding:10px 12px; border-radius:8px; background:rgba(201,169,110,0.10); border:1px solid var(--gold-dim);">
     <span class="badge">set by hand</span>
-    <span class="muted" style="font-size:0.85rem;">This status was set manually, so the automatic moves (hold the date on send, confirm on deposit + signature) leave this booking alone.</span>
+    <span class="muted" style="font-size:0.85rem;">This status was set manually, so the FORWARD automatic moves (hold the date on send, confirm on deposit + signature) leave this booking alone.
+      It does <b>not</b> hold the date: if another booking on this room and time is confirmed, this one is still superseded to dead &mdash; deliberately, because a pin must never keep a client's links alive after somebody else has paid for the night.</span>
     <form class="inline" method="post" action="{{ venue_base }}/bookings/{{ booking.id }}/status/unpin" style="display:inline; margin-left:8px;"
           onsubmit="return confirm('Hand this booking back to automation? If the client has already sent, signed or paid enough, it may move to tentative or confirmed straight away.');">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -823,7 +824,13 @@
   </form>
 
   <h3 style="font-size:0.9rem; color:var(--muted); margin:20px 0 6px;">Bar credit</h3>
-  <p class="muted">Currently ${{ booking.bar_credit }}{% if booking.bar_credit > 0 %} &middot; prints on the agreement, the Event Order and the bar structure{% endif %}</p>
+  {#- Was "prints on the agreement, the Event Order and the bar structure", which
+      counted the same place twice (the bar structure IS a section of the Event
+      Order) and implied saving here reaches documents that already exist. It does
+      not: this writes the booking column, and a generated document keeps the
+      figure it was built with. -#}
+  <p class="muted">Currently ${{ booking.bar_credit }}{% if booking.bar_credit > 0 %} &middot; prints on the agreement, and in the Event Order&rsquo;s bar structure section.
+    Documents already generated keep the figure they were built with &mdash; regenerate one to pick this up (Revise copies the old figure forward){% endif %}</p>
   <form method="post" action="{{ venue_base }}/bookings/{{ booking.id }}/policy/bar-credit">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <div class="field-row">

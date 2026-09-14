@@ -313,10 +313,15 @@ class Booking(Base):
     pack_down_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Standard is 2:00pm (see app.services.validation.SETUP_ACCESS_STANDARD_TIME).
     # setup_access_confirmed is deliberately tri-state: NULL = never
-    # requested, False = requested earlier than standard and pending
-    # Aaron's confirmation (never promised automatically), True = confirmed
-    # (standard-or-later requests are auto-True; an early request only
-    # becomes True via an explicit staff action).
+    # requested, False = requested and pending Aaron's confirmation (never
+    # promised automatically), True = confirmed by an explicit staff action.
+    #
+    # THE AUTO-TRUE RULE IS GONE. This comment said "standard-or-later
+    # requests are auto-True" until 2026-09-14, and that stopped being the
+    # behaviour on 28 Aug 2026: wizard.py sets setup_access_confirmed =
+    # False unconditionally, per Aaron -- "setup access is a request, not a
+    # confirmation". Anyone reading the model to work out why a booking
+    # says pending was told the opposite of the code.
     setup_access_time: Mapped[dt.time | None] = mapped_column(Time, nullable=True)
     setup_access_confirmed: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
 
