@@ -325,6 +325,100 @@ def check_food_price_drift(db: Session, bookings) -> list[Finding]:
     return out
 
 
+def check_final_invoice_below_minimum_spend(db: Session, bookings) -> list[Finding]:
+    """A final invoice whose charge lines sum below the agreed minimum food
+    spend.
+
+    The minimum is compared against the order exactly once, inside the
+    wizard's food step, and that comparison is shown to the client and
+    thrown away -- nothing at invoice time and nothing nightly asks again.
+    So a final invoice can go out short of the figure the agreement's
+    Minimum Spend clause names and nobody finds out until after the event.
+
+    CHARGE LINES ONLY, never the deposit credit: the minimum is about what
+    was ordered, and the credit is about what was already paid.
+
+    Reported, never rewritten. A shortfall may be a deliberate commercial
+    decision -- the agreement has a clause for it -- but it is a decision
+    somebody should be making on purpose, before the night.
+    """
+    out = []
+    for b in bookings:
+        minimum = b.agreed_min_food_spend
+        if minimum is None or minimum <= 0:
+            continue
+        # QUERIED, not read off b.invoices. The relationship collection is
+        # whatever was loaded when something first touched it, and an
+        # invoice created later in the same session is not in it -- which
+        # is how a probe deleting the deposit-credit filter below passed:
+        # the check never found the final invoice at all and silently
+        # skipped the booking. A nightly run loads fresh and would not have
+        # hit it; the point is that the check should not depend on that.
+        final = db.scalars(
+            select(Invoice).where(
+                Invoice.booking_id == b.id,
+                Invoice.type == InvoiceType.final,
+                Invoice.status.in_((InvoiceStatus.draft, InvoiceStatus.sent)),
+            ).order_by(Invoice.created_at.desc())
+        ).first()
+        if final is None or final.is_legacy:
+            continue
+        try:
+            charged = sum(
+                (
+                    Decimal(str(li.get("quantity", 0))) * Decimal(str(li.get("unit_price", 0)))
+                    for li in (final.line_items or [])
+                    if isinstance(li, dict)
+                    and li.get("description") != invoicing.DEPOSIT_CREDIT_DESCRIPTION
+                ),
+                Decimal("0.00"),
+            )
+        except (InvalidOperation, TypeError):
+            continue
+        if charged < minimum:
+            out.append(
+                Finding(
+                    b.id, "FINAL_INVOICE_BELOW_MINIMUM_SPEND", DATA_MISMATCH,
+                    f"Final invoice {final.invoice_reference} charges ${charged} against an agreed "
+                    f"minimum food spend of ${minimum} -- ${minimum - charged} short. Add the "
+                    "shortfall, or lower the agreed minimum on the booking with a reason.",
+                )
+            )
+    return out
+
+
+def check_migrated_pricing_lock_defaulted(bookings) -> list[Finding]:
+    """A migrated booking whose pricing lock is the import date, not the
+    day the client actually booked.
+
+    The importer set pricing_locked_at from the CSV's Opportunity Created
+    date, and where the row carried none it let create_booking default to
+    today -- the import day -- and printed a flag in that run's output.
+    That output is gone. A pizza booking taken before the May 2026 cutover
+    and locked to September prices at the current rate, with the only
+    warning that ever existed having lived for the length of one script
+    run.
+
+    Reported so it reaches the digest; the fix is a person setting the
+    real date on the booking, which clears this on the next run.
+    """
+    out = []
+    for b in bookings:
+        if not b.migration_source:
+            continue
+        created = b.created_at.date() if b.created_at else None
+        if created is not None and b.pricing_locked_at == created:
+            out.append(
+                Finding(
+                    b.id, "PRICING_LOCK_DEFAULTED", NEEDS_HUMAN,
+                    f"Migrated from {b.migration_source} with pricing_locked_at = the import date "
+                    f"({created}), so pizzas price at the current rate whatever the client was "
+                    "quoted. Set the real Opportunity Created date on the booking.",
+                )
+            )
+    return out
+
+
 def check_stale_holds(db: Session, venue: Venue, *, today: dt.date) -> list[Finding]:
     """Section 9.4. Reuses the same helper the dashboard tile uses, so the
     nightly job and the screen can never disagree about what needs chasing."""
@@ -525,6 +619,8 @@ def collect(db: Session, venue: Venue, *, today: dt.date | None = None,
     findings += check_overpaid_invoices(db, bookings)
     findings += check_final_invoice_deposit_credit(db, bookings)
     findings += check_food_price_drift(db, bookings)
+    findings += check_final_invoice_below_minimum_spend(db, bookings)
+    findings += check_migrated_pricing_lock_defaulted(bookings)
     return findings
 
 
