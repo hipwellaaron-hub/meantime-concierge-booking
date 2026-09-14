@@ -627,7 +627,29 @@
              the client's own context, card payment link included for a sent
              invoice, and records nothing. #}
           <a href="{{ venue_base }}/bookings/{{ booking.id }}/invoices/{{ invoice.id }}/preview" target="_blank">View &rarr;</a>
-          <a href="/i/{{ invoice.access_token }}/pdf">Download PDF</a>
+          {# "Client PDF", not "Download PDF", because that is what it is: the
+             client's own /i/{token}/pdf, byte for byte what they receive.
+
+             An agreement and an Event Order each offer TWO links here -- an
+             internal "Download PDF" from the admin route, which prints
+             staff-only markers, beside a muted "Client PDF". An invoice has
+             no internal counterpart route at all, so it has one link, and
+             until now that one link was labelled like the internal one. You
+             could not tell from the page which you were clicking.
+
+             It is not muted, unlike the documents' Client PDF, precisely
+             because it is the only PDF an invoice has -- muting the only
+             link would make it read as the secondary of a pair that does
+             not exist.
+
+             What clicking it does, stated because it is the surprising part:
+             /i/{token}/pdf mints a fresh Stripe Payment Link and records it
+             against the invoice, by design -- app/api/invoices.py says a
+             client sent the PDF should be able to pay from it. Every link an
+             invoice mints carries the balance AS AT THAT MOMENT and stays
+             payable until the invoice settles or cancels. #}
+          <a href="/i/{{ invoice.access_token }}/pdf"
+             title="The client's own PDF. Opening it mints a fresh card payment link for the balance as it stands now, exactly as the client opening their invoice does.">Client PDF</a>
           <button type="button" class="btn secondary" onclick="copyLink(this, '/i/{{ invoice.access_token }}')">Copy link</button>
           {% if invoice.status.value == "sent" %}
           <form class="inline" method="post" action="{{ venue_base }}/bookings/{{ booking.id }}/invoices/{{ invoice.id }}/revise" onsubmit="return confirm('Cancel this sent invoice and reopen it as a new editable draft? The client&#39;s current link stops working. (Blocked if any payment has been recorded.)');">

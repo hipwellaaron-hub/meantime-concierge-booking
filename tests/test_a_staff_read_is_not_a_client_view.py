@@ -302,6 +302,31 @@ def test_a_real_client_open_still_records_an_invoice_view(db, hamilton, loft, co
     assert invoice.viewed_at is not None, "the client's own open no longer records"
 
 
+def test_every_client_pdf_link_says_it_is_the_client_pdf():
+    """Aaron: "Documents have Download PDF and Client PDF and I can tell them
+    apart. Invoices have one link pointed at the client route and labelled
+    Download PDF. Label it so I know which one I'm clicking."
+
+    Structural, and asserted over EVERY client-route PDF link rather than
+    the invoice one alone -- the defect was an asymmetry between two
+    families of link, so a test pinned to the one instance would go green
+    the next time a third family is added with the same wrong label.
+
+    "Download PDF" stays correct where it points at an ADMIN route, which
+    is the internal copy with staff-only markers on it."""
+    import pathlib as _p
+
+    markup = _p.Path(BOOKING_PAGE).read_text(encoding="utf-8")
+    # Every anchor whose href is a client token PDF, with its label.
+    links = re.findall(r'<a\s+href="(/[di]/\{\{[^"]*?/pdf)"[^>]*>([^<]+)</a>', markup, re.S)
+
+    assert links, "no client PDF links found -- the pattern stopped matching"
+    mislabelled = [(h, label.strip()) for h, label in links if "Client" not in label]
+    assert mislabelled == [], (
+        f"a client-route PDF link is not labelled as the client's: {mislabelled}"
+    )
+
+
 # --- the banner must not lie ------------------------------------------------
 
 
