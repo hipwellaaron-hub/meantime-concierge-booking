@@ -49,6 +49,7 @@ from app.models import (
 from app.models.booking import BookingStatus
 from app.models.document import DocumentStatus, DocumentType
 from app.models.invoice import InvoiceStatus, InvoiceType
+from app.services import invoicing
 from app.models.wizard_session import WizardSessionStatus
 from app.services import booking as booking_service
 from app.services.ai_pipeline import CONTESTING_STATUSES
@@ -198,6 +199,36 @@ def check_confirmed_without_gates(bookings) -> list[Finding]:
                 Finding(b.id, "CONFIRMED_WITHOUT_GATES", DATA_MISMATCH,
                         f"Confirmed but {' and '.join(missing)}, and the status was not set by hand.")
             )
+    return out
+
+
+def check_overpaid_invoices(db: Session, bookings) -> list[Finding]:
+    """An invoice that has received more than it is owed.
+
+    The immediate flag from invoicing.record_payment is what a human sees
+    on the day. This is the backstop for anything that got in before that
+    guard existed, or while it was failing to flag -- and unlike the flag,
+    it re-derives the condition from the payments table every run rather
+    than trusting that an event was written at the time.
+
+    Deliberately NOT 'status == paid and balance < 0': a part-paid invoice
+    that has been overpaid in total is the same problem, and an invoice can
+    sit at `sent` while holding more money than it asked for.
+    """
+    out = []
+    for b in bookings:
+        for inv in b.invoices:
+            if inv.status == InvoiceStatus.cancelled or inv.is_legacy:
+                continue
+            received = invoicing.get_total_paid(db, inv.id)
+            if received > inv.total:
+                out.append(
+                    Finding(
+                        b.id, "INVOICE_OVERPAID", NEEDS_HUMAN,
+                        f"{inv.invoice_reference} has received ${received} against a total of "
+                        f"${inv.total} -- ${received - inv.total} more than owed. Decide on a refund.",
+                    )
+                )
     return out
 
 
@@ -398,6 +429,7 @@ def collect(db: Session, venue: Venue, *, today: dt.date | None = None,
     findings += check_imminent_without_beo(bookings, today=today)
     findings += check_contact_hygiene(bookings)
     findings += check_notes_before_beo(bookings)
+    findings += check_overpaid_invoices(db, bookings)
     return findings
 
 

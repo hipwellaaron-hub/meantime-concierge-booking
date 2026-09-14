@@ -369,7 +369,12 @@ def test_a_tbd_booking_with_a_sent_invoice_keeps_its_reference(db, hamilton, lof
         [{"description": "Deposit", "quantity": 1, "unit_price": "500.00"}], TODAY, actor="staff:test",
     )
     invoicing.mark_sent(db, inv, actor="staff:test")
-    invoicing.record_payment(db, inv, amount=Decimal("509.00"), method=PaymentMethod.card, actor="stripe_webhook")
+    invoicing.record_payment(db, inv, amount=Decimal("509.00"), method=PaymentMethod.card,
+                             actor="stripe_webhook",
+                             # Simulating the webhook, so it carries the webhook's flag: the
+                             # $509 against a $500 invoice is incidental to what this test is
+                             # about, but it is an overpayment and the staff path now refuses one.
+                             money_already_taken=True)
 
     assign_space_and_time(
         db, nicole, space_id=loft.id, start_time=dt.time(18, 0), end_time=dt.time(23, 0),

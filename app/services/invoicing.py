@@ -539,7 +539,18 @@ def record_payment(
     payer_name: str | None = None,
     received_at: dt.datetime | None = None,
     actor: str,
+    money_already_taken: bool = False,
 ) -> Payment:
+    """Record a payment against a sent invoice.
+
+    `money_already_taken` is the difference between a human typing a figure
+    and a card processor reporting one, and it decides what an OVERPAYMENT
+    does. Refusing is right for the first and catastrophic for the second:
+    Stripe has the money either way, so a webhook that refuses leaves cash
+    taken from a client with no record of it in Concierge -- silently worse
+    than the overpayment it declined to write down. So staff are refused and
+    can correct the number; the webhook records it and raises a flag.
+    """
     if amount <= 0:
         raise ValueError("payment amount must be positive")
 
@@ -564,6 +575,31 @@ def record_payment(
         # app/api/invoices.py) -- a payment here could only mean a bug in
         # whatever's calling this, not a real client payment.
         raise ValueError("cannot record a payment against a draft invoice -- send it first")
+
+    # THE OVERPAYMENT GUARD. Read under the same lock as everything else
+    # below, so two payments landing together cannot both see a balance
+    # that the other is about to consume.
+    #
+    # Why this exists: a Stripe Payment Link carries a FROZEN amount -- the
+    # balance as at the moment it was minted -- and every link an invoice
+    # has ever minted stays live and payable. So a client who pays part of
+    # a bill by transfer and then reopens an older invoice email is charged
+    # the ORIGINAL total, with nothing having failed. Nothing here refused
+    # it and nothing reported it.
+    already_paid = get_total_paid(db, invoice.id)
+    would_total = already_paid + amount
+    if would_total > invoice.total:
+        over_by = would_total - invoice.total
+        if not money_already_taken:
+            raise ValueError(
+                f"${amount} would take this invoice to ${would_total} against a total of "
+                f"${invoice.total} -- ${over_by} more than is owed. "
+                f"${already_paid} is already recorded; the outstanding balance is "
+                f"${invoice.total - already_paid}. Record the balance, or handle the "
+                "difference as a refund rather than overpaying the invoice."
+            )
+        # Money already taken: recording it is not optional, so the write
+        # proceeds and the flag is raised after it lands.
 
     received_at = received_at or dt.datetime.now(dt.timezone.utc)
     payment = Payment(
@@ -606,6 +642,29 @@ def record_payment(
 
     db.commit()
     db.refresh(payment)
+
+    if would_total > invoice.total:
+        # Only reachable with money_already_taken -- the staff path raised
+        # above. The client has paid more than they owe, so somebody has to
+        # decide on a refund. After the commit and never raising: the
+        # payment is real and recorded, and a failure to flag must not undo
+        # it. flag_for_review puts it on the booking's own banner AND the
+        # Triage flagged-bookings list, which is the difference between
+        # this and payment_venue_mismatch -- an event nothing reads.
+        try:
+            booking_service.flag_for_review(
+                db, invoice.booking,
+                note=(
+                    f"OVERPAID: {invoice.invoice_reference} has received ${get_total_paid(db, invoice.id)} "
+                    f"against a total of ${invoice.total}. The last payment was ${amount}"
+                    + (f" (ref {reference})" if reference else "")
+                    + ". A card payment link carries the balance as at the moment it was minted, so an "
+                    "older link pays the older, larger figure. Decide on a refund."
+                ),
+                actor=actor,
+            )
+        except Exception:  # noqa: BLE001 -- see above; a real payment must stand
+            logger.exception("Could not flag overpayment on invoice %s", invoice.id)
 
     if just_paid:
         # The invoice is settled, so every Payment Link ever minted for it

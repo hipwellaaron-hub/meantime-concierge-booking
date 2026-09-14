@@ -199,6 +199,12 @@ def _handle_checkout_completed(db: Session, session: dict, *, venue=None) -> Non
             method=PaymentMethod.card,
             reference=payment_intent_id,
             actor="stripe_webhook",
+            # Stripe has the money. An overpayment here is recorded and
+            # flagged rather than refused, because refusing would leave
+            # cash taken from a client with no record of it in Concierge --
+            # the same failure this handler's own except-branch below was
+            # written for after the 2026-09-04 incident.
+            money_already_taken=True,
         )
     except ValueError as exc:
         # The invoice was cancelled between link creation and payment --

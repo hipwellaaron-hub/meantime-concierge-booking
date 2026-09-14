@@ -18,6 +18,7 @@ from app.services.invoicing import (
     get_by_token,
     get_deposit_paid,
     get_payment_summary,
+    get_total_paid,
     gst_component,
     has_active_final_invoice,
     is_public_holiday,
@@ -338,14 +339,45 @@ def test_zero_payment_amount_rejected(db, booking):
         record_payment(db, invoice, amount=Decimal("0.00"), method=PaymentMethod.bank_transfer, actor="test")
 
 
-def test_overpayment_does_not_crash_and_marks_paid(db, booking):
+def test_overpayment_is_refused_on_the_staff_path(db, booking):
+    """DECISION REVERSED, 2026-09-14, on Aaron's instruction. This test used
+    to assert the opposite -- that an overpayment was allowed and showed as
+    "informational credit, not an error".
+
+    What changed is that the overpayment stopped being a typo and became a
+    mechanism: a Stripe Payment Link carries the balance as at the moment it
+    was minted and stays payable, so a client who part-pays by transfer and
+    then reopens an older invoice email is charged the original, larger
+    figure. Absorbing that silently is how it goes unnoticed.
+
+    The staff path refuses because a human can retype the number. The
+    webhook does NOT -- see test_overpayment_is_recorded_when_the_money_is
+    _already_taken below and tests/test_an_invoice_cannot_be_overpaid.py."""
     invoice = create_deposit_invoice(db, booking, due_date=dt.date(2026, 9, 1), actor="test")
     mark_sent(db, invoice, actor="test")
-    record_payment(db, invoice, amount=Decimal("600.00"), method=PaymentMethod.bank_transfer, actor="test")
+
+    with pytest.raises(ValueError, match="more than is owed"):
+        record_payment(db, invoice, amount=Decimal("600.00"), method=PaymentMethod.bank_transfer, actor="test")
+
+    assert get_total_paid(db, invoice.id) == Decimal("0.00"), "the refused payment was recorded"
+    assert invoice.status.value == "sent"
+
+
+def test_overpayment_is_recorded_when_the_money_is_already_taken(db, booking):
+    """The other half of the decision above, and the reason it is not a flat
+    refusal: Stripe has the money before this code runs, so refusing would
+    leave a client's payment with no record of it anywhere."""
+    invoice = create_deposit_invoice(db, booking, due_date=dt.date(2026, 9, 1), actor="test")
+    mark_sent(db, invoice, actor="test")
+
+    record_payment(
+        db, invoice, amount=Decimal("600.00"), method=PaymentMethod.card,
+        reference="pi_overpay_probe", actor="stripe_webhook", money_already_taken=True,
+    )
 
     assert invoice.status.value == "paid"
     summary = get_payment_summary(db, invoice)
-    assert summary["balance_due"] == Decimal("-100.00")  # informational credit, not an error
+    assert summary["balance_due"] == Decimal("-100.00")
 
 
 def test_compute_totals_malformed_line_item_raises_clean_error(db, booking):
