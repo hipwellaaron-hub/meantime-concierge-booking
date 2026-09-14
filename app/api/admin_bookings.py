@@ -1033,8 +1033,30 @@ def _editor_template_for(doc_type) -> str:
         raise ValueError(f"no editor is registered for document type {doc_type!r}") from None
 
 
+def _submitted_content(*, document_type, stored, headings, bodies, **fields):
+    """The prose this save was carrying, overlaid on what is stored.
+
+    Every submitted value, INCLUDING the empty ones -- overlaying only the
+    truthy ones puts back the text of a field somebody had just cleared, so
+    the form comes back holding words they deleted. The conflict path below
+    learnt that the hard way and this is the same rule, extracted so the
+    two refusals cannot describe the same submission differently.
+    """
+    submitted = {name: value.strip() for name, value in fields.items()}
+    if document_type is DocumentType.agreement:
+        submitted = {
+            "terms_sections": [
+                {"heading": heading.strip(), "body": body.strip()}
+                for heading, body in zip(headings, bodies)
+                if heading.strip() or body.strip()
+            ]
+        }
+    return {**stored, **submitted}
+
+
 def _edit_form_response(
-    request, staff, db, booking_id, document, *, form_content, conflicts=(), conflict=False, status_code=200
+    request, staff, db, booking_id, document, *, form_content, conflicts=(),
+    conflict=False, sent_while_open=False, status_code=200,
 ):
     """The edit screen. Shared by the GET and by the conflict response, so a
     refused save comes back as the same form carrying the staff member's own
@@ -1061,6 +1083,11 @@ def _edit_form_response(
             form_content=form_content,
             conflicts=list(conflicts),
             conflict=conflict,
+            # A DIFFERENT refusal from the one above, and it needs its own
+            # sentence: the document is no longer a draft, so saving again
+            # cannot work. Their words are still on the page to copy, and
+            # Revise is the way forward.
+            sent_while_open=sent_while_open,
             vendor_types=[vt.value for vt in VendorType],
             # Carried back on save and compared: the form is rendered from
             # values that may be minutes old, and without this a change
@@ -1230,6 +1257,44 @@ def save_document_edit(
     could silently drift from the live booking record would be worse than
     one that can't be hand-tweaked at all."""
     _get_booking_or_404(request, db, booking_id)
+
+    # THE DOCUMENT MAY HAVE BEEN SENT WHILE THIS FORM WAS OPEN, and until
+    # 2026-09-14 that answered a bare 409 error page: the staff member's
+    # typed run-sheet notes went in the bin, on the same route whose
+    # NEIGHBOURING refusal (the fingerprint conflict, below) deliberately
+    # hands their words back because "throwing a JSON error at a staff
+    # member who has just typed a long note would protect one person's
+    # writing by destroying another's". Two refusals, one page, opposite
+    # treatment of the same typing.
+    #
+    # It comes back as the form holding what they wrote, with a banner
+    # saying what happened and pointing at Revise -- which is the way
+    # forward, because the document is no longer a draft and saving here
+    # cannot work whatever they do.
+    sent_document = db.get(Document, document_id)
+    if (
+        sent_document is not None
+        and sent_document.booking_id == booking_id
+        and sent_document.status != DocumentStatus.draft
+    ):
+        return _edit_form_response(
+            request, staff, db, booking_id, sent_document,
+            form_content=_submitted_content(
+                document_type=sent_document.type,
+                headings=headings, bodies=bodies,
+                catering_order_and_service_style=catering_order_and_service_style,
+                bar_structure=bar_structure, room_layout_notes=room_layout_notes,
+                music=music, entertainment=entertainment,
+                music_entertainment=music_entertainment, special_notes=special_notes,
+                dietaries=dietaries, accessibility=accessibility,
+                decorations=decorations, status_text=status_text,
+                onsite_contact=onsite_contact, internal_notes=internal_notes,
+                stored=sent_document.content if isinstance(sent_document.content, dict) else {},
+            ),
+            sent_while_open=True,
+            status_code=409,
+        )
+
     document = _get_draft_document_or_404(db, booking_id, document_id)
     # Locked BEFORE the content is read, so the values this form's save is
     # compared against are the ones it is actually replacing. Without it a
@@ -1238,11 +1303,28 @@ def save_document_edit(
     try:
         documents_service.lock_draft_for_update(db, document)
     except ValueError as exc:
-        # Sent or signed between the check above and the locked re-read.
-        # The same condition a moment earlier is a 409 from
-        # _get_draft_document_or_404, so it is a 409 here too rather than
-        # an unhandled ValueError and a 500.
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        # Sent or signed between the check above and the locked re-read --
+        # the same loss as above, a few milliseconds later, so it gets the
+        # same screen rather than a bare 409.
+        db.rollback()
+        still = db.get(Document, document_id)
+        return _edit_form_response(
+            request, staff, db, booking_id, still,
+            form_content=_submitted_content(
+                document_type=still.type,
+                headings=headings, bodies=bodies,
+                catering_order_and_service_style=catering_order_and_service_style,
+                bar_structure=bar_structure, room_layout_notes=room_layout_notes,
+                music=music, entertainment=entertainment,
+                music_entertainment=music_entertainment, special_notes=special_notes,
+                dietaries=dietaries, accessibility=accessibility,
+                decorations=decorations, status_text=status_text,
+                onsite_contact=onsite_contact, internal_notes=internal_notes,
+                stored=still.content if isinstance(still.content, dict) else {},
+            ),
+            sent_while_open=True,
+            status_code=409,
+        )
 
     if content_expect != documents_service.content_fingerprint(
         document.content, document_regeneration.PROTECTED_FIELD_NAMES

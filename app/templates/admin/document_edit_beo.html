@@ -145,6 +145,26 @@
 </div>
 {% endif %}
 
+{% if sent_while_open %}
+{#- A DIFFERENT refusal from the conflict one below, and it must not borrow
+    its wording: there is no draft to save again. Until 2026-09-14 this
+    answered a bare 409 error page and the staff member's typing was gone --
+    on the same route whose other refusal deliberately hands their words
+    back. -#}
+<div class="card" style="border-left:4px solid #b00020;">
+  <h2 style="margin-top:0;">This was sent while you had it open</h2>
+  <p>
+    Nothing you typed has been lost &mdash; it is all still in the form below, exactly as you
+    left it. But this version has gone to the client now, so saving here cannot work: a
+    document somebody is holding is never rewritten underneath them.
+  </p>
+  <p>
+    Press <strong>Revise</strong> on the booking to open a new draft, then bring your text
+    across. Copy anything you need from below first &mdash; leaving this page loses it.
+  </p>
+  <p><a href="{{ venue_base }}/bookings/{{ booking.id }}">&larr; Back to {{ booking.event_name }}</a></p>
+</div>
+{% endif %}
 {% if conflict %}
 <div class="card" style="border-left:4px solid #b00020;">
   <h2 style="margin-top:0;">This document changed while you had it open</h2>

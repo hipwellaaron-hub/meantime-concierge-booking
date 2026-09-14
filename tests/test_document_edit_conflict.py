@@ -261,7 +261,15 @@ def test_a_document_sent_between_the_check_and_the_lock_is_a_409_not_a_500(
     )
 
     assert response.status_code == 409, "a 500 here means the ValueError escaped"
-    assert "only a draft can be edited" in response.text
+    # The RECOVERY screen since 2026-09-14, not a bare error page: the same
+    # condition a moment earlier now hands the staff member's typing back
+    # rather than binning it, and this later window gets the same treatment.
+    # Pinned on the words coming back rather than on the old error string,
+    # which was the sentence that arrived with their notes deleted.
+    assert "sent while you had it open" in response.text
+    assert form["dietaries"] in response.text, (
+        "the ValueError path still throws the staff member's typing away"
+    )
 
 
 # --- the refusal must not destroy work either ---------------------------------
