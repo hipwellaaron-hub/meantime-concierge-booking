@@ -102,7 +102,14 @@ def get_overdue_invoices(db: Session, venue: Venue, *, as_of: dt.date | None = N
     )
     overdue = []
     for invoice in sent_invoices:
+        # What is PAYABLE NOW, not the invoice's own frozen balance. A final
+        # invoice that went out before the deposit landed carries no credit
+        # for it, and invoice.total - paid is the figure that bills the
+        # deposit twice -- the same stale copy the client's page stopped
+        # printing on 2026-09-14 (app.api.invoices._build_invoice_context).
+        # A chase that names the wrong amount is worse than no chase.
         balance_due = invoice.total - invoicing.get_total_paid(db, invoice.id)
+        balance_due -= invoicing.uncredited_deposit(db, invoice)
         if balance_due > 0:
             overdue.append(OverdueInvoice(invoice=invoice, booking=invoice.booking, balance_due=balance_due))
     return overdue
