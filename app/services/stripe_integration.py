@@ -34,7 +34,15 @@ logger = logging.getLogger(__name__)
 # loaded". They agreed in production and disagreed in four tests, which is
 # how the badge stayed process-wide without anybody noticing.
 DEFAULT_STRIPE_SECRET_KEY_ENV = "STRIPE_SECRET_KEY"
-STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET")
+# The NAME of the variable the shared webhook endpoint verifies against.
+# Hamilton's venue row names this same variable (seed.py, and migration
+# f2a9d5c81b64), which is what says "Hamilton's account is the one that
+# signs events arriving on the shared path". webhooks._venue_mismatch reads
+# it to decide whether an invoice's venue can legitimately be paid there:
+# a venue naming a DIFFERENT variable signs with a different account, so
+# its money arriving on the shared endpoint went into the wrong company.
+DEFAULT_STRIPE_WEBHOOK_SECRET_ENV = "STRIPE_WEBHOOK_SECRET"
+STRIPE_WEBHOOK_SECRET = os.environ.get(DEFAULT_STRIPE_WEBHOOK_SECRET_ENV)
 
 
 def _process_stripe_key() -> str | None:

@@ -645,3 +645,109 @@ def test_the_legacy_path_still_uses_the_process_wide_secret(db):
 
     assert secret == "whsec_the_live_one"
     assert venue is None, "the legacy path asserts no venue, as it always has"
+
+
+def test_the_shared_path_refuses_an_invoice_whose_venue_signs_elsewhere(db, booking, hamilton):
+    """THE UNGUARDED PATH. The venue assertion read `if venue is not None`,
+    and the shared endpoint -- the one every live payment arrives at today
+    -- passes None. So on the only path in use, it did nothing.
+
+    What the shared path CAN know: one Stripe account signs with the
+    process-wide secret, and each venue's row names the variable its own
+    account signs with. A venue naming a DIFFERENT variable from the one
+    the shared path verifies against signs with a different account, so an
+    event for one of its invoices arriving here was signed by the OTHER
+    company. The money is in the wrong place, and recording it would say
+    the invoice was paid.
+    """
+    hamilton.stripe_webhook_secret_env = "STRIPE_WEBHOOK_SECRET_HAMILTON_MOVED"
+    db.flush()
+    invoice = _deposit(db, booking)
+    mark_sent(db, invoice, actor="test")
+    payload = _checkout_completed_event(invoice_id=invoice.id)
+
+    app.dependency_overrides[get_db] = lambda: db
+    try:
+        with patch("app.api.webhooks.STRIPE_WEBHOOK_SECRET", TEST_WEBHOOK_SECRET):
+            resp = TestClient(app).post(
+                "/webhooks/stripe", content=payload, headers={"stripe-signature": _sign(payload)}
+            )
+        assert resp.status_code == 200
+    finally:
+        app.dependency_overrides.clear()
+
+    assert get_payment_summary(db, invoice)["is_fully_paid"] is False, (
+        "a payment signed by a different company's account was recorded as paid"
+    )
+
+    from app.models import BookingEvent
+
+    flagged = [
+        e for e in db.query(BookingEvent).filter_by(booking_id=invoice.booking_id).all()
+        if e.event_type == "payment_venue_mismatch"
+    ]
+    assert len(flagged) == 1
+    assert flagged[0].old_value == "shared endpoint"
+
+
+def test_the_shared_path_still_records_for_the_venue_the_shared_secret_belongs_to(db, booking, hamilton):
+    """Today's behaviour, and the positive control on the test above: a
+    guard that refused everything on the shared path would take live
+    payments down, and the refusal above would pass for the wrong reason.
+
+    Hamilton's row names the SHARED variable by name -- that is what seed.py
+    and migration f2a9d5c81b64 write -- and that is the fact that says its
+    account is the one signing here. The first draft of the guard tested
+    "has the venue named anything", which refused this exact case.
+    """
+    from app.services.stripe_integration import DEFAULT_STRIPE_WEBHOOK_SECRET_ENV
+
+    hamilton.stripe_webhook_secret_env = DEFAULT_STRIPE_WEBHOOK_SECRET_ENV
+    db.flush()
+    invoice = _deposit(db, booking)
+    mark_sent(db, invoice, actor="test")
+    payload = _checkout_completed_event(invoice_id=invoice.id)
+
+    app.dependency_overrides[get_db] = lambda: db
+    try:
+        with patch("app.api.webhooks.STRIPE_WEBHOOK_SECRET", TEST_WEBHOOK_SECRET):
+            resp = TestClient(app).post(
+                "/webhooks/stripe", content=payload, headers={"stripe-signature": _sign(payload)}
+            )
+        assert resp.status_code == 200, resp.text
+    finally:
+        app.dependency_overrides.clear()
+
+    assert get_payment_summary(db, invoice)["is_fully_paid"] is True
+
+
+def test_the_shared_path_refuses_an_invoice_whose_venue_names_no_secret(db, booking, hamilton):
+    """A venue with no signing-secret variable has never been wired to any
+    Stripe account, so nothing it is owed can legitimately have been
+    collected by the account that signs on the shared endpoint. Refused and
+    flagged, not silently recorded against the wrong company."""
+    hamilton.stripe_webhook_secret_env = None
+    db.flush()
+    invoice = _deposit(db, booking)
+    mark_sent(db, invoice, actor="test")
+    payload = _checkout_completed_event(invoice_id=invoice.id)
+
+    app.dependency_overrides[get_db] = lambda: db
+    try:
+        with patch("app.api.webhooks.STRIPE_WEBHOOK_SECRET", TEST_WEBHOOK_SECRET):
+            resp = TestClient(app).post(
+                "/webhooks/stripe", content=payload, headers={"stripe-signature": _sign(payload)}
+            )
+        assert resp.status_code == 200
+    finally:
+        app.dependency_overrides.clear()
+
+    assert get_payment_summary(db, invoice)["is_fully_paid"] is False
+
+    from app.models import BookingEvent
+
+    flagged = [
+        e for e in db.query(BookingEvent).filter_by(booking_id=invoice.booking_id).all()
+        if e.event_type == "payment_venue_mismatch"
+    ]
+    assert len(flagged) == 1

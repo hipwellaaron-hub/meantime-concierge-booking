@@ -141,6 +141,68 @@ async def stripe_webhook_for_venue(venue_slug: str, request: Request, db: Sessio
     return await _handle_stripe_event(request, db, venue_slug=venue_slug)
 
 
+def _venue_mismatch(invoice: Invoice, venue) -> str | None:
+    """Why this event cannot be for this invoice, or None if it can.
+
+    THE PER-VENUE PATH is the easy case: the URL named the venue whose
+    account signed the event, so the invoice had better belong to it.
+
+    THE SHARED PATH IS THE ONE THAT WAS UNGUARDED. It verifies against the
+    process-wide secret and passes venue=None, and the assertion used to be
+    `if venue is not None and ...` -- so on the endpoint every live payment
+    actually arrives at today, it did nothing at all. The standing decision
+    (2026-09-11) is that a mis-keyed payment passes signature verification
+    and records as success, so the venue assertion is mandatory before a
+    second account takes a dollar. A guard that only fires on the path
+    nobody has moved to yet is the same as no guard.
+
+    What the shared path CAN know: exactly one Stripe account signs with the
+    process-wide secret, and each venue's row NAMES the variable its account
+    signs with. Hamilton's row names the shared variable itself (seed.py and
+    migration f2a9d5c81b64 both write DEFAULT_STRIPE_WEBHOOK_SECRET_ENV), so
+    an event for a Hamilton invoice arriving here is exactly right. A venue
+    naming a DIFFERENT variable signs with a different account, so its money
+    arriving here went into the other company. A venue naming NOTHING has
+    never been wired to any account, so nothing it is owed can legitimately
+    have been collected by the account that signs here.
+
+    The first draft of this compared "has the venue named a variable at
+    all", and refused every live Hamilton payment in the test suite --
+    because Hamilton names the shared variable BY NAME. The discriminator is
+    which variable, not whether.
+
+    So the guard is a no-op today, when the only venue is the one the shared
+    secret belongs to, and bites on the day the second account is wired up
+    -- the only day it is needed, and the day nobody would be re-reading
+    this handler.
+    """
+    from app.services.stripe_integration import DEFAULT_STRIPE_WEBHOOK_SECRET_ENV
+
+    invoice_venue = invoice.booking.venue
+    if venue is not None:
+        if invoice_venue.id != venue.id:
+            return (
+                f"arrived on venue {venue.slug!r}'s endpoint but the invoice belongs to "
+                f"venue {invoice_venue.slug!r}"
+            )
+        return None
+
+    named = invoice_venue.stripe_webhook_secret_env
+    if named == DEFAULT_STRIPE_WEBHOOK_SECRET_ENV:
+        return None
+    if named:
+        return (
+            f"arrived on the shared endpoint, which verifies against "
+            f"{DEFAULT_STRIPE_WEBHOOK_SECRET_ENV}, but venue {invoice_venue.slug!r} signs "
+            f"with {named} -- a different company's account"
+        )
+    return (
+        f"arrived on the shared endpoint but venue {invoice_venue.slug!r} has no "
+        "signing-secret variable recorded, so no account of its own could have "
+        "collected this"
+    )
+
+
 def _handle_checkout_completed(db: Session, session: dict, *, venue=None) -> None:
     metadata = session.get("metadata") or {}
     invoice_id_str = metadata.get(INVOICE_METADATA_KEY)
@@ -167,18 +229,19 @@ def _handle_checkout_completed(db: Session, session: dict, *, venue=None) -> Non
     # Flagged, never recorded and never silently dropped: a client HAS paid,
     # somebody has to unpick it, and a silent return is how that stays
     # invisible until a reconciliation nobody ran.
-    if venue is not None and invoice.booking.venue_id != venue.id:
+    mismatch = _venue_mismatch(invoice, venue)
+    if mismatch is not None:
         logger.error(
-            "Stripe event for invoice %s arrived on venue %s's endpoint but the invoice belongs to venue %s "
-            "-- NOT recording the payment; the money is in the wrong account and needs unpicking by hand",
-            invoice.id, venue.slug, invoice.booking.venue_id,
+            "Stripe event for invoice %s: %s -- NOT recording the payment; the money is "
+            "in the wrong account and needs unpicking by hand",
+            invoice.id, mismatch,
         )
         db.add(
             BookingEvent(
                 booking_id=invoice.booking_id,
                 event_type="payment_venue_mismatch",
                 field_name=f"{invoice.type.value}_invoice",
-                old_value=str(venue.slug)[:500],
+                old_value=(venue.slug if venue is not None else "shared endpoint")[:500],
                 new_value=str(payment_intent_id)[:500],
                 actor="stripe_webhook",
             )

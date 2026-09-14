@@ -15,6 +15,7 @@ from sqlalchemy import select
 from app.database import SessionLocal
 from app.models import Space, Venue
 from app.services import policy
+from app.services.stripe_integration import DEFAULT_STRIPE_WEBHOOK_SECRET_ENV
 
 HAMILTON_SLUG = "hamilton"
 
@@ -109,7 +110,11 @@ def seed(db=None) -> Venue:
             # Matches migration a4e7b2f9c105's backfill exactly.
             "trading_days": [2, 3, 4, 5, 6],
             "stripe_secret_key_env": "STRIPE_SECRET_KEY",
-            "stripe_webhook_secret_env": "STRIPE_WEBHOOK_SECRET",
+            # The shared endpoint verifies against this variable, and naming it here
+            # is what tells webhooks._venue_mismatch that Hamilton's account is
+            # the one signing there. One constant, so seed, guard and reader
+            # cannot spell it three ways.
+            "stripe_webhook_secret_env": DEFAULT_STRIPE_WEBHOOK_SECRET_ENV,
         }
         for field, value in defaults.items():
             if not getattr(venue, field, None):
