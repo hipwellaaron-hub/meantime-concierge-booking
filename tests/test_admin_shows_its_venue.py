@@ -93,12 +93,12 @@ def test_the_auth_router_declares_no_venue_scope():
     rendered page, because the page cannot show a band either way (its
     template is standalone) and so cannot tell us whether this rule still
     holds."""
-    from app.admin_auth import current_venue
     from app.api.admin_auth import router
+    from app.venue_scope import venue_scope
 
     declared = [d.dependency for d in router.dependencies]
 
-    assert current_venue not in declared, (
+    assert venue_scope not in declared, (
         "the auth router resolves a venue; /admin/login is public and must not"
     )
 
@@ -125,26 +125,47 @@ def _router_for(name):
     return importlib.import_module(f"app.api.{name}").router
 
 
-def test_every_staff_router_resolves_a_venue_one_way_or_the_other():
-    """No router may serve an admin page without knowing its venue.
+def test_every_staff_router_takes_its_venue_from_the_path():
+    """No router may serve an admin page without knowing its venue, and
+    there is now exactly ONE way to know it.
 
-    During the rollout there are two mechanisms: the moved routers use
-    `venue_scope` (venue from the path), the rest still use `current_venue`
-    (the hardcoded seam). A router with NEITHER has silently opted out of
-    the scoping, which is the thing this catches.
+    This used to accept EITHER `venue_scope` (venue from the path) or
+    `current_venue` (a hardcoded `filter_by(slug="hamilton")`), because
+    during the rollout both existed. The rollout finished and
+    `current_venue` was deleted on 2026-09-14 -- it had no callers and a
+    docstring still calling itself the seam, so a new router declaring it
+    would have passed this very test while serving Hamilton's bookings
+    under /admin/entrance/. Nothing would have failed: Hamilton is a real
+    venue and its rows are real rows.
+
+    Naming the one mechanism is what makes this test refuse that.
     """
-    from app.admin_auth import current_venue, require_staff
+    from app.admin_auth import require_staff
     from app.venue_scope import venue_scope
 
     missing = []
     for name in ALL_STAFF_ROUTERS:
         declared = [d.dependency for d in _router_for(name).dependencies]
-        if require_staff in declared and not (
-            current_venue in declared or venue_scope in declared
-        ):
+        if require_staff in declared and venue_scope not in declared:
             missing.append(name)
 
-    assert not missing, f"these staff routers resolve no venue at all: {missing}"
+    assert not missing, (
+        f"these staff routers do not take their venue from the path: {missing}. "
+        "venue_scope is the only mechanism; anything else resolves a venue the "
+        "URL did not name."
+    )
+
+
+def test_the_hardcoded_seam_stays_deleted():
+    """Named explicitly, because a grep for it is what a future caller
+    rebuilding the same thing would do first."""
+    from app import admin_auth
+
+    assert not hasattr(admin_auth, "current_venue"), (
+        "admin_auth.current_venue is back -- it resolved a hardcoded Hamilton "
+        "for whatever page declared it. The venue comes from the path segment "
+        "via venue_scope."
+    )
 
 
 def test_a_moved_router_actually_carries_the_path_segment():

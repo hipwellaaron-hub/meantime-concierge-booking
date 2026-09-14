@@ -41,26 +41,22 @@ def require_staff(request: Request, db: Session = Depends(get_db)) -> StaffUser:
     return staff
 
 
-def current_venue(request: Request, db: Session = Depends(get_db)):
-    """The venue every page under /admin is about, stashed on request.state
-    so admin_ctx can read it without 17 call sites passing it by hand.
-
-    A ROUTER-level dependency rather than a per-route argument: a new route
-    added to an admin router gets it without anyone remembering, which is the
-    property that matters -- app/api/admin_drafts.py contains no mention of a
-    venue at all today, and that is exactly how a page ends up outside the
-    scoping.
-
-    STILL HARDCODED. This is the seam, not the switch: when the venue switch
-    lands, only this function changes and every admin page follows. Keeping
-    the hardcode in ONE function rather than eight is the point of doing it
-    before the switch rather than during it.
-    """
-    from app.models import Venue
-
-    venue = db.query(Venue).filter_by(slug="hamilton").one()
-    request.state.venue = venue
-    return venue
+# `current_venue` LIVED HERE and is deleted (2026-09-14). It was the seam
+# for the venue switch -- one hardcoded `filter_by(slug="hamilton").one()`
+# in a router-level dependency, so the switch would change one function
+# instead of eight. The switch LANDED: all eight admin routers are on
+# /admin/{venue_slug}/ and take `venue_scope`, which resolves the venue
+# from the path and sets the same request.state.
+#
+# So it had no callers, and its docstring still said "STILL HARDCODED,
+# this is the seam" -- which is the trap the module-constant sweep found
+# earlier the same day. A new admin router declaring it would have passed
+# the structural test that exists to catch an unscoped router (that test
+# accepted EITHER mechanism during the rollout) and served Hamilton's
+# bookings under /admin/entrance/. Nothing would have failed, because
+# Hamilton is a real venue and its rows are real rows.
+#
+# tests/test_admin_shows_its_venue.py now requires venue_scope by name.
 
 
 def start_session(request: Request, staff: StaffUser) -> None:
@@ -92,8 +88,9 @@ def admin_ctx(request: Request, staff: StaffUser | None = None, **extra) -> dict
         "staff": staff,
         "csrf_token": ensure_csrf_token(request),
         # Which venue this page is about, put on request.state by the
-        # router-level `current_venue` dependency above. A caller may still
-        # override it by passing `venue=...`, which `extra` applies below.
+        # router-level `venue_scope` dependency, which reads it from the
+        # path segment. A caller may still override it by passing
+        # `venue=...`, which `extra` applies below.
         #
         # Every admin page shows it, not just the ones where it is
         # ambiguous. The failure a venue switch actually has is not a wrong
