@@ -153,8 +153,36 @@ def create_invoice(
     return invoice
 
 
+def deposit_figure_for(db: Session, booking: Booking) -> Decimal:
+    """The deposit this booking's client was told about, or the house figure.
+
+    The agreement freezes deposit_required at generation
+    (document_generation.generate_agreement_content) because a signed
+    contract reflects what was agreed. The deposit invoice then read
+    policy.STANDARD_DEPOSIT live -- so the day that constant moves, a client
+    holding a contract that says one figure gets an invoice for another.
+    The same two-halves fault the minimum-spend clause had on 2026-09-05,
+    one line down.
+
+    The current agreement's figure wins when there is one. No agreement,
+    or one that predates the key, and the house figure stands -- there is
+    no contract to disagree with.
+    """
+    from app.models.document import DocumentType
+    from app.services import documents as documents_service
+
+    agreement = documents_service.get_current(db, booking.id, DocumentType.agreement)
+    frozen = (agreement.content or {}).get("deposit_required") if agreement is not None else None
+    if frozen not in (None, ""):
+        try:
+            return Decimal(str(frozen)).quantize(Decimal("0.01"))
+        except InvalidOperation:
+            pass
+    return STANDARD_DEPOSIT
+
+
 def create_deposit_invoice(db: Session, booking: Booking, *, due_date: dt.date, actor: str) -> Invoice:
-    line_items = [{"description": "Booking deposit", "quantity": 1, "unit_price": str(STANDARD_DEPOSIT)}]
+    line_items = [{"description": "Booking deposit", "quantity": 1, "unit_price": str(deposit_figure_for(db, booking))}]
     return create_invoice(db, booking, InvoiceType.deposit, line_items, due_date, actor=actor)
 
 
@@ -808,16 +836,43 @@ def record_payment(
         except Exception:  # noqa: BLE001 -- see above; a real payment must stand
             logger.exception("Could not flag overpayment on invoice %s", invoice.id)
 
-    if just_paid:
-        # The invoice is settled, so every Payment Link ever minted for it
-        # must stop being chargeable -- otherwise the client can pay the
-        # same invoice twice from an old link in their inbox. After the
-        # commit and never raising, for the same reason the auto-confirm
-        # below is: the payment is real and recorded, and nothing here may
-        # undo it.
-        _close_payment_links(invoice, why="full payment")
+    # EVERY payment closes the links, not just the settling one. A Payment
+    # Link carries the balance as at the moment it was minted, so after a
+    # part payment every earlier link still charges the pre-payment figure
+    # -- the overpayment guard above then records the money and raises a
+    # flag, which is the guard working, not the link being right. The next
+    # invoice-page view mints a fresh link at what is payable now
+    # (app.api.invoices._build_invoice_context), so the client is not
+    # stranded, just asked to reopen the invoice.
+    #
+    # This reverses a 2026-09-04 decision to leave links alone on a part
+    # payment, whose premise was that draining would leave "no way to pay
+    # the rest". A fresh link on every view means there always was.
+    #
+    # After the commit and never raising, for the same reason the
+    # auto-confirm below is: the payment is real and recorded, and nothing
+    # here may undo it.
+    _close_payment_links(invoice, why="full payment" if just_paid else "part payment")
 
     if invoice.type == InvoiceType.deposit and amount > 0:
+        # THE OTHER INVOICE'S LINKS. A final invoice already out froze its
+        # balance before this deposit existed; any link it minted charges
+        # the full food total, and the overpayment guard cannot see that
+        # because the amount IS the final's total. Close them; the next
+        # view re-mints at payable_now, which credits the deposit.
+        #
+        # Queried, not read off invoice.booking.invoices: that collection is
+        # whatever was loaded when something first touched it, and a final
+        # invoice created later in the same session is not in it.
+        for other in db.scalars(
+            select(Invoice).where(
+                Invoice.booking_id == invoice.booking_id,
+                Invoice.type == InvoiceType.final,
+                Invoice.status == InvoiceStatus.sent,
+            )
+        ).all():
+            if other.id != invoice.id and not other.is_legacy:
+                _close_payment_links(other, why="deposit paid on another invoice")
         # A deposit payment has just landed. If a final invoice is already
         # OUT, its deposit credit was frozen when it was sent and cannot
         # know about this -- so the client is holding a bill that will

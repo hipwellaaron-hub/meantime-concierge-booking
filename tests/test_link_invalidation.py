@@ -543,10 +543,19 @@ def test_paying_an_invoice_in_full_deactivates_every_payment_link_ever_minted(db
     assert _link_ids(mock_deactivate.call_args.args[0]) == ["plink_view_one", "plink_view_two", "plink_pdf"]
 
 
-def test_a_part_payment_leaves_the_links_alone(db, loft, contact):
-    # Still payable, so the links must stay live -- draining on any
-    # payment rather than on the settling one would strand a client
-    # mid-way through a split payment with no way to pay the rest.
+def test_a_part_payment_closes_the_links_that_carry_the_old_balance(db, loft, contact):
+    """REVERSED on 2026-09-14. This test used to assert the opposite -- that
+    a part payment leaves the links alone -- on the premise that draining
+    them "would strand a client mid-way through a split payment with no
+    way to pay the rest". That premise was never true: a fresh Payment Link
+    is minted on every invoice-page view and every PDF download, at what is
+    payable now. What an OLD link carries is the balance as at the moment
+    it was minted -- so after a $200 part payment the $500 link in the
+    client's inbox still charged $500, and the overpayment guard then
+    recorded the money and raised a flag. The guard working is not the
+    link being right. Closing on every payment is the same mechanism full
+    payment already used; the client reopens the invoice and pays the
+    rest."""
     booking = _booking_on(db, loft, contact)
     invoice = create_invoice(
         db, booking, InvoiceType.deposit, [{"description": "Deposit", "quantity": 1, "unit_price": "500.00"}],
@@ -562,8 +571,9 @@ def test_a_part_payment_leaves_the_links_alone(db, loft, contact):
         )
 
     db.refresh(invoice)
-    assert invoice.status == InvoiceStatus.sent
-    mock_deactivate.assert_not_called()
+    assert invoice.status == InvoiceStatus.sent, "part-paid, still open -- and still re-mintable at $300"
+    mock_deactivate.assert_called_once()
+    assert _link_ids(mock_deactivate.call_args.args[0]) == ["plink_one"]
 
 
 def test_a_stripe_failure_while_closing_links_never_undoes_a_real_payment(db, loft, contact):
