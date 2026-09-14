@@ -369,6 +369,16 @@ def draft_for_booking(db: Session, booking_id: uuid.UUID, *, trigger: str = "enq
             prompt_version=PROMPT_VERSION,
         )
     except claude_client.ClaudeUnavailable as exc:
+        # LOGGED, which until 2026-09-14 it was not. This branch wrote one
+        # database row and returned -- so the two failures actually sitting
+        # on the drafts page, an HTTP 401 and a transport error, produced
+        # ZERO application log output. The generic handler below has always
+        # logged; the specific one, which is the branch a credential
+        # problem takes, did not.
+        #
+        # Aaron, 2026-09-14: "If it fails without telling anyone in shadow
+        # mode it will fail without telling anyone in production."
+        logger.warning("Drafting unavailable for booking %s: %s", booking_id, exc)
         return _record(db, booking, status=STATUS_FAILED, trigger=trigger, failure_reason=str(exc)[:500])
     except Exception as exc:  # noqa: BLE001 -- drafting must never fail an enquiry
         logger.exception("Drafting failed for booking %s", booking_id)
@@ -522,3 +532,30 @@ def _describe(entry) -> str:
     if start and end:
         text += f", {start}-{end}"
     return text
+
+
+def recent_failure_count(db, *, within_hours: int = 24) -> int:
+    """How many drafting attempts have FAILED recently.
+
+    For /healthz, mirroring the enquiry-notification signal already there:
+    a failure count that flips the endpoint to "degraded" is the difference
+    between a fault a monitor notices and a fault nobody sees until they
+    open a staff page and read a badge.
+
+    BLOCKED and SKIPPED are not failures. A gate declining to draft is the
+    system working, and counting those would keep the endpoint permanently
+    degraded -- which is the same as no signal at all.
+    """
+    import datetime as _dt
+
+    from sqlalchemy import func, select
+
+    since = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(hours=within_hours)
+    return int(
+        db.execute(
+            select(func.count(EnquiryDraft.id)).where(
+                EnquiryDraft.status == STATUS_FAILED,
+                EnquiryDraft.created_at >= since,
+            )
+        ).scalar_one()
+    )

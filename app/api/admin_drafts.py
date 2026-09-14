@@ -12,6 +12,8 @@ staff login.
 import datetime as dt
 import uuid
 
+from app.config import settings
+
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import select
@@ -76,7 +78,12 @@ def review_drafts(request: Request, db: Session = Depends(get_db), staff: StaffU
     return templates.TemplateResponse(
         request, "admin/drafts.html",
         admin_ctx(request, staff, drafts=drafts, counts=counts, outcomes=outcomes, freshness=freshness,
-                  drafting_enabled=switches.drafting_enabled, drafts_visible=switches.drafts_visible),
+                  drafting_enabled=switches.drafting_enabled, drafts_visible=switches.drafts_visible,
+                  # The Phase 1 master gates, which had no UI at all until
+                  # 2026-09-14 -- reachable only by a direct database write.
+                  access_enabled=switches.access_enabled, writes_enabled=switches.writes_enabled,
+                  env_access_enabled=settings.ai_access_enabled,
+                  env_writes_enabled=settings.ai_writes_enabled),
     )
 
 
@@ -108,6 +115,46 @@ def record_review(
     draft.discard_reason = discard_reason.strip() or None
     draft.reviewed_at = dt.datetime.now(dt.timezone.utc)
     draft.reviewed_by = f"staff:{staff.email}"
+    db.commit()
+    return RedirectResponse(url=f"{request.state.venue_base}/drafts", status_code=303)
+
+
+@router.post("/master-switches", dependencies=[Depends(require_csrf)])
+def set_master_switches(
+    request: Request,
+    access_enabled: str = Form(""),
+    writes_enabled: str = Form(""),
+    db: Session = Depends(get_db),
+    staff: StaffUser = Depends(require_staff),
+):
+    """The Phase 1 master gates, which had NO UI AT ALL until 2026-09-14.
+
+    access_enabled and writes_enabled appeared in no template and no route:
+    the only ways to change them were a direct database write or the env
+    var override, and /healthz did not report them either. A kill switch
+    that can only be reached with psql is not a kill switch -- the whole
+    point of putting them in the database rather than in the environment
+    was that an env var "needs a ~90s rebuild on Railway, which is not a
+    kill switch" (app/services/ai_access.py).
+
+    Turning ACCESS off closes writes too, because writes_enabled is read as
+    `row.access_enabled and row.writes_enabled` -- the form says so rather
+    than leaving somebody to discover it.
+
+    The env vars remain a hard override in the other direction: either
+    source saying false wins, so this cannot turn on something the
+    environment has turned off. The page says that too.
+    """
+    row = ai_access.get_settings_row(db)
+    row.access_enabled = access_enabled == "on"
+    row.writes_enabled = writes_enabled == "on"
+    if not row.access_enabled or not row.writes_enabled:
+        # The model already carries these two columns and nothing was
+        # writing them. A gate that closes without recording when or why is
+        # the same shape as the stamps fixed earlier today.
+        row.writes_disabled_at = dt.datetime.now(dt.timezone.utc)
+        row.writes_disabled_reason = f"turned off from the AI access page by {staff.email}"
+    row.updated_by = f"staff:{staff.email}"
     db.commit()
     return RedirectResponse(url=f"{request.state.venue_base}/drafts", status_code=303)
 

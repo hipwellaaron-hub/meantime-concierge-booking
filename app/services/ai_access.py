@@ -52,10 +52,28 @@ def get_settings_row(db: Session) -> AiSettings:
     seeds it, so this only self-heals a database restored without it."""
     row = db.get(AiSettings, 1)
     if row is None:
-        row = AiSettings(id=1, access_enabled=True, writes_enabled=True)
+        # EVERYTHING OFF. This used to self-heal with access_enabled=True
+        # AND writes_enabled=True, so restoring a database without the row
+        # and then hitting any AI endpoint silently opened both gates --
+        # including the WRITE gate -- with nobody deciding to.
+        #
+        # The migration seeds the row, so on this production database the
+        # branch has never run and never could (verified 2026-09-14). It
+        # exists for a database restored without it, which is exactly the
+        # situation where a quiet "on" is least defensible: nobody is
+        # watching a restore, and the safe failure for an AI write gate is
+        # closed.
+        #
+        # Turning it back on is two clicks on the AI access page. Turning
+        # off something that let itself on is a forensic exercise.
+        row = AiSettings(id=1, access_enabled=False, writes_enabled=False)
         db.add(row)
         db.commit()
         db.refresh(row)
+        logger.warning(
+            "ai_settings row was missing and has been recreated with all access OFF -- "
+            "re-enable deliberately on the AI access page if this is a restored database"
+        )
     return row
 
 

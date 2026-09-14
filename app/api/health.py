@@ -27,6 +27,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models import Venue
+from app.services import drafting
 from app.services import enquiry_classification, stripe_integration
 from app.services.notifications import is_gmail_smtp_configured
 
@@ -80,6 +81,7 @@ def healthz(db: Session = Depends(get_db)):
             len(enquiry_classification.get_enquiry_notification_failures(db, venue))
             for venue in venues
         )
+        drafting_failures = drafting.recent_failure_count(db)
         checks = {
             "database": True,
             "venues_present": True,
@@ -94,8 +96,14 @@ def healthz(db: Session = Depends(get_db)):
                 stripe_integration.is_configured_for(venue) for venue in venues
             ),
             "enquiry_notifications_failing": notification_failures > 0,
+            # The AI drafting credential. Its failure branch wrote one row
+            # and no log line at all, so an HTTP 401 was visible only as a
+            # badge on a staff page nobody watches. Same shape as the
+            # notification signal beside it: a count that flips the
+            # endpoint, so a monitor sees it.
+            "ai_drafting_failing": drafting_failures > 0,
         }
-        status = "degraded" if notification_failures > 0 else "ok"
+        status = "degraded" if (notification_failures > 0 or drafting_failures > 0) else "ok"
     except Exception:
         # A real DB connection but something else broke -- still report
         # what we could confirm rather than raising a 500 for a monitor

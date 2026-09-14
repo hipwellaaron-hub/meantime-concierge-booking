@@ -5,6 +5,30 @@
 <p class="muted">Every enquiry that arrives through the form gets one row here, whether or not a draft was written. Nothing on this page is sent to anyone. Compare what the AI would have sent against what you actually sent, and say why they differ. The discard reason is the signal.</p>
 
 <div class="card">
+  {#
+    THE PHASE 1 MASTER GATES. These had no UI whatsoever until 2026-09-14:
+    access_enabled and writes_enabled appeared in no template and no route,
+    so the only ways to change them were a direct database write or an env
+    var -- and the reason they live in the database at all is that an env
+    var "needs a ~90s rebuild on Railway, which is not a kill switch".
+    A kill switch reachable only with psql is not one either.
+  #}
+  <h2>AI access</h2>
+  <form method="post" action="{{ venue_base }}/drafts/master-switches" class="stack">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label><input type="checkbox" name="access_enabled" {% if access_enabled %}checked{% endif %}> AI access on <span class="muted">(the master gate &mdash; off closes reads AND writes)</span></label>
+    <label><input type="checkbox" name="writes_enabled" {% if writes_enabled %}checked{% endif %}> AI writes on <span class="muted">(proposals; requires access above)</span></label>
+    <button class="btn secondary" type="submit">Save AI access</button>
+  </form>
+  {% if not env_access_enabled or not env_writes_enabled %}
+  <p class="muted" style="font-size:0.9rem;">
+    An environment variable currently forces
+    {% if not env_access_enabled %}access{% else %}writes{% endif %} OFF. Either source saying
+    off wins, so these boxes cannot turn it back on &mdash; change the Railway variable as well.
+  </p>
+  {% endif %}
+  <p class="muted" style="font-size:0.9rem;">Writes are only on when BOTH boxes are ticked: the check reads access and writes together.</p>
+
   <h2>Switches</h2>
   {# These two are one process-wide row (AiSettings has no venue_id), so
      they reach every venue however this page is reached. Said out loud

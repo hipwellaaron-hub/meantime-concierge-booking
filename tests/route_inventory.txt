@@ -101,6 +101,7 @@ POST   /admin/{venue_slug}/bookings/{booking_id}/vendors/{vendor_id}/confirm-bum
 POST   /admin/{venue_slug}/bookings/{booking_id}/wizard/revoke
 POST   /admin/{venue_slug}/bookings/{booking_id}/wizard/send
 POST   /admin/{venue_slug}/calendar/holds
+POST   /admin/{venue_slug}/drafts/master-switches
 POST   /admin/{venue_slug}/drafts/switches
 POST   /admin/{venue_slug}/drafts/{draft_id}/review
 POST   /admin/{venue_slug}/staff/create
