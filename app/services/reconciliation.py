@@ -51,7 +51,7 @@ from app.models.booking import BookingStatus
 from app.models.document import DocumentStatus, DocumentType
 from app.models.invoice import InvoiceStatus, InvoiceType
 from app.services import invoicing
-from app.models.wizard_session import WizardSessionStatus
+from app.models.wizard_session import WizardSession, WizardSessionStatus
 from app.services import booking as booking_service
 from app.services.ai_pipeline import CONTESTING_STATUSES
 
@@ -578,6 +578,57 @@ def check_imminent_without_beo(bookings, *, today: dt.date) -> list[Finding]:
     return out
 
 
+def check_wizard_submitted_without_beo(db: Session, bookings) -> list[Finding]:
+    """A client finished the wizard and no Event Order came out of it.
+
+    THIS IS THE ONE FAILURE THAT REMOVES A SURFACE INSTEAD OF ADDING ONE,
+    which is why it needs a check of its own rather than being left to the
+    ones above. wizard.submit_review sets the session to `submitted` and
+    COMMITS before generation runs, and every "ready for the guided wizard"
+    surface excludes a booking with a submitted session
+    (get_wizard_eligible_bookings: `Booking.id.notin_(already_submitted)`).
+    So the moment generation fails, the booking drops off the dashboard
+    count, off Triage's wizard-ready list and out of the digest's own
+    section -- and the client has already seen an error and stopped. The
+    failure IS recorded, as a wizard_generation_failed BookingEvent, and
+    nothing anywhere reads it.
+
+    ASKED OF THE STATE, NOT OF THE EVENT. "Submitted, and no Event Order
+    exists" catches a crash, a timeout, a deploy mid-request and a draft
+    somebody later deleted -- not only the failures that got as far as
+    writing their own trail row. And it is self-clearing by construction:
+    the finding is gone the moment an Event Order exists, whether it
+    arrived by a retry or by a staff Generate.
+
+    ANY version counts, in any status. A draft Event Order means the run
+    sheet exists and somebody is working on it; this check is about the
+    booking that has none at all.
+    """
+    submitted = set(
+        db.scalars(
+            select(WizardSession.booking_id).where(
+                WizardSession.status == WizardSessionStatus.submitted
+            )
+        ).all()
+    )
+    out = []
+    for b in bookings:
+        if b.id not in submitted:
+            continue
+        if any(d.type == DocumentType.beo for d in b.documents):
+            continue
+        out.append(
+            Finding(
+                b.id, "WIZARD_SUBMITTED_NO_BEO", NEEDS_HUMAN,
+                "The client completed the guided wizard and no Event Order was produced. "
+                "They saw an error and stopped, and this booking has dropped off every "
+                "wizard worklist because its session counts as submitted. Generate the "
+                "Event Order by hand, or ask them to submit again.",
+            )
+        )
+    return out
+
+
 def check_notes_before_beo(bookings) -> list[Finding]:
     """Bookings carrying free text whose Event Order has not been made yet.
 
@@ -660,6 +711,7 @@ def collect(db: Session, venue: Venue, *, today: dt.date | None = None,
     findings += check_split_events(bookings)
     findings += check_wizard_overdue(bookings, now=now)
     findings += check_imminent_without_beo(bookings, today=today)
+    findings += check_wizard_submitted_without_beo(db, bookings)
     findings += check_contact_hygiene(bookings)
     findings += check_notes_before_beo(bookings)
     findings += check_overpaid_invoices(db, bookings)
