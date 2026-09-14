@@ -126,9 +126,34 @@ def test_the_booking_page_form_arrives_filled_in(admin_client, db, hamilton, lof
     )
 
 
+def test_a_long_food_order_still_leaves_rows_to_type_into(admin_client, db, hamilton, loft, contact):
+    """Adam Williams' seven platter lines, found on the live form: filling
+    the six rows from the Event Order left NO empty row, so a bar tab, room
+    hire or a discount could not be added while building the invoice.
+
+    range(6 - 7) is range(-1), which Jinja renders as nothing at all -- the
+    failure is silent, and the form still looks complete."""
+    booking = _booking(db, loft, contact, name="ZZSEVEN Lines")
+    _beo_with_food(db, booking, [
+        {"description": f"Platter {n}", "quantity": 2, "unit_price": "100.00"} for n in range(7)
+    ])
+
+    page = admin_client.get(f"/admin/hamilton/bookings/{booking.id}", follow_redirects=True)
+    form = page.text.split('invoices/final')[1].split("</form>")[0]
+
+    descriptions = re.findall(r'name="description"[^>]*', form)
+    blanks = [d for d in descriptions if "value=" not in d]
+
+    assert len(descriptions) == 9, "seven prefilled rows plus two spares"
+    assert len(blanks) >= 2, (
+        "a food order of six or more lines leaves nowhere to add a charge"
+    )
+
+
 def test_the_form_still_offers_six_rows_in_total(admin_client, db, hamilton, loft, contact):
     """Prefilled rows come out of the six, not on top of them -- otherwise
-    a big food order makes an unusably long form."""
+    a big food order makes an unusably long form. The six is a target, not
+    a cap: see the test above, where two spare rows are kept regardless."""
     booking = _booking(db, loft, contact, name="ZZSIXROWS Prefill")
     _beo_with_food(db, booking, [
         {"description": f"Item {n}", "quantity": 1, "unit_price": "10.00"} for n in range(2)

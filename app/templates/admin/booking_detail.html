@@ -547,10 +547,15 @@
       {% if final_invoice_prefill %}
       <p class="muted" style="font-size:0.8rem;">Filled in from this booking's Event Order food order. Edit anything before creating.</p>
       {% endif %}
-      {# Prefilled rows first, then blanks up to six. The rows themselves are
-         ordinary inputs: a staff member still reads them and presses the
-         button, which is the difference between this and the proposal path
-         that creates the invoice outright. #}
+      {# Prefilled rows first, then blanks up to six -- but NEVER fewer than
+         two blanks, however long the food order is. Filling the six from the
+         Event Order left a booking with six or more food lines no empty row
+         at all, so a bar tab, room hire or a discount could not be typed in
+         at the point the invoice is built. Adam Williams' seven lines took
+         range(6 - 7) to range(-1), which Jinja renders as nothing.
+         The rows themselves are ordinary inputs: a staff member still reads
+         them and presses the button, which is the difference between this
+         and the proposal path that creates the invoice outright. #}
       {% for row in final_invoice_prefill %}
       <div class="field-row">
         <div><label>Description</label><input type="text" name="description" value="{{ row.description }}"></div>
@@ -558,7 +563,7 @@
         <div style="flex:0 0 120px;"><label>Unit price</label><input type="text" name="unit_price" value="{{ row.unit_price }}"></div>
       </div>
       {% endfor %}
-      {% for i in range(6 - (final_invoice_prefill | length if final_invoice_prefill else 0)) %}
+      {% for i in range([6 - (final_invoice_prefill | length if final_invoice_prefill else 0), 2] | max) %}
       <div class="field-row">
         <div><label>Description</label><input type="text" name="description"></div>
         <div style="flex:0 0 90px;"><label>Qty</label><input type="text" name="quantity" value="1"></div>
