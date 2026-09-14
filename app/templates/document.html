@@ -509,8 +509,22 @@
 </div>
 {% else %}
 <div class="card {{ 'beo-card' if document.type.value == 'beo' else '' }}">
+  {# The banner states this document's ACTUAL status. It used to say "this has
+     not been sent to the client" whatever the status was, which was true only
+     of a draft -- and the booking page's View link now brings staff here for
+     SENT documents too, so an unconditional sentence would have told them the
+     opposite of the truth on exactly the documents they were checking.
+     The second sentence is the one that matters operationally: reading a
+     document here does not mark it viewed, which is the whole reason this
+     route exists rather than the client's link. #}
   {% if is_staff_preview %}
-  <div class="staff-preview-banner">Staff preview — this has not been sent to the client.</div>
+  <div class="staff-preview-banner">
+    {% if document.status.value == "draft" %}Staff preview — this is a draft and has not been sent to the client.
+    {% elif document.status.value == "signed" %}Staff preview — the client approved this version{% if document.signer_name %} as {{ document.signer_name }}{% endif %}. Reading it here does not change anything.
+    {% elif document.status.value == "viewed" %}Staff preview — this version is live at the client's link, and the client has opened it. Reading it here does not count as a client view.
+    {% else %}Staff preview — this version is live at the client's link. Reading it here does not count as a client view.
+    {% endif %}
+  </div>
   {% endif %}
   {% if document.type.value == "agreement" %}
   <h1>{{ booking.event_name }}</h1>

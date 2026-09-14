@@ -381,7 +381,16 @@
           <a href="{{ venue_base }}/bookings/{{ booking.id }}/documents/{{ current_agreement.id }}/edit">Edit</a>
           <a href="{{ venue_base }}/bookings/{{ booking.id }}/documents/{{ current_agreement.id }}/preview" target="_blank">Preview &rarr;</a>
           {% elif current_agreement %}
-          <a href="/d/{{ current_agreement.access_token }}" target="_blank">View &rarr;</a>
+          {# NOT /d/{token}. That is the CLIENT's own link, and loading it calls
+             record_view, which stamps the document viewed with the actor
+             "client (auto)" -- so a staff member checking their own work was
+             recorded as the client opening their agreement. The preview route
+             renders the same template and deliberately does not record a view
+             (see preview_document's docstring). It has no status guard, so it
+             serves a sent, viewed or signed document as readily as a draft.
+             Copy link still copies the client's real URL, which is the thing
+             that actually goes to a client. #}
+          <a href="{{ venue_base }}/bookings/{{ booking.id }}/documents/{{ current_agreement.id }}/preview" target="_blank">View &rarr;</a>
           {# The INTERNAL copy: it names the fields nobody has filled in and
              shows staff-facing markers the client PDF hides. The clean copy
              the client gets is the link beside it. #}
@@ -452,7 +461,10 @@
           <a href="{{ venue_base }}/bookings/{{ booking.id }}/documents/{{ current_beo.id }}/edit">Edit</a>
           <a href="{{ venue_base }}/bookings/{{ booking.id }}/documents/{{ current_beo.id }}/preview" target="_blank">Preview &rarr;</a>
           {% elif current_beo %}
-          <a href="/d/{{ current_beo.access_token }}" target="_blank">View &rarr;</a>
+          {# See the agreement's View link above: /d/{token} is the client's own
+             link and loading it records a client view. This is the staff read
+             that leaves no trace. #}
+          <a href="{{ venue_base }}/bookings/{{ booking.id }}/documents/{{ current_beo.id }}/preview" target="_blank">View &rarr;</a>
           {# The INTERNAL copy: it names the fields nobody has filled in and
              shows staff-facing markers the client PDF hides. The clean copy
              the client gets is the link beside it. #}
