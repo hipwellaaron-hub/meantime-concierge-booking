@@ -122,6 +122,29 @@ def healthz(db: Session = Depends(get_db)):
             for venue in venues
             if stripe_integration.is_configured_for(venue)
         )
+        # Is every venue that can take a card taking REAL ones? Derived from
+        # the key's own prefix (stripe_integration.mode_for), never a
+        # separate flag that could disagree with the key actually loaded.
+        #
+        # THE THIRD FACT IN A SET OF THREE, and only together do they answer
+        # the question docs/stripe-go-live-checklist.md calls "the failure
+        # mode that matters most, because it's invisible": a live key with a
+        # test endpoint's signing secret charges a real card and never
+        # records the payment. Nothing local can detect that mismatch -- a
+        # whsec_ secret does not say which mode it belongs to -- so the best
+        # available signal is to put mode, secret-present and account-pinned
+        # side by side on the page somebody is already watching.
+        #
+        # REPORTED, NOT DEGRADING. Test mode is a deliberate state during
+        # set-up, the same argument as the AI gates below, and staff already
+        # see a per-venue banner on every admin page. What this buys is that
+        # a venue quietly slipping back to a test key is visible from
+        # OUTSIDE the process, which the banner is not.
+        stripe_live_mode = all(
+            stripe_integration.mode_for(venue) is stripe_integration.StripeMode.live
+            for venue in venues
+            if stripe_integration.is_configured_for(venue)
+        )
         # Can every venue's completion events be VERIFIED? A venue can mint
         # a payment link with a perfectly good key and have no signing
         # secret set for the endpoint its own Stripe account posts to. The
@@ -211,6 +234,7 @@ def healthz(db: Session = Depends(get_db)):
             "schema_drift": schema_drifting,
             "stripe_account_pinned": stripe_account_pinned,
             "stripe_webhook_ready": stripe_webhook_ready,
+            "stripe_live_mode": stripe_live_mode,
             "venues_ready": venues_ready,
             # THE AI GATES, reported because they are now a DELIBERATE
             # long-lived state rather than a transient one: Aaron, 2026-09-14,

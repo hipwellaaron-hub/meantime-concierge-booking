@@ -192,3 +192,75 @@ def test_the_endpoint_names_no_variable(db, hamilton, monkeypatch):
 
     assert "STRIPE_WEBHOOK_SECRET_PROBE" not in blob
     assert "whsec" not in blob
+
+
+# --- and whether the card it takes is a real one ------------------------
+
+
+def test_a_live_key_reads_live(db, hamilton, monkeypatch):
+    """The three Stripe facts only mean something together: mode, the
+    signing secret being present, and the account being pinned. The
+    checklist calls the gap between them "the failure mode that matters
+    most, because it's invisible" -- a live key with a test endpoint's
+    secret charges a real card and never records the payment."""
+    hamilton.stripe_secret_key_env = "STRIPE_SECRET_KEY_PROBE"
+    monkeypatch.setenv("STRIPE_SECRET_KEY_PROBE", "sk_live_probe")
+    db.flush()
+
+    body = _healthz(db)
+
+    assert body["checks"]["stripe_live_mode"] is True
+
+
+def test_a_test_key_reads_not_live(db, hamilton, monkeypatch):
+    hamilton.stripe_secret_key_env = "STRIPE_SECRET_KEY_PROBE"
+    monkeypatch.setenv("STRIPE_SECRET_KEY_PROBE", "sk_test_probe")
+    db.flush()
+
+    body = _healthz(db)
+
+    assert body["checks"]["stripe_live_mode"] is False
+
+
+def test_test_mode_does_not_degrade_the_endpoint(db, hamilton, monkeypatch):
+    """Deliberately asserted, because the alternative was considered and
+    rejected: test mode is a real state a venue is in while being set up,
+    and an endpoint amber over a deliberate state is one people stop
+    reading. Everything else that could degrade is neutralised here so the
+    mode is the only variable."""
+    hamilton.stripe_account_id = "acct_probe"
+    hamilton.stripe_secret_key_env = "STRIPE_SECRET_KEY_PROBE"
+    hamilton.stripe_webhook_secret_env = "STRIPE_WEBHOOK_SECRET_PROBE"
+    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET_PROBE", "whsec_probe")
+    db.flush()
+
+    monkeypatch.setenv("STRIPE_SECRET_KEY_PROBE", "sk_live_probe")
+    live_status = _healthz(db)["status"]
+
+    monkeypatch.setenv("STRIPE_SECRET_KEY_PROBE", "sk_test_probe")
+    test_body = _healthz(db)
+
+    assert test_body["checks"]["stripe_live_mode"] is False
+    assert test_body["status"] == live_status, (
+        "test mode moves /healthz between ok and degraded"
+    )
+
+
+def test_a_venue_with_no_key_is_not_counted(db, hamilton):
+    """Same rule as the webhook check beside it: a venue that cannot take a
+    card is not yet answering this question, and folding it in would sit the
+    page on a venue deliberately half set up."""
+    hamilton.stripe_secret_key_env = None
+    db.flush()
+
+    assert _healthz(db)["checks"]["stripe_live_mode"] is True
+
+
+def test_the_endpoint_leaks_no_key(db, hamilton, monkeypatch):
+    hamilton.stripe_secret_key_env = "STRIPE_SECRET_KEY_PROBE"
+    monkeypatch.setenv("STRIPE_SECRET_KEY_PROBE", "sk_live_probe")
+    db.flush()
+
+    blob = repr(_healthz(db))
+
+    assert "sk_live" not in blob and "STRIPE_SECRET_KEY_PROBE" not in blob
