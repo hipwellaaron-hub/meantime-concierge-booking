@@ -468,6 +468,14 @@ def booking_detail(
             # tells a staff member to go and find out what that means. The
             # bookings it would also change are listed instead.
             shared_contact_bookings=other_bookings_on_contact(db, booking),
+            # WHICH invoice is out of step with the approved food order, if
+            # any -- so the Reissue button appears on that one and nowhere
+            # else. An id rather than a boolean: a booking can carry more
+            # than one invoice row, and a button on the wrong one is worse
+            # than no button.
+            reissue_from_food_invoice_id=(
+                lambda inv: inv.id if inv is not None else None
+            )(beo_proposals_service.sent_final_invoice_out_of_step(db, booking)),
             suggested_final_due_date=policy.final_balance_due_date(
                 booking.event_date, issued_on=dt.date.today()
             ),
@@ -1989,6 +1997,38 @@ def revise_invoice(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return RedirectResponse(
         url=f"{request.state.venue_base}/bookings/{booking_id}/invoices/{new_draft.id}/edit",
+        status_code=303,
+    )
+
+
+@router.post("/{booking_id}/invoices/reissue-from-food", dependencies=[Depends(require_csrf)])
+def reissue_final_invoice_from_food(
+    booking_id: uuid.UUID,
+    request: Request,
+    db: Session = Depends(get_db),
+    staff: StaffUser = Depends(require_staff),
+):
+    """Cancel the sent final invoice and open a fresh draft carrying the
+    Event Order's approved food order.
+
+    The five hand steps this replaces are on Adam Williams' trail between
+    00:17 and 00:23 on 2026-09-14: cancel, create, edit, edit, send. It
+    lands on the new draft's editor, like Revise does, because the last
+    word on what a client is billed stays a person's.
+
+    Takes no invoice id: which invoice is out of step is the service's
+    question, not the form's, and a posted id would be a second opinion
+    about it.
+    """
+    booking = _get_booking_or_404(request, db, booking_id)
+    try:
+        draft = beo_proposals_service.reissue_final_invoice_from_food(
+            db, booking, actor=_actor(staff)
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return RedirectResponse(
+        url=f"{request.state.venue_base}/bookings/{booking_id}/invoices/{draft.id}/edit",
         status_code=303,
     )
 

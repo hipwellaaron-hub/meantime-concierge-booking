@@ -365,13 +365,27 @@ def update_invoice(
     return invoice
 
 
-def revise_sent_invoice(db: Session, invoice: Invoice, *, actor: str) -> Invoice:
+def revise_sent_invoice(
+    db: Session, invoice: Invoice, *, actor: str, line_items: list[dict] | None = None
+) -> Invoice:
     """Cancel a SENT invoice and return a fresh draft cloned from its
     charge lines, for staff to adjust (e.g. add a discount) and re-send.
     Refused once any payment exists -- a part-paid invoice is a
     reconciliation/refund question, not a quiet reissue. The deposit
     credit is dropped and re-derived by the new draft, so it always
     reflects what's genuinely been paid at reissue time.
+
+    `line_items` REPLACES the cloned charge lines. The caller that passes
+    them is the Event Order reissue (beo_proposals.reissue_final_invoice_
+    from_food): approving a new food order against an invoice that has
+    already gone out used to mean cancel, create, edit, edit, send -- five
+    hand steps, and Adam Williams' booking has all five on its trail
+    between 00:17 and 00:23 on 2026-09-14. Cloning the OLD lines is what
+    made it five: `revise` gave back the invoice that was already wrong.
+
+    Everything that guards a reissue still guards this one: legacy
+    refused, non-sent refused, part-paid refused. Only the lines the new
+    draft starts from change.
     """
     db.refresh(invoice, with_for_update=True)
     if invoice.is_legacy:
@@ -384,7 +398,15 @@ def revise_sent_invoice(db: Session, invoice: Invoice, *, actor: str) -> Invoice
             "rather than reissuing it"
         )
 
-    charge_lines = _charge_lines(invoice.line_items)
+    # The caller's lines, or the invoice's own. _charge_lines either way:
+    # the deposit credit is system-derived and create_final_invoice
+    # re-applies it from what has actually been paid at reissue time.
+    charge_lines = _charge_lines(line_items if line_items is not None else invoice.line_items)
+    if not charge_lines:
+        raise ValueError(
+            "a reissue needs at least one charge line -- an invoice with nothing on it is not "
+            "a reissue, it is a cancellation"
+        )
     invoice_type = invoice.type
     due_date = invoice.due_date
     booking = invoice.booking

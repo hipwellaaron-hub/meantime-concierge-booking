@@ -684,6 +684,24 @@
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <button class="btn secondary" type="submit">Revise (discount / change)</button>
           </form>
+          {#
+            REISSUE FROM FOOD ORDER. Shown only on the invoice that is
+            actually out of step -- sent, unpaid, and carrying charge lines
+            the Event Order's approved food order no longer matches. The
+            comparison is line by line, never by total: Adam Williams' old
+            order and his real one both came to $1,450.
+
+            Revise beside it reopens this invoice with ITS OWN lines, which
+            is right for a discount and was the wrong tool here: it hands
+            back the invoice that is already wrong. This one starts the
+            draft from the approved order.
+          #}
+          {% if reissue_from_food_invoice_id and invoice.id == reissue_from_food_invoice_id %}
+          <form class="inline" method="post" action="{{ venue_base }}/bookings/{{ booking.id }}/invoices/reissue-from-food" onsubmit="return confirm('Cancel this sent invoice and draft a replacement carrying the Event Order&#39;s approved food order? The client&#39;s current link stops working, and the new draft is yours to review and send.');">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button class="btn" type="submit" title="This invoice bills a food order the Event Order no longer holds.">Reissue from food order</button>
+          </form>
+          {% endif %}
           {% endif %}
           {% endif %}
           {% if invoice.status.value == "sent" %}

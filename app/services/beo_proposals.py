@@ -461,6 +461,136 @@ def final_invoice_prefill(document) -> list[dict]:
     return rows
 
 
+def food_invoice_lines(document: Document | None) -> list[dict]:
+    """The Event Order's food order as INVOICE charge lines.
+
+    The one place that shape is built. sync_final_invoice_from_food builds
+    it from the lines an approval just resolved; this builds the same thing
+    from what is stored on the document, which is what a reissue needs --
+    the approval that changed it may have been minutes or days ago.
+
+    Carries `source`, so an invoice built from these stays the sync's to
+    refresh later (_is_catalogue_built).
+    """
+    out = []
+    for raw in current_food_lines(document):
+        if not raw.get("name"):
+            continue
+        out.append({
+            "description": raw["name"],
+            "quantity": raw["quantity"],
+            "unit_price": raw["unit_price"],
+            "category": raw.get("category") or "",
+            "menu_item_id": raw.get("menu_item_id"),
+            "source": LINE_SOURCE_PROPOSAL,
+        })
+    return out
+
+
+def sent_final_invoice_out_of_step(db: Session, booking: Booking) -> Invoice | None:
+    """A SENT, unpaid final invoice whose charge lines are no longer the
+    Event Order's food order, or None.
+
+    This is the gap the approval flow leaves. sync_final_invoice_from_food
+    refuses to touch an invoice that has gone out -- rightly; rewriting a
+    tax invoice behind a client is not a safe automatic repair -- and then
+    the trail said "revise it by hand". By hand meant cancel, create, edit,
+    edit, send. Adam Williams' booking carries all five between 00:17 and
+    00:23 on 2026-09-14, which is what Aaron meant by the food order still
+    having his hands in it.
+
+    COMPARED LINE BY LINE, never by total. Adam's old order and his real
+    one both came to $1,450 -- six platters at 2 each against five at
+    uneven quantities -- so a total comparison would have called that
+    invoice correct. The same reason final_invoice_missing_deposit_credit
+    compares lines.
+
+    Part-paid is excluded here as well as in revise_sent_invoice: money
+    against an invoice makes it a refund question, not a reissue.
+    """
+    invoice = db.scalars(
+        select(Invoice).where(
+            Invoice.booking_id == booking.id,
+            Invoice.type == InvoiceType.final,
+            Invoice.status == InvoiceStatus.sent,
+        ).order_by(Invoice.created_at.desc())
+    ).first()
+    if invoice is None or invoice.is_legacy:
+        return None
+
+    from app.services import invoicing
+
+    if invoicing.get_total_paid(db, invoice.id) > 0:
+        return None
+
+    wanted = food_invoice_lines(documents_service.get_current(db, booking.id, DocumentType.beo))
+    if not wanted:
+        return None
+
+    def _comparable(rows):
+        return [
+            (
+                str(r.get("description") or ""),
+                str(r.get("quantity")),
+                str(Decimal(str(r.get("unit_price") or "0")).quantize(Decimal("0.01"))),
+            )
+            for r in rows
+        ]
+
+    held = [
+        li for li in (invoice.line_items or [])
+        if isinstance(li, dict) and li.get("description") != invoicing.DEPOSIT_CREDIT_DESCRIPTION
+    ]
+    if _comparable(held) == _comparable(wanted):
+        return None
+    return invoice
+
+
+def reissue_final_invoice_from_food(db: Session, booking: Booking, *, actor: str) -> Invoice:
+    """Cancel the sent final invoice and open a fresh draft carrying the
+    Event Order's approved food order.
+
+    ONE ACTION, NOT AUTOMATIC. Cancelling a sent invoice kills the link a
+    client is holding and issues a new number, so it stays a thing a
+    person presses -- the rule this codebase already states for Revise.
+    What it replaces is not the decision, only the five steps after it.
+
+    Lands as a DRAFT: sending is the client-facing act, and mark_sent
+    re-derives the deposit credit against what has actually been paid by
+    then.
+    """
+    from app.services import invoicing
+
+    invoice = sent_final_invoice_out_of_step(db, booking)
+    if invoice is None:
+        raise ValueError(
+            "there is no sent, unpaid final invoice whose lines differ from the Event Order's "
+            "food order -- nothing to reissue"
+        )
+    document = documents_service.get_current(db, booking.id, DocumentType.beo)
+    lines = food_invoice_lines(document)
+    old_reference = invoice.invoice_reference
+
+    draft = invoicing.revise_sent_invoice(db, invoice, actor=actor, line_items=lines)
+    db.add(
+        BookingEvent(
+            booking_id=booking.id,
+            event_type="final_invoice_reissued",
+            field_name=FOOD_ORDER_FIELD,
+            old_value=truncate(f"{old_reference} cancelled", 500),
+            new_value=truncate(
+                f"{draft.invoice_reference} drafted from the approved food order "
+                f"(total {draft.total}) -- review and send",
+                500,
+            ),
+            actor=actor,
+        )
+    )
+    db.commit()
+    db.refresh(draft)
+    return draft
+
+
 def sync_final_invoice_from_food(db: Session, booking: Booking, lines: list[dict], *, actor: str) -> str:
     """The second half of the ruling: "the line items and invoice are
     built from the catalogue." Runs after the approved lines are on the
@@ -525,7 +655,10 @@ def sync_final_invoice_from_food(db: Session, booking: Booking, lines: list[dict
                 + (
                     "cancel and reissue it if the food order changed"
                     if existing.status == InvoiceStatus.paid
-                    else "revise it by hand if the food order changed"
+                    # NAMES THE ACTION. It used to say "revise it by hand",
+                    # and by hand meant cancel, create, edit, edit, send.
+                    else "use Reissue from food order on the booking page to cancel it and draft "
+                    "a replacement carrying this order"
                 )
             )
         elif not _is_catalogue_built(existing):
