@@ -394,6 +394,7 @@ def create_new_version(
     regenerated_note: str | None = None,
     revised_note: str | None = None,
     commit: bool = True,
+    supersede_signed: bool = False,
 ) -> Document:
     """`commit=False` leaves the transaction to the caller: a proposal that
     creates the first Event Order draft writes the draft and itself
@@ -429,6 +430,34 @@ def create_new_version(
         raise ValueError(
             f"the current {doc_type.value} is a legacy record of what was signed in iVvy -- "
             "it can't be regenerated over; the signed original stands"
+        )
+    # THE SAME RULE FOR A NATIVELY SIGNED AGREEMENT, which is what the
+    # legacy branch above has always said and never covered.
+    #
+    # revise() refuses this outright (see its message: "revising it would
+    # supersede the contract the client agreed to"). That refusal was never
+    # carried here -- so Regenerate did it silently, flipped is_current on
+    # the signed row and raised a review flag only afterwards. McKenzi
+    # Mostyn (HAM-20260920-I0K8G) lost her signed agreement that way, with
+    # a paid deposit and the event nine days out.
+    #
+    # NOT an outright refusal, because Generate is the only way to issue a
+    # replacement agreement -- revise() itself says "Issue a new agreement
+    # for them to sign instead", and a flat refusal here would make that
+    # sentence false. It is an opt-in: the caller has to say it means to,
+    # which turns a silent side effect into a decision with a name on it.
+    superseding_signed_agreement = (
+        previous is not None
+        and doc_type == DocumentType.agreement
+        and previous.status == DocumentStatus.signed
+    )
+    if superseding_signed_agreement and not supersede_signed:
+        raise ValueError(
+            f"this agreement was signed"
+            + (f" by {previous.signer_name}" if previous.signer_name else "")
+            + " -- regenerating supersedes the contract the client agreed to, and the booking is "
+            "left with an unsigned draft until they sign again. Confirm on the booking page if "
+            "that is what you mean to do."
         )
     # Count from the highest version that EXISTS, not from the current one.
     # Those are the same number whenever a current version exists, and they

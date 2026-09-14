@@ -13,7 +13,13 @@
 #}
 <p><a href="{{ venue_base }}/bookings/{{ booking.id }}">&larr; {{ booking.event_name }}</a></p>
 
-{% if losses %}
+{# The signed-agreement case leads, whatever else is also at risk: losing a
+   typed field is an inconvenience, and superseding a contract the client
+   signed is a different order of thing. #}
+{% set superseding_signed = doc_type.value == "agreement" and document and document.status.value == "signed" %}
+{% if superseding_signed %}
+<h1>This agreement has been signed</h1>
+{% elif losses %}
 <h1>Regenerating would overwrite {{ losses | length }} field{{ "" if losses | length == 1 else "s" }}</h1>
 {% else %}
 <h1>Regenerating would invalidate work you have not reviewed yet</h1>
@@ -21,6 +27,19 @@
 <p class="muted">{{ booking.reference_code }} &middot;
   {{ "Event Order" if doc_type.value == "beo" else "Agreement" }} v{{ document.version }}
   &middot; {{ booking.event_date | aus_date if booking.event_date else "Date TBD" }}</p>
+
+{% if superseding_signed %}
+<div class="card" style="border-left:3px solid var(--ember);">
+  <p style="margin:0 0 0.5rem;"><strong>Signed{% if document.signer_name %} by {{ document.signer_name }}{% endif %}{% if document.signed_at %} on {{ document.signed_at | aus_date }}{% endif %}.</strong></p>
+  <p style="margin:0 0 0.5rem; font-size:0.9rem;">Regenerating supersedes the contract the client
+    agreed to. The signed version is kept and stays downloadable, but it stops being the current
+    one &mdash; this booking will have an <strong>unsigned draft</strong> until the client signs
+    again, and it will show on Triage as confirmed without a signed agreement in the meantime.</p>
+  <p style="margin:0; font-size:0.9rem;">If the terms have genuinely changed, this is the right
+    button. If you only need to change the Event Order, use that instead &mdash; it does not
+    touch the agreement.</p>
+</div>
+{% endif %}
 
 {% if pending_proposal_rows %}
 {#

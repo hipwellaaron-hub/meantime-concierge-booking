@@ -161,7 +161,14 @@ def test_regenerating_the_agreement_after_signing_does_not_confirm(db, loft):
     booking = _booking(db, loft, name="Superseded")
     _sign_agreement(db, booking)
     documents_service.create_new_version(
-        db, booking, DocumentType.agreement, generate_agreement_content(booking), actor="test"
+        db, booking, DocumentType.agreement, generate_agreement_content(booking), actor="test",
+        # This call is the superseding act the test is about, and
+        # create_new_version now refuses it without the opt-in (2026-09-14).
+        # The refusal itself is tested in
+        # tests/test_a_signed_agreement_is_not_superseded_by_accident.py;
+        # what this asserts is that once it HAS happened deliberately, the
+        # booking does not go on treating the dead signature as a gate.
+        supersede_signed=True,
     )
     assert has_signed_agreement(db, booking) is False
 

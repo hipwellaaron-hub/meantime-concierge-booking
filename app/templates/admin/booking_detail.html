@@ -349,7 +349,12 @@
             <span class="muted">record only — attach the signed PDF below</span>
             {% endif %}
           {% else %}
-          <form class="inline" method="post" action="{{ venue_base }}/bookings/{{ booking.id }}/documents/agreement/generate">
+          {# The same speed bump the Event Order has had, for the heavier case.
+             It is NOT the guard -- documents.create_new_version refuses unless
+             the server-side confirmation screen was answered, so this cannot
+             be clicked past with JavaScript off. It is here so the question is
+             asked before a page load, not after. #}
+          <form class="inline" method="post" action="{{ venue_base }}/bookings/{{ booking.id }}/documents/agreement/generate"{% if current_agreement and current_agreement.status.value == "signed" %} onsubmit="return confirm('This agreement was signed{% if current_agreement.signer_name %} by {{ current_agreement.signer_name | e }}{% endif %}. Regenerating supersedes the contract the client agreed to, and leaves this booking with an unsigned draft until they sign again. Continue?');"{% endif %}>
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <button class="btn secondary" type="submit">{{ "Regenerate" if current_agreement else "Generate" }}</button>
           </form>

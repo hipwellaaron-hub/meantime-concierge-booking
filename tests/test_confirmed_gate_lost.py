@@ -66,7 +66,7 @@ def _review_notes(booking):
 
 def test_superseding_a_signed_agreement_flags_but_does_not_move(db, loft):
     b = _confirmed_on_both_gates(db, loft)
-    documents_service.create_new_version(db, b, DocumentType.agreement, generate_agreement_content(b), actor="staff:aaron")
+    documents_service.create_new_version(db, b, DocumentType.agreement, generate_agreement_content(b), actor="staff:aaron", supersede_signed=True)
     db.refresh(b)
     assert b.status == BookingStatus.confirmed, "flag, never move"
     notes = _review_notes(b)
@@ -78,20 +78,20 @@ def test_no_flag_when_the_booking_was_not_confirmed(db, loft):
     _send_and_sign_agreement(db, b)  # signed but unpaid -> tentative, nothing to protect
     db.refresh(b)
     assert b.status != BookingStatus.confirmed
-    documents_service.create_new_version(db, b, DocumentType.agreement, generate_agreement_content(b), actor="test")
+    documents_service.create_new_version(db, b, DocumentType.agreement, generate_agreement_content(b), actor="test", supersede_signed=True)
     assert _review_notes(b) == []
 
 
 def test_first_agreement_on_a_confirmed_booking_does_not_flag(db, loft):
     b = _booking(db, loft)
     change_status(db, b, BookingStatus.confirmed, actor="test")  # e.g. a hand-confirmed, deposit-waived booking
-    documents_service.create_new_version(db, b, DocumentType.agreement, generate_agreement_content(b), actor="test")
+    documents_service.create_new_version(db, b, DocumentType.agreement, generate_agreement_content(b), actor="test", supersede_signed=True)
     assert _review_notes(b) == []  # nothing signed was voided
 
 
 def test_regenerating_over_an_unsigned_agreement_does_not_flag(db, loft):
     b = _confirmed_on_both_gates(db, loft)
-    documents_service.create_new_version(db, b, DocumentType.agreement, generate_agreement_content(b), actor="test")
+    documents_service.create_new_version(db, b, DocumentType.agreement, generate_agreement_content(b), actor="test", supersede_signed=True)
     flagged_once = len(_review_notes(b))
     # the new current version is an unsigned draft; regenerating over THAT voids no signature
     documents_service.create_new_version(db, b, DocumentType.agreement, generate_agreement_content(b), actor="test")

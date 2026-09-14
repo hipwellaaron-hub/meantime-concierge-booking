@@ -176,7 +176,7 @@ def test_a_deposit_paid_after_the_order_was_issued_still_shows(db, hamilton, lof
 
 
 @pytest.mark.parametrize("staff_preview", [False, True])
-def test_every_rendered_copy_shows_the_balance(db, hamilton, loft, contact, staff_preview):
+def test_every_rendered_copy_shows_the_balance(admin_client, db, hamilton, loft, contact, staff_preview):
     """Six routes render this template. The figure comes from a filter
     rather than six route contexts precisely so none of them can forget
     it -- so both the client's copy and the staff preview are checked."""
@@ -186,10 +186,19 @@ def test_every_rendered_copy_shows_the_balance(db, hamilton, loft, contact, staf
     documents_service.mark_sent(db, document, actor="test")
     db.flush()
 
-    try:
-        resp = _client(db).get(f"/d/{document.access_token}")
-    finally:
-        app.dependency_overrides.clear()
+    # The parameter used to be declared and never read, so this ran twice
+    # against the client route and the docstring's claim that both copies
+    # are checked was false (audit, 2026-09-14).
+    if staff_preview:
+        resp = admin_client.get(
+            f"/admin/hamilton/bookings/{booking.id}/documents/{document.id}/preview",
+            follow_redirects=True,
+        )
+    else:
+        try:
+            resp = _client(db).get(f"/d/{document.access_token}")
+        finally:
+            app.dependency_overrides.clear()
 
     assert resp.status_code == 200, resp.text
     assert "$500.00" in resp.text, "the deposit is not on the page"
@@ -216,10 +225,16 @@ def test_the_header_and_the_billing_summary_agree(admin_client, db, hamilton, lo
     )
 
     assert page.status_code == 200, page.text
-    assert "Total Paid: —" not in page.text, (
-        "the header still prints a dash over a deposit the summary reports"
+    # The dash assertion this test used to lead with could not fail: the
+    # header renders A$500.00 here, so the string was never going to appear
+    # whatever the code did (audit, 2026-09-14). What actually has to hold
+    # is that the header and the summary carry the SAME figure, so the
+    # header is read on its own rather than the whole page searched.
+    header = page.text[: page.text.index("Total Food Spend")]
+    assert "A$500.00" in header, "the header does not carry the live figure"
+    assert "—" not in header.split("Total Paid:")[1][:40], (
+        "the header prints a dash over a deposit the summary reports"
     )
-    assert "A$500.00" in page.text, "the header does not carry the live figure"
     assert "$950.00" in page.text
 
 

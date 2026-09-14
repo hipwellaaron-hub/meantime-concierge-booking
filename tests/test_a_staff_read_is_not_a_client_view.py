@@ -70,8 +70,15 @@ def _sent_beo(db, booking):
 
 
 def test_the_staff_read_leaves_no_client_view(admin_client, db, hamilton, loft, contact):
-    """THE one. Open the document the way staff open it, and the client's
-    record must be untouched."""
+    """The preview ROUTE must not record a view.
+
+    NOT the defect this file was written for, and calling it "THE one" was
+    wrong (audit, 2026-09-14): it exercises the route directly, so it
+    passes against the un-fixed booking page too. The defect was the LINK
+    TARGET, and it is carried by
+    test_the_booking_page_sends_staff_to_the_preview_not_the_client_link
+    and the structural check below. This one guards the route the link now
+    points at -- necessary, and not sufficient on its own."""
     booking = _booking(db, loft, contact, name="ZZSTAFFREAD Beo")
     document = _sent_beo(db, booking)
     assert document.status == DocumentStatus.sent

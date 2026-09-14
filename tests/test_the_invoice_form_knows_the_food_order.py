@@ -90,6 +90,16 @@ def test_no_event_order_means_the_form_is_unchanged(db, hamilton, loft, contact)
     document = _beo_with_food(db, booking, [])
     assert beo_proposals.final_invoice_prefill(document) == []
 
+    # POSITIVE CONTROL. Asserting only the empty cases passed with the whole
+    # feature deleted -- "returns nothing" is what a deleted function does
+    # too (audit, 2026-09-14). The same booking, given food, must fill.
+    document = _beo_with_food(db, booking, [
+        {"description": "Grazing Platter", "quantity": 1, "unit_price": "250.00"},
+    ])
+    assert [r["description"] for r in beo_proposals.final_invoice_prefill(document)] == [
+        "Grazing Platter"
+    ]
+
 
 def test_a_line_with_no_name_is_skipped_rather_than_blank(db, hamilton, loft, contact):
     """A blank description row is how create_final_invoice is told to skip
@@ -162,4 +172,11 @@ def test_the_form_still_offers_six_rows_in_total(admin_client, db, hamilton, lof
     page = admin_client.get(f"/admin/hamilton/bookings/{booking.id}", follow_redirects=True)
     form = page.text.split('invoices/final')[1].split("</form>")[0]
 
-    assert len(re.findall(r'name="description"', form)) == 6
+    # The count alone was VACUOUS: six rows is also what the form shows with
+    # the prefill feature deleted entirely, so this passed against no
+    # feature at all (audit, 2026-09-14). The split is what the six-row
+    # claim actually means -- two carried over, four left to type into.
+    descriptions = re.findall(r'name="description"[^>]*', form)
+    prefilled = [d for d in descriptions if "value=" in d]
+    assert len(descriptions) == 6
+    assert len(prefilled) == 2, "the two food lines did not come through into the six"

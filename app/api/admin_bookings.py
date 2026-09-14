@@ -668,10 +668,29 @@ def generate_document(
     pending = _pending_proposal_rows(db, booking, doc_type, current)
     # Pending work counts even with nothing to lose: otherwise the one case
     # that shows no screen at all is the one that silently invalidates it.
-    if losses or pending:
+    if losses or pending or _supersedes_signed_agreement(doc_type, current):
         return _render_regenerate_confirmation(request, db, booking, doc_type, current, losses, staff, pending)
     documents_service.create_new_version(db, booking, doc_type, content, actor=_actor(staff))
     return _redirect_to_detail(request, booking_id)
+
+
+def _supersedes_signed_agreement(doc_type, current) -> bool:
+    """Regenerating over a SIGNED agreement supersedes the contract the
+    client agreed to and leaves the booking with an unsigned draft.
+
+    revise() has always refused this outright; Regenerate did it silently
+    and raised a review flag afterwards, which is how HAM-20260920-I0K8G
+    lost its signed agreement with the deposit paid and the event nine days
+    out. It is routed through the SAME confirmation screen as a content
+    loss rather than a browser confirm() alone, because that screen is
+    server-side, carries a fingerprint that is checked before the write,
+    and cannot be clicked past with JavaScript disabled.
+    """
+    return (
+        doc_type == DocumentType.agreement
+        and current is not None
+        and current.status == DocumentStatus.signed
+    )
 
 
 def _pending_proposal_rows(db, booking, doc_type, current) -> list[dict]:
@@ -737,7 +756,8 @@ def generate_document_confirmed(
     # ran at all, so the one screen whose entire purpose is "tell me
     # before, not after" was the one screen whose answer was never checked.
     pending = _pending_proposal_rows(db, booking, doc_type, current)
-    if not losses and not pending:
+    superseding_signed = _supersedes_signed_agreement(doc_type, current)
+    if not losses and not pending and not superseding_signed:
         # Nothing at risk and nothing outstanding: the ordinary one click,
         # with no question asked and none to check.
         documents_service.create_new_version(db, booking, doc_type, content, actor=_actor(staff))
@@ -769,6 +789,13 @@ def generate_document_confirmed(
         # record -- the screen was shown for the pending work alone, and
         # summarise() would only say "no human values affected".
         regenerated_note=document_regeneration.summarise(losses, keep_fields) if losses else None,
+        # The opt-in create_new_version demands before it will supersede a
+        # signed agreement. Reached only past the fingerprint check above,
+        # so it carries the confirmation this person actually saw -- and it
+        # is computed from the locked row here, never taken from the form,
+        # because a client-supplied flag would be the guard asking the
+        # caller for permission to guard.
+        supersede_signed=superseding_signed,
     )
     return _redirect_to_detail(request, booking_id)
 
