@@ -232,6 +232,30 @@ def check_overpaid_invoices(db: Session, bookings) -> list[Finding]:
     return out
 
 
+def check_final_invoice_deposit_credit(db: Session, bookings) -> list[Finding]:
+    """A sent final invoice whose deposit credit predates the deposit.
+
+    The immediate flag from record_payment is what a person sees on the
+    day. This is the backstop, and unlike the flag it re-derives the
+    condition from the payments table every run rather than trusting an
+    event was written at the time -- so it also catches invoices that were
+    already in this state before the flag existed.
+    """
+    out = []
+    for b in bookings:
+        stale = invoicing.final_invoice_missing_deposit_credit(db, b)
+        if stale is not None:
+            paid = invoicing.get_deposit_paid(db, b)
+            out.append(
+                Finding(
+                    b.id, "FINAL_INVOICE_STALE_DEPOSIT_CREDIT", DATA_MISMATCH,
+                    f"{stale.invoice_reference} is out for ${stale.total} with no credit for the "
+                    f"${paid} deposit already received -- the client would pay it twice. Revise it.",
+                )
+            )
+    return out
+
+
 def check_stale_holds(db: Session, venue: Venue, *, today: dt.date) -> list[Finding]:
     """Section 9.4. Reuses the same helper the dashboard tile uses, so the
     nightly job and the screen can never disagree about what needs chasing."""
@@ -430,6 +454,7 @@ def collect(db: Session, venue: Venue, *, today: dt.date | None = None,
     findings += check_contact_hygiene(bookings)
     findings += check_notes_before_beo(bookings)
     findings += check_overpaid_invoices(db, bookings)
+    findings += check_final_invoice_deposit_credit(db, bookings)
     return findings
 
 

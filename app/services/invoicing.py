@@ -159,6 +159,36 @@ def create_deposit_invoice(db: Session, booking: Booking, *, due_date: dt.date, 
 
 
 def get_deposit_paid(db: Session, booking: Booking) -> Decimal:
+    """Everything the client has actually paid towards a deposit on this
+    booking, across every deposit invoice INCLUDING CANCELLED ONES.
+
+    That inclusion is deliberate and it is the opposite of
+    has_active_final_invoice below, which filters cancelled out. The
+    asymmetry is real and it is written down here because the obvious
+    "tidy-up" -- making the two consistent -- would silently start
+    under-crediting clients for money they have handed over.
+
+    Why counting a cancelled invoice's payments is the correct answer:
+
+      * cancel_invoice REFUSES a paid invoice outright ("cannot cancel a
+        paid invoice"), so a cancelled deposit invoice can only ever be one
+        that was draft or sent -- never settled.
+      * But a SENT deposit invoice can hold a PART payment: record_payment
+        allows it and leaves the status at sent. Cancel that invoice (which
+        booking._invalidate_client_facing_tokens does for every invoice
+        when a booking goes terminal) and the payment row survives on a
+        cancelled invoice.
+      * The client still paid it. Concierge models no refunds -- there is
+        no Refund row anywhere in this schema, and the word appears only in
+        error messages telling a human to handle one outside the system --
+        so nothing here can know the money went back. Dropping it from the
+        count would credit a client less than they paid and bill them for
+        the difference.
+
+    The question this asks is "what has this client handed over", not
+    "which invoices are alive". Those are different questions and only the
+    first one belongs on a final invoice's deposit credit.
+    """
     deposit_invoices = db.scalars(
         select(Invoice).where(Invoice.booking_id == booking.id, Invoice.type == InvoiceType.deposit)
     ).all()
@@ -340,6 +370,47 @@ def revise_sent_invoice(db: Session, invoice: Invoice, *, actor: str) -> Invoice
 
 def get_by_token(db: Session, token: str) -> Invoice | None:
     return db.execute(select(Invoice).where(Invoice.access_token == token)).scalar_one_or_none()
+
+
+def final_invoice_missing_deposit_credit(db: Session, booking: Booking) -> Invoice | None:
+    """A SENT, unpaid final invoice whose deposit credit is out of date.
+
+    _refresh_deposit_credit re-derives the credit on every edit and once
+    more at mark_sent -- and never again. The case it cannot reach is the
+    ordinary one: a final invoice goes out, and THEN the deposit is paid.
+    The client is holding an invoice for the full food total, and the
+    deposit they have since paid sits against a different invoice, so
+    paying what they were asked for means paying the deposit twice.
+
+    Deliberately DETECTS rather than fixes. An issued tax invoice is a
+    record of what was asked for, and silently changing its total behind a
+    client is not a safe automatic repair -- it is what Revise exists for,
+    with a person deciding. This is the same rule reconciliation states
+    for itself: "reads everything, fixes nothing, raises flags".
+
+    Returns the invoice if it needs revising, else None.
+    """
+    invoice = db.scalars(
+        select(Invoice).where(
+            Invoice.booking_id == booking.id,
+            Invoice.type == InvoiceType.final,
+            Invoice.status == InvoiceStatus.sent,
+        ).order_by(Invoice.created_at.desc())
+    ).first()
+    if invoice is None or invoice.is_legacy:
+        return None
+    if get_total_paid(db, invoice.id) > 0:
+        # Part-paid: revising is refused anyway, and the balance is a
+        # reconciliation question rather than a credit question.
+        return None
+    wanted = _deposit_credit_lines(db, booking)
+    held = [li for li in (invoice.line_items or []) if li.get("description") == DEPOSIT_CREDIT_DESCRIPTION]
+    # Compared as LINES, not as a total: the two differ exactly when the
+    # credit is stale, and a total-level check would call a $500 credit and
+    # a $500 discount the same thing.
+    if held == wanted:
+        return None
+    return invoice
 
 
 def _refresh_deposit_credit(db: Session, invoice: Invoice, *, actor: str) -> None:
@@ -674,6 +745,33 @@ def record_payment(
         # below is: the payment is real and recorded, and nothing here may
         # undo it.
         _close_payment_links(invoice, why="full payment")
+
+    if invoice.type == InvoiceType.deposit and amount > 0:
+        # A deposit payment has just landed. If a final invoice is already
+        # OUT, its deposit credit was frozen when it was sent and cannot
+        # know about this -- so the client is holding a bill that will
+        # charge them the deposit a second time. Flagged, not silently
+        # revised: an issued tax invoice is a record, and Revise is the
+        # action with a person behind it.
+        #
+        # After the commit and never raising, for the same reason as the
+        # blocks around it: the payment is real and recorded, and a failure
+        # to flag must not undo it.
+        try:
+            stale = final_invoice_missing_deposit_credit(db, invoice.booking)
+            if stale is not None:
+                booking_service.flag_for_review(
+                    db, invoice.booking,
+                    note=(
+                        f"Final invoice {stale.invoice_reference} went out before this deposit was "
+                        f"paid, so it carries no credit for the ${get_deposit_paid(db, invoice.booking)} "
+                        "now received -- as it stands the client would pay the deposit twice. "
+                        "Revise it before chasing the balance."
+                    ),
+                    actor=actor,
+                )
+        except Exception:  # noqa: BLE001 -- see above; a real payment must stand
+            logger.exception("Could not check the final invoice credit on booking %s", invoice.booking_id)
 
     if just_paid and invoice.type == InvoiceType.deposit:
         # Paying the deposit is half of what confirms a booking; signing
