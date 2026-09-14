@@ -387,6 +387,52 @@ def check_final_invoice_below_minimum_spend(db: Session, bookings) -> list[Findi
     return out
 
 
+def check_invoice_due_date_predates_the_event(db: Session, bookings) -> list[Finding]:
+    """A SENT invoice whose due date no longer relates to the event it is
+    for.
+
+    invoices.due_date is set once, from the event date, and never
+    re-derived -- while the invoice's own "Date of Service" column reads
+    booking.event_date LIVE. Postpone an event and the two disagree on the
+    client's own copy: a balance due in March for a service in June.
+
+    NOT SILENTLY MOVED, for the reason that runs through this whole
+    register: a due date on an issued invoice is a term the client was
+    given, and quietly changing what they owe and when is Revise's job,
+    with a person behind it. A DRAFT re-derives on its next edit and is not
+    the client's yet, so only sent invoices are reported.
+
+    A due date AFTER the event is the ordinary shape for a balance and is
+    not a finding. What this catches is a due date that has fallen so far
+    behind the event that it can only be a leftover -- more than the
+    invoice's own lead time before it.
+    """
+    out = []
+    for b in bookings:
+        if b.event_date is None:
+            continue
+        for invoice in db.scalars(
+            select(Invoice).where(
+                Invoice.booking_id == b.id,
+                Invoice.status == InvoiceStatus.sent,
+            )
+        ).all():
+            if invoice.is_legacy or invoice.due_date is None:
+                continue
+            gap = (b.event_date - invoice.due_date).days
+            if gap > policy.INVOICE_DUE_DATE_MAX_LEAD_DAYS:
+                out.append(
+                    Finding(
+                        b.id, "INVOICE_DUE_DATE_STALE", DATE_ANOMALY,
+                        f"{invoice.invoice_reference} is due {invoice.due_date} but the event is "
+                        f"{b.event_date}, {gap} days later -- the due date was set for an earlier "
+                        "date and has not moved with it. The client's copy shows both. Revise it, "
+                        "or confirm the date is deliberate.",
+                    )
+                )
+    return out
+
+
 def check_migrated_pricing_lock_defaulted(bookings) -> list[Finding]:
     """A migrated booking whose pricing lock is the import date, not the
     day the client actually booked.
@@ -620,6 +666,7 @@ def collect(db: Session, venue: Venue, *, today: dt.date | None = None,
     findings += check_final_invoice_deposit_credit(db, bookings)
     findings += check_food_price_drift(db, bookings)
     findings += check_final_invoice_below_minimum_spend(db, bookings)
+    findings += check_invoice_due_date_predates_the_event(db, bookings)
     findings += check_migrated_pricing_lock_defaulted(bookings)
     return findings
 

@@ -129,6 +129,18 @@ WIZARD_TRIGGER_DAYS_BEFORE_EVENT = EVENT_ORDER_LEAD_DAYS
 # up with three different figures in four places.
 FINAL_BALANCE_DUE_DAYS_BEFORE_EVENT = 7
 
+# How far BEFORE the event an issued invoice's due date may legitimately
+# sit, for reconciliation.check_invoice_due_date_predates_the_event.
+#
+# The due date is set once from the event date and never re-derived, while
+# the invoice's own "Date of Service" column reads booking.event_date live
+# -- so a postponed event leaves the two disagreeing on the client's copy.
+# A deposit falls due on issue and a balance seven days before, so any
+# honest gap is small; anything past a month means the due date was set for
+# a date that has since moved. Deliberately generous: this reports, and a
+# check that cries wolf on an ordinary deposit is one nobody reads.
+INVOICE_DUE_DATE_MAX_LEAD_DAYS = 30
+
 
 def final_balance_due_date(event_date: dt.date | None, *, issued_on: dt.date) -> dt.date | None:
     """When a final invoice's balance falls due.
