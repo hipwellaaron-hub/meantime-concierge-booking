@@ -69,6 +69,7 @@ MISSING_TABLE = "missing_table"
 MISSING_COLUMN = "missing_column"
 MISSING_TRIGGER = "missing_trigger"
 MISSING_FUNCTION = "missing_function"
+MISSING_INDEX = "missing_index"
 STALE_FUNCTION = "stale_function"
 BACKFILL_INCOMPLETE = "backfill_incomplete"
 
@@ -120,6 +121,31 @@ EXPECTED_FUNCTIONS: dict[str, tuple[str, str]] = {
     "freeze_invoice_identity": ("f3d9b7c1a468", "see trg_invoices_freeze_identity"),
     "prevent_booking_events_mutation": ("0c9d43631866", "see trg_booking_events_no_update"),
     "prevent_booking_venue_change": ("d8c3f1a7e920", "see trg_bookings_venue_is_immutable"),
+}
+
+# UNIQUE INDEXES AND CONSTRAINTS, which SQLAlchemy's metadata comparison
+# above does not reach either: _check_models asks only whether each mapped
+# COLUMN exists. Every entry here is a uniqueness rule that is the only
+# thing standing between a defect and a client's money, so "the column is
+# there" is not the question worth asking about it.
+#
+# name -> (revision, what breaks without it)
+EXPECTED_INDEXES: dict[str, tuple[str, str]] = {
+    "uq_payments_stripe_payment_intent": (
+        "b7e4a91c3f20",
+        "one Stripe PaymentIntent can be recorded as two payments, so a "
+        "redelivered webhook double-credits a client",
+    ),
+    "uq_invoices_venue_number": (
+        "f3d9b7c1a468",
+        "two invoices in one venue's register can take the same number, and an "
+        "accountant reading a gapless register cannot tell which is which",
+    ),
+    "uq_invoices_reference": (
+        "f3d9b7c1a468",
+        "a reference a client quotes stops resolving to exactly one invoice "
+        "across both companies",
+    ),
 }
 
 # The case a name check cannot catch: the function is there under the right
@@ -258,6 +284,33 @@ def _check_function_bodies(db: Session, bodies: dict[str, str]) -> list[Problem]
     return problems
 
 
+def observed_indexes(db: Session) -> set[str]:
+    """Every index this database really has, by name.
+
+    pg_indexes covers unique CONSTRAINTS too: Postgres implements each with
+    an index of the same name, so one query answers for both and the caller
+    does not have to know which a given rule was declared as.
+    """
+    return {
+        name
+        for (name,) in db.execute(
+            text("SELECT indexname FROM pg_indexes WHERE schemaname = current_schema()")
+        ).all()
+    }
+
+
+def _check_indexes(db: Session) -> list[Problem]:
+    present = observed_indexes(db)
+    return [
+        Problem(
+            MISSING_INDEX, name,
+            f"created by {revision}; without it, {consequence}",
+        )
+        for name, (revision, consequence) in EXPECTED_INDEXES.items()
+        if name not in present
+    ]
+
+
 def _check_backfills(db: Session) -> list[Problem]:
     """d6b4e9f2a831's backfill, checked rather than assumed.
 
@@ -267,23 +320,40 @@ def _check_backfills(db: Session) -> list[Problem]:
     floor account may inherit. So admins with no venue are right and are not
     counted; floor accounts with none are locked out.
     """
+    problems: list[Problem] = []
     stranded = db.execute(
         text("SELECT count(*) FROM staff_users WHERE role = 'floor' AND venue_id IS NULL")
     ).scalar_one()
     if stranded:
-        return [Problem(
+        problems.append(Problem(
             BACKFILL_INCOMPLETE, "staff_users.venue_id",
             f"{stranded} floor account(s) have no venue and cannot sign into the floor "
             "app at all; d6b4e9f2a831's backfill resolves a subquery that returns NULL "
             "rather than failing when the venue is absent",
-        )]
-    return []
+        ))
+    # THE OTHER HALF OF THE SAME BACKFILL, and the half that locks the
+    # phones out. d6b4e9f2a831 sets venue_id on staff_users AND on
+    # staff_app_tokens from the same NULL-returning subquery; checking only
+    # the first would have reported a clean database while every device
+    # token was venueless. staff_auth.venue_for_token refuses a token with
+    # no venue (line 199), so this is the device half of the same refusal.
+    tokens = db.execute(
+        text("SELECT count(*) FROM staff_app_tokens WHERE venue_id IS NULL")
+    ).scalar_one()
+    if tokens:
+        problems.append(Problem(
+            BACKFILL_INCOMPLETE, "staff_app_tokens.venue_id",
+            f"{tokens} floor device token(s) have no venue, so those phones are refused "
+            "at sign-in; the same d6b4e9f2a831 backfill writes this column",
+        ))
+    return problems
 
 
 def audit(db: Session) -> list[Problem]:
     """Every check. Reads only."""
     problems = _check_models(db)
     problems += _check_triggers(db)
+    problems += _check_indexes(db)
 
     bodies = observed_functions(db)
     for name, (revision, consequence) in EXPECTED_FUNCTIONS.items():

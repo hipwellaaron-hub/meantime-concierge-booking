@@ -108,6 +108,40 @@ def test_the_expected_functions_are_exactly_what_a_migrated_database_has(clean):
     )
 
 
+def test_the_expected_indexes_are_all_on_a_migrated_database(clean):
+    """One direction only, unlike the triggers and functions. Postgres
+    creates an index for every primary key and unique constraint and every
+    Index() a model declares, so "present and unlisted" is the normal state
+    of dozens of them. What EXPECTED_INDEXES holds is the handful whose
+    absence costs money, and each must really exist.
+
+    This is not theoretical cover: the first run of the index check against
+    concierge_dev found uq_payments_stripe_payment_intent genuinely absent
+    on a database whose alembic_version said d5b3f7a20c91 -- the exact
+    divergence this module exists to catch, on the first database it was
+    pointed at.
+    """
+    observed = schema_audit.observed_indexes(clean)
+
+    missing = set(schema_audit.EXPECTED_INDEXES) - observed
+    assert missing == set(), f"EXPECTED_INDEXES names indexes this database does not have: {missing}"
+
+
+def test_a_missing_index_is_caught(clean):
+    """THE money one: without it a redelivered Stripe webhook can record
+    the same PaymentIntent twice against an invoice."""
+    clean.execute(text("DROP INDEX uq_payments_stripe_payment_intent"))
+    clean.flush()
+
+    problems = schema_audit.audit(clean)
+
+    assert any(
+        p.kind == schema_audit.MISSING_INDEX
+        and p.name == "uq_payments_stripe_payment_intent"
+        for p in problems
+    ), f"a dropped unique index was not reported: {problems}"
+
+
 def test_each_expected_trigger_is_recorded_on_the_right_table(clean):
     observed = schema_audit.observed_triggers(clean)
     for name, (table, _revision, _why) in schema_audit.EXPECTED_TRIGGERS.items():
@@ -242,6 +276,28 @@ def test_a_floor_account_with_no_venue_is_caught(clean, hamilton):
         p.kind == schema_audit.BACKFILL_INCOMPLETE and p.name == "staff_users.venue_id"
         for p in problems
     ), f"a venueless floor account was not reported: {problems}"
+
+
+def test_a_device_token_with_no_venue_is_caught(clean, hamilton):
+    """THE HALF THAT LOCKS THE PHONES OUT. d6b4e9f2a831 writes venue_id on
+    staff_users AND on staff_app_tokens from the same NULL-returning
+    subquery; the first version of this check asked only about the users,
+    so it would have reported a clean database while every device token was
+    venueless and every phone refused at sign-in."""
+    from app.models import StaffAppToken
+
+    staff = _staff(clean, hamilton, role="floor", venue_id=hamilton.id, email="zzaudit-dev@local.test")
+    clean.add(StaffAppToken(
+        staff_user_id=staff.id, venue_id=None, token_hash="zz-audit-probe",
+    ))
+    clean.flush()
+
+    problems = schema_audit.audit(clean)
+
+    assert any(
+        p.kind == schema_audit.BACKFILL_INCOMPLETE and p.name == "staff_app_tokens.venue_id"
+        for p in problems
+    ), f"a venueless device token was not reported: {problems}"
 
 
 def test_an_admin_with_no_venue_is_correct_and_not_reported(clean, hamilton):
