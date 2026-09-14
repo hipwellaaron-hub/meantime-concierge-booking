@@ -508,10 +508,19 @@ def retire_tracking_context(db: Session, *, now: dt.datetime) -> int:
     windows have passed. The pseudonymous cookie ids stay (they carry no
     more than the analytics platforms already hold) for reconciliation."""
     cutoff = now - MAX_AGE - CONTEXT_RETENTION
-    since = cutoff - dt.timedelta(days=60)
+    # NO LOWER BOUND. There used to be one -- `since = cutoff - 60 days` --
+    # undocumented, which meant anything older than roughly 74 days could
+    # never be reached again: the rows most overdue for clearing were the
+    # only ones the retention sweep skipped. Retention that cannot reach
+    # old data is not retention.
+    #
+    # It is also why this must not live behind the dispatch flag. Turning
+    # server-side dispatch OFF used to stop the only code that ever deletes
+    # a client's IP address and user agent, so switching tracking off froze
+    # that data in the database indefinitely. See app/retire_tracking_context.py.
     rows = db.scalars(
         select(Booking).where(
-            Booking.created_at < cutoff, Booking.created_at >= since, Booking.tracking_context.isnot(None)
+            Booking.created_at < cutoff, Booking.tracking_context.isnot(None)
         )
     ).all()
     cleared = 0
@@ -521,6 +530,21 @@ def retire_tracking_context(db: Session, *, now: dt.datetime) -> int:
             booking.tracking_context = {k: v for k, v in context.items() if k not in ("client_ip", "user_agent")}
             cleared += 1
     return cleared
+
+
+def count_tracking_context_due(db: Session, *, now: dt.datetime) -> int:
+    """How many bookings still hold a client IP or user agent past its
+    retention window. Read-only, for the standalone job's --dry-run: a
+    retention job you cannot rehearse is one nobody runs."""
+    cutoff = now - MAX_AGE - CONTEXT_RETENTION
+    rows = db.scalars(
+        select(Booking).where(Booking.created_at < cutoff, Booking.tracking_context.isnot(None))
+    ).all()
+    return sum(
+        1 for b in rows
+        if isinstance(b.tracking_context, dict)
+        and ("client_ip" in b.tracking_context or "user_agent" in b.tracking_context)
+    )
 
 
 def run_sweep(db: Session, *, now: dt.datetime | None = None) -> dict:

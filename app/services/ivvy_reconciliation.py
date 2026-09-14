@@ -16,8 +16,12 @@ from dataclasses import dataclass, field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from decimal import Decimal, InvalidOperation
+
 from app.models import Booking, Space, Venue
-from app.services.ivvy_import import MIGRATION_SOURCE, STATUS_MAP, _get, parse_money
+from app.models.invoice import InvoiceStatus
+from app.services import invoicing
+from app.services.ivvy_import import MIGRATION_SOURCE, STATUS_MAP, _get
 
 
 @dataclass
@@ -46,6 +50,56 @@ class ReconciliationReport:
         # so it doesn't by itself count against a clean run. A row error
         # does count: an uncompared row is not a verified-clean row.
         return not self.new_in_ivvy and not self.divergences and not self.row_errors
+
+
+
+def _money_or_none(raw: str) -> Decimal | None:
+    """iVvy's figure as a NUMBER, or None when it genuinely cannot be read.
+
+    Deliberately not ivvy_import.parse_money, which returns a string and
+    therefore compares by formatting. Tolerates the shapes an export
+    actually carries -- currency symbols, thousands separators, parentheses
+    for negatives -- because a column that reads '$1,450.00' is a readable
+    figure, and calling it unreadable would report a divergence on a row
+    that agrees.
+    """
+    text = (raw or "").strip()
+    if not text:
+        return None
+    negative = text.startswith("(") and text.endswith(")")
+    text = text.strip("()").replace("$", "").replace(",", "").strip()
+    if not text:
+        return None
+    try:
+        value = Decimal(text)
+    except InvalidOperation:
+        return None
+    return -value if negative else value
+
+
+def _live_money(db: Session, booking) -> tuple[Decimal, Decimal]:
+    """What CONCIERGE holds for this booking right now: total received, and
+    total still outstanding.
+
+    Read from the invoices and payments tables, never from
+    migration_snapshot -- the snapshot is iVvy's own figure frozen at
+    import, so comparing it to iVvy compares iVvy with itself.
+
+    Cancelled and legacy-superseded invoices are excluded from OUTSTANDING
+    (nobody owes them) but their payments still count towards PAID, which
+    is the same rule invoicing.get_deposit_paid states and for the same
+    reason: the client handed the money over.
+    """
+    paid = Decimal("0.00")
+    outstanding = Decimal("0.00")
+    for invoice in booking.invoices:
+        invoice_paid = invoicing.get_total_paid(db, invoice.id)
+        paid += invoice_paid
+        if invoice.status != InvoiceStatus.cancelled:
+            remaining = invoice.total - invoice_paid
+            if remaining > 0:
+                outstanding += remaining
+    return paid, outstanding
 
 
 def reconcile(db: Session, csv_path: str, *, venue: Venue) -> ReconciliationReport:
@@ -117,12 +171,44 @@ def _reconcile_row(db: Session, row: dict, code: str, report: ReconciliationRepo
     except ValueError:
         pass
 
-    snapshot = booking.migration_snapshot or {}
-    for field_name, csv_column in (("total_paid", "Total Paid"), ("total_outstanding", "Total Outstanding")):
-        ivvy_value = parse_money(row.get(csv_column, ""))
-        stored_value = snapshot.get(field_name)
-        if ivvy_value != stored_value:
-            row_divergences.append(Divergence(code, field_name, stored_value, ivvy_value))
+    # MONEY IS COMPARED AS NUMBERS, AGAINST LIVE RECORDS. Three faults
+    # lived in the six lines this replaces, and the module's whole purpose
+    # -- "do not cancel iVvy until this report runs clean" -- rested on
+    # them.
+    #
+    #   * It compared STRINGS. parse_money returned str(Decimal(v)), which
+    #     preserves whatever formatting its source used, so '500' != '500.00'
+    #     reported a divergence between two identical amounts. The August
+    #     import stored 2dp strings while a raw Bookings export carries
+    #     unpadded ones, so a re-run could diverge on every row for no
+    #     reason.
+    #   * An unparseable figure became None, and a stored None compared
+    #     EQUAL to it -- so '$500.00' on both sides counted as MATCHED
+    #     CLEAN. The failure mode was silence, in the direction of saying
+    #     everything is fine.
+    #   * It compared iVvy against migration_snapshot, which is iVvy's own
+    #     figure frozen at import. That can only detect iVvy changing since
+    #     the import. It could never see Concierge's live money drifting
+    #     from iVvy's -- which is the one thing a parallel run exists to
+    #     catch before the old system is switched off.
+    live_paid, live_outstanding = _live_money(db, booking)
+    for field_name, csv_column, live_value in (
+        ("total_paid", "Total Paid", live_paid),
+        ("total_outstanding", "Total Outstanding", live_outstanding),
+    ):
+        raw = (row.get(csv_column) or "").strip()
+        ivvy_value = _money_or_none(raw)
+        if ivvy_value is None:
+            if raw:
+                # A figure that cannot be read is a divergence, not a match.
+                row_divergences.append(
+                    Divergence(code, field_name, str(live_value), f"unreadable: {raw!r}")
+                )
+            continue
+        if ivvy_value != live_value:
+            row_divergences.append(
+                Divergence(code, field_name, str(live_value), str(ivvy_value))
+            )
 
     if row_divergences:
         report.divergences.extend(row_divergences)

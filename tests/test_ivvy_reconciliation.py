@@ -1,11 +1,56 @@
+from decimal import Decimal
+
+from app.models import Booking
+from app.models.payment import PaymentMethod
+from app.services import invoicing
 from app.services.ivvy_import import import_ivvy_csv
 from app.services.ivvy_reconciliation import reconcile
 from tests.test_ivvy_import import HEADER, _row, _write_csv
 
 
+def _give_concierge_the_money(db, code, *, paid, outstanding):
+    """Make Concierge's LIVE records agree with iVvy's figures.
+
+    Necessary since 2026-09-14, when the money comparison stopped reading
+    migration_snapshot -- iVvy's own figure frozen at import, which could
+    only ever detect iVvy changing -- and started reading the invoices and
+    payments tables. A booking holding no invoices at all, compared against
+    an export saying $500 was paid, is now correctly a divergence. That is
+    the real shape of the "confirmed without gates" problem, so these tests
+    build the money rather than assume it.
+    """
+    import datetime as dt
+
+    from sqlalchemy import select
+
+    from app.models.invoice import InvoiceType
+
+    booking = db.scalars(
+        select(Booking).where(Booking.migration_external_ref == code)
+    ).first()
+    assert booking is not None, f"no imported booking for {code}"
+
+    total = Decimal(paid) + Decimal(outstanding)
+    invoice = invoicing.create_invoice(
+        db, booking, InvoiceType.final,
+        [{"description": "iVvy balance", "quantity": 1, "unit_price": str(total)}],
+        dt.date.today() + dt.timedelta(days=30), actor="test",
+    )
+    db.flush()
+    invoicing.mark_sent(db, invoice, actor="staff:test@meantime.com.au")
+    db.flush()
+    if Decimal(paid) > 0:
+        invoicing.record_payment(
+            db, invoice, amount=Decimal(paid), method=PaymentMethod.bank_transfer, actor="test"
+        )
+        db.flush()
+    return booking
+
+
 def test_clean_reconciliation_when_nothing_changed(db, hamilton, tmp_path):
     csv_path = _write_csv(tmp_path, [_row(code="A1")])
     import_ivvy_csv(db, csv_path, venue=hamilton)
+    _give_concierge_the_money(db, "A1", paid="500", outstanding="1223")
 
     report = reconcile(db, csv_path, venue=hamilton)
 
@@ -59,6 +104,9 @@ def test_flags_financial_divergence(db, hamilton, tmp_path):
     original = _write_csv(tmp_path, [_row(code="A1", paid="500", outstanding="1223")], filename="original.csv")
     import_ivvy_csv(db, original, venue=hamilton)
 
+    _give_concierge_the_money(db, "A1", paid="500", outstanding="1223")
+
+    # iVvy now says the balance was settled; Concierge never recorded it.
     updated = _write_csv(tmp_path, [_row(code="A1", paid="1723", outstanding="0")], filename="updated.csv")
     report = reconcile(db, updated, venue=hamilton)
 
@@ -74,6 +122,7 @@ def test_missing_from_export_does_not_break_clean_status(db, hamilton, tmp_path)
 
     # A narrower export that just doesn't include A2 -- not necessarily a
     # problem (could be outside the exported date range).
+    _give_concierge_the_money(db, "A1", paid="500", outstanding="1223")
     narrower = _write_csv(tmp_path, [_row(code="A1")], filename="narrower.csv")
     report = reconcile(db, narrower, venue=hamilton)
 
@@ -97,6 +146,7 @@ def test_truncated_row_does_not_crash_and_still_flags_a_real_divergence(db, hami
     path = tmp_path / "malformed.csv"
     # A1's row is truncated right after Code -- Status and everything
     # after it is missing, not just empty.
+    _give_concierge_the_money(db, "A2", paid="500", outstanding="1223")
     path.write_text(HEADER + "A1\n" + _row(code="A2"), encoding="utf-8-sig")
 
     report = reconcile(db, str(path), venue=hamilton)  # must not raise
