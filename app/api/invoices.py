@@ -7,7 +7,9 @@ from fastapi.responses import HTMLResponse, Response
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models.invoice import InvoiceStatus
+from decimal import Decimal
+
+from app.models.invoice import InvoiceStatus, InvoiceType
 from app.services import invoicing, policy, stripe_integration
 from app.services.booking import VOIDED_STATUSES
 from app.services.pdf import render_html_to_pdf
@@ -64,13 +66,32 @@ def _get_viewable_invoice_or_404(db: Session, token: str):
 def _build_invoice_context(db: Session, invoice, *, include_card_payment: bool) -> dict:
     summary = invoicing.get_payment_summary(db, invoice)
 
+    # WHAT IS PAYABLE NOW, as distinct from what the invoice asked for.
+    #
+    # summary["balance_due"] is invoice.total minus payments against THIS
+    # invoice. A deposit paid AFTER a final invoice went out sits against the
+    # deposit invoice, so the balance here never learned of it and the page
+    # printed the full food total -- twice -- to a client whose deposit had
+    # already landed. Paying what they were shown paid the deposit again.
+    #
+    # invoice.total is left exactly as it is: it is the record of what was
+    # asked for. This is the other figure, derived at render so every
+    # invoice that already exists gets it, and computed ONCE here because
+    # the web view, the PDF and the staff preview all come through this
+    # function and must not disagree.
+    uncredited_deposit = invoicing.uncredited_deposit(db, invoice)
+    payable_now = max(summary["balance_due"] - uncredited_deposit, Decimal("0.00"))
+
     card_payment_url = None
     card_payment_amount = None
     if include_card_payment and stripe_integration.is_configured_for(invoice.booking.venue) and not summary["is_fully_paid"]:
-        # The balance itself, with nothing added. The 1.8% card surcharge
-        # was removed on 2026-09-11 (see policy.py); a card payment now
-        # costs exactly what the invoice says.
-        card_payment_amount = summary["balance_due"]
+        # The amount payable now, with nothing added. The 1.8% card
+        # surcharge was removed on 2026-09-11 (see policy.py). And it is
+        # payable_now, not balance_due: a Payment Link for the stale full
+        # balance would collect the deposit a second time, and the
+        # overpayment guard cannot catch that because the amount equals
+        # invoice.total exactly.
+        card_payment_amount = payable_now
         try:
             card_payment_url, link_id, account = stripe_integration.create_payment_link(
                 invoice, card_payment_amount
@@ -101,10 +122,26 @@ def _build_invoice_context(db: Session, invoice, *, include_card_payment: bool) 
         if inv.id != invoice.id and inv.status != InvoiceStatus.draft
     ]
 
+    # Which invoice the uncredited deposit sits on, so the page can name it
+    # rather than print a subtraction with no explanation. Deposit invoices
+    # only, and only ones with money against them -- a cancelled deposit
+    # invoice holding a part payment still counts, for the reason
+    # get_deposit_paid gives.
+    deposit_references = [
+        inv.invoice_reference
+        for inv in invoice.booking.invoices
+        if inv.type == InvoiceType.deposit
+        and inv.id != invoice.id
+        and invoicing.get_total_paid(db, inv.id) > 0
+    ] if uncredited_deposit > 0 else []
+
     return {
         "invoice": invoice,
         "booking": invoice.booking,
         "summary": summary,
+        "uncredited_deposit": uncredited_deposit,
+        "payable_now": payable_now,
+        "deposit_references": deposit_references,
         "gst_component": invoicing.gst_component(invoice.total),
         "line_items": invoicing.line_item_breakdown(invoice.line_items),
         "other_invoices": other_invoices,

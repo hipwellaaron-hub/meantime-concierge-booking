@@ -116,7 +116,10 @@
             <tr><td class="label">Date of issue</td><td>{{ invoice.created_at | sydney_time("%d %b %Y") }}</td></tr>
             <tr><td class="label">Currency</td><td>AUD</td></tr>
             <tr><td class="label">Due Date</td><td>{{ invoice.due_date | aus_date }}</td></tr>
-            <tr><td class="label">Amount Owing</td><td>${{ summary.balance_due }}</td></tr>
+            {# payable_now, not summary.balance_due: the same figure the
+               Invoice Summary box prints, from the same context, so the two
+               cannot disagree. See the note there. #}
+            <tr><td class="label">Amount Owing</td><td>${{ payable_now }}</td></tr>
           </table>
         </div>
       </td>
@@ -192,7 +195,16 @@
             <tr><td class="label">Total Incl Tax</td><td>${{ invoice.total }}</td></tr>
             <tr><td class="label">Total Discount Applied</td><td>$0.00</td></tr>
             <tr><td class="label">Received</td><td>${{ summary.total_paid }}</td></tr>
-            <tr class="balance"><td class="label">Amount Owing</td><td>${{ summary.balance_due }}</td></tr>
+            {# Total Incl Tax above is the RECORD of what this invoice asked
+               for and never moves. What a client needs beside it is what is
+               payable now -- and a deposit paid after this invoice went out
+               sits against the deposit invoice, so the line items here never
+               learned of it and the old balance asked for the deposit twice.
+               Derived at render, so every invoice already issued gets it. #}
+            {% if uncredited_deposit > 0 %}
+            <tr><td class="label">Less: deposit received{% if deposit_references %} on {{ deposit_references | join(", ") }}{% endif %}</td><td>-${{ uncredited_deposit }}</td></tr>
+            {% endif %}
+            <tr class="balance"><td class="label">Amount Owing</td><td>${{ payable_now }}</td></tr>
           </table>
         </div>
       </td>

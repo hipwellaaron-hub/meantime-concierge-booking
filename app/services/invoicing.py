@@ -413,6 +413,47 @@ def final_invoice_missing_deposit_credit(db: Session, booking: Booking) -> Invoi
     return invoice
 
 
+def uncredited_deposit(db: Session, invoice: Invoice) -> Decimal:
+    """Deposit money the client has handed over that THIS final invoice does
+    not yet credit. Zero for anything that is not an unpaid, native final.
+
+    The companion to final_invoice_missing_deposit_credit, which only
+    DETECTS the stale credit -- and detection reaches Triage, the digest and
+    a staff banner, none of which the client sees. The client sees the
+    invoice page, and the invoice page was still telling them to pay the
+    full food total after their deposit had landed against a different
+    invoice: paying what they were asked for paid the deposit twice.
+
+    THE STORED INVOICE IS NOT TOUCHED. invoice.total is the record of what
+    was asked for, and the detector's docstring is right that rewriting it
+    behind a client is Revise's job. What a client needs is the OTHER
+    figure every accounting package prints beside the total: what is
+    payable now. That is derived here and rendered by
+    app.api.invoices._build_invoice_context, so it is true of every invoice
+    that already exists without regenerating any of them -- the same
+    reasoning as templating.beo_billing.
+
+    SUBTRACTS THE CREDIT ALREADY HELD ON THE LINES. A deposit part-paid
+    before the invoice went out is already credited on it; crediting it
+    again here would under-bill by exactly that amount, which is the same
+    fault in the other direction. Only the difference is new information.
+    """
+    if invoice.type != InvoiceType.final or invoice.is_legacy:
+        return Decimal("0.00")
+    if invoice.status == InvoiceStatus.paid:
+        return Decimal("0.00")
+    held = sum(
+        (
+            -(Decimal(str(li.get("quantity", 0))) * Decimal(str(li.get("unit_price", 0))))
+            for li in (invoice.line_items or [])
+            if li.get("description") == DEPOSIT_CREDIT_DESCRIPTION
+        ),
+        Decimal("0.00"),
+    )
+    paid = get_deposit_paid(db, invoice.booking)
+    return max(paid - held, Decimal("0.00"))
+
+
 def _refresh_deposit_credit(db: Session, invoice: Invoice, *, actor: str) -> None:
     """Re-derive a final invoice's deposit credit from the payments
     actually recorded, at the moment it goes out.
