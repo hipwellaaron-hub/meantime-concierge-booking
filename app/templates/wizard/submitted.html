@@ -20,6 +20,16 @@
   </style>
 </head>
 <body>
+{% if is_staff_preview %}
+{# Staff read of the client's own wizard. Says so plainly, because this page
+   is otherwise indistinguishable from what the client sees -- and states the
+   operational fact: reading it here does not count as the client opening it,
+   which is the entire reason this route exists. #}
+<div style="background:#2b2b2b;color:#f3f3f3;padding:10px 16px;font:14px/1.5 system-ui,sans-serif;">
+  Staff preview of the client&rsquo;s booking wizard.
+  {% if session and session.opened_at %}The client opened it already.{% else %}Reading it here does not count as the client opening it, and does not mark it opened.{% endif %}
+</div>
+{% endif %}
   <div class="card">
     <h1>Thanks — your details are in</h1>
     <p>Your event details for {{ booking.event_name }} have been submitted to our team for approval. Once approved, you'll receive a copy of your Event Order and your final invoice by email.</p>

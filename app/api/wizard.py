@@ -83,12 +83,31 @@ def _catalogue_payload(db: Session, booking, category: MenuItemCategory) -> list
 
 @router.get("/w/{token}", response_class=HTMLResponse)
 def view_wizard(token: str, request: Request, db: Session = Depends(get_db)):
+    """The CLIENT's wizard link. Loading it consumes the one-shot
+    opened_at stamp, which is the whole point of it -- and the reason
+    staff have their own door (render_wizard below, reached from the
+    booking page) rather than being sent here to read their own work."""
     session = _get_usable_session(db, token)
     session = wizard_service.record_open(db, session)
+    return render_wizard(request, db, session)
+
+
+def render_wizard(request: Request, db: Session, session, *, is_staff_preview: bool = False):
+    """The wizard page itself, with no side effects.
+
+    Split out of view_wizard so a staff read cannot record a client open.
+    Unlike documents and invoices -- which each already had a staff preview
+    route sitting unused beside the client link -- the wizard had no such
+    route, so the booking page's "Wizard link" pointed at /w/{token} and
+    every staff click stamped opened_at and consumed it.
+    """
     booking = session.booking
 
     if session.status == WizardSessionStatus.submitted:
-        return templates.TemplateResponse(request, "wizard/submitted.html", {"session": session, "booking": booking})
+        return templates.TemplateResponse(
+            request, "wizard/submitted.html",
+            {"session": session, "booking": booking, "is_staff_preview": is_staff_preview},
+        )
 
     # The AV USB deadline is composed server-side as an absolute date
     # ("Thursday 27 August") -- never a relative phrase, which would go
@@ -173,7 +192,8 @@ def view_wizard(token: str, request: Request, db: Session = Depends(get_db)):
         # <, >, & as \uXXXX -- so a client-supplied event name or vendor
         # name containing </script> can't break out of the JSON island and
         # inject markup. Never render this via json.dumps + |safe.
-        {"booking": booking, "bootstrap": bootstrap},
+        {"booking": booking, "bootstrap": bootstrap, "session": session,
+         "is_staff_preview": is_staff_preview},
     )
 
 

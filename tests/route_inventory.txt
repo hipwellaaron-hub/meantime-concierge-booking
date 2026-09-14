@@ -24,6 +24,7 @@ GET    /admin/{venue_slug}/bookings/{booking_id}/enquiry-notification/preview
 GET    /admin/{venue_slug}/bookings/{booking_id}/invoices/{invoice_id}/edit
 GET    /admin/{venue_slug}/bookings/{booking_id}/invoices/{invoice_id}/legacy-file
 GET    /admin/{venue_slug}/bookings/{booking_id}/invoices/{invoice_id}/preview
+GET    /admin/{venue_slug}/bookings/{booking_id}/wizard/preview
 GET    /admin/{venue_slug}/calendar
 GET    /admin/{venue_slug}/calendar/holds/new
 GET    /admin/{venue_slug}/drafts

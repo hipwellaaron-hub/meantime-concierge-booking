@@ -31,6 +31,34 @@
 {% if booking.contact %}
 <p class="muted">{{ booking.contact.name }} &middot; {{ booking.contact.email }}{% if booking.contact.phone %} &middot; {{ booking.contact.phone }}{% endif %}
   <details style="display:inline;"><summary style="display:inline; cursor:pointer; color:var(--gold);">Change</summary>
+  {# A Contact is one per EMAIL ADDRESS and is shared across bookings, so
+     this form does not edit "this booking's contact" -- it edits a row every
+     one of them reads live. The invoice Customer Details block on each of
+     them re-addresses immediately, including already-sent and already-paid
+     invoices, because an invoice has no bill-to columns. A signed agreement
+     does NOT move: it never prints the contact, and its signature line uses
+     the stored signer_name.
+
+     The other bookings are NAMED rather than counted. "This contact is
+     shared" tells a staff member to go and find out what that means; a list
+     tells them what they are about to change. Aaron, 2026-09-14: "Warn me,
+     list what else changes, let me decide." #}
+  {% if shared_contact_bookings %}
+  <div style="margin-top:8px; padding:10px 12px; border-left:3px solid var(--ember); background:rgba(212,98,43,0.08); font-size:0.9rem;">
+    <p style="margin:0 0 6px;"><strong>This contact is shared with
+      {{ shared_contact_bookings | length }} other booking{{ "" if shared_contact_bookings | length == 1 else "s" }}.</strong>
+      Saving here changes the name, email and phone on {{ "it" if shared_contact_bookings | length == 1 else "them" }} too, and
+      re-addresses their invoices &mdash; including any already sent or paid. Signed agreements are not affected.</p>
+    <ul style="margin:0 0 6px; padding-left:1.1rem;">
+      {% for other in shared_contact_bookings %}
+      <li><a href="{{ venue_base }}/bookings/{{ other.id }}">{{ other.reference_code }}</a> &middot;
+        {{ other.event_name }} &middot;
+        {{ other.event_date | aus_date if other.event_date else "Date TBD" }}</li>
+      {% endfor %}
+    </ul>
+    <p style="margin:0;" class="muted">Only this booking's audit trail will record the change.</p>
+  </div>
+  {% endif %}
   <form method="post" action="{{ venue_base }}/bookings/{{ booking.id }}/contact" class="field-row" style="margin-top:8px;">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <div><input type="text" name="name" placeholder="Name" value="{{ booking.contact.name }}" required></div>
@@ -704,7 +732,15 @@
   <p class="muted" style="font-size:0.85rem;">
     {% if ws.opened_at %}Opened {{ ws.opened_at | sydney_time }}{% else %}Not yet opened{% endif %}
   </p>
-  <p><a href="/w/{{ ws.access_token }}" target="_blank">Wizard link &rarr;</a></p>
+  {# NOT /w/{token}. That is the CLIENT's link and loading it calls
+     wizard_service.record_open, which sets opened_at ONCE -- so a staff
+     click both looked like the client and consumed the stamp, leaving the
+     client's real first open unrecorded. Same fault as the document and
+     invoice View links, and the only one of the three with no preview
+     route to point at until now. Copy link gives the real client URL,
+     which is the thing that actually goes to a client. #}
+  <p><a href="{{ venue_base }}/bookings/{{ booking.id }}/wizard/preview" target="_blank">View wizard &rarr;</a>
+    <button type="button" class="btn secondary" onclick="copyLink(this, '/w/{{ ws.access_token }}')">Copy link</button></p>
   {% if ws.status.value not in ("submitted", "revoked") %}
   <form method="post" action="{{ venue_base }}/bookings/{{ booking.id }}/wizard/revoke">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">

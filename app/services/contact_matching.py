@@ -134,3 +134,32 @@ def update_contact_details(
         db.commit()
         db.refresh(contact)
     return changed
+
+def other_bookings_on_contact(db: Session, booking) -> list:
+    """Every OTHER booking that shares this booking's contact row.
+
+    A Contact is one per email address and is SHARED, so editing a name or
+    an email here rewrites it for all of them -- and the field_changed
+    BookingEvent lands only on the booking being edited, so the others
+    change with nothing in their own audit trail to say why.
+
+    What actually moves on those bookings: the Customer Details block on
+    every invoice, including already-sent and already-paid ones, because an
+    invoice has no bill-to columns and re-renders from the contact on every
+    view and download. A SIGNED AGREEMENT does not move -- it never prints
+    the contact at all, and its signature line uses the stored signer_name.
+
+    Returned so the edit form can NAME them. Aaron, 2026-09-14: "Warn me,
+    list what else changes, let me decide."
+    """
+    if booking.contact_id is None:
+        return []
+    from app.models import Booking
+
+    return list(
+        db.scalars(
+            select(Booking)
+            .where(Booking.contact_id == booking.contact_id, Booking.id != booking.id)
+            .order_by(Booking.event_date)
+        ).all()
+    )

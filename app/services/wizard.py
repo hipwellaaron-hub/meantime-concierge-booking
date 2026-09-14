@@ -132,6 +132,27 @@ def record_open(db: Session, session: WizardSession) -> WizardSession:
     status to in_progress)."""
     if session.opened_at is None:
         session.opened_at = dt.datetime.now(dt.timezone.utc)
+        # An audit row, which this stamp went without until 2026-09-14.
+        # opened_at is SET ONCE: whoever loads the link first consumes it,
+        # and until now it recorded no actor and no event, so a staff
+        # member clicking "Wizard link" from the booking page and a mail
+        # scanner prefetching the token out of the resume email were
+        # indistinguishable from the client -- and the client's real first
+        # open was never recorded at all, because the stamp was gone.
+        #
+        # The staff door is closed separately (the booking page now links
+        # to a preview that records nothing), so from here a row with this
+        # actor means the public link was loaded by someone who is not
+        # staff. It still cannot tell a client from a scanner, which is
+        # why it says "(auto)" -- the same honesty as
+        # documents.record_view's actor, and for the same reason.
+        db.add(
+            BookingEvent(
+                booking_id=session.booking_id,
+                event_type="wizard_opened",
+                actor="client (auto)",
+            )
+        )
         db.commit()
         db.refresh(session)
     return session

@@ -212,6 +212,16 @@
 </style>
 </head>
 <body>
+{% if is_staff_preview %}
+{# Staff read of the client's own wizard. Says so plainly, because this page
+   is otherwise indistinguishable from what the client sees -- and states the
+   operational fact: reading it here does not count as the client opening it,
+   which is the entire reason this route exists. #}
+<div style="background:#2b2b2b;color:#f3f3f3;padding:10px 16px;font:14px/1.5 system-ui,sans-serif;">
+  Staff preview of the client&rsquo;s booking wizard.
+  {% if session and session.opened_at %}The client opened it already.{% else %}Reading it here does not count as the client opening it, and does not mark it opened.{% endif %}
+</div>
+{% endif %}
 
 <header class="top">
   <p class="event-name">{{ booking.event_name }}</p>

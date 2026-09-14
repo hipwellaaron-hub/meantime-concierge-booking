@@ -38,6 +38,7 @@ from app.services.pdf import render_html_to_pdf
 from app.services.contact_matching import (
     find_contact_by_email,
     find_or_create_contact,
+    other_bookings_on_contact,
     update_contact_details,
 )
 from app.services import beo_proposals as beo_proposals_service
@@ -463,6 +464,10 @@ def booking_detail(
             final_invoice_prefill=beo_proposals_service.final_invoice_prefill(
                 documents_service.get_current(db, booking.id, DocumentType.beo)
             ),
+            # Named, not counted: a warning that says "this contact is shared"
+            # tells a staff member to go and find out what that means. The
+            # bookings it would also change are listed instead.
+            shared_contact_bookings=other_bookings_on_contact(db, booking),
             suggested_final_due_date=policy.final_balance_due_date(
                 booking.event_date, issued_on=dt.date.today()
             ),
@@ -1723,6 +1728,35 @@ def send_invoice(
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return _redirect_to_detail(request, booking_id)
+
+
+@router.get("/{booking_id}/wizard/preview", response_class=HTMLResponse)
+def preview_wizard(
+    booking_id: uuid.UUID,
+    request: Request,
+    db: Session = Depends(get_db),
+    staff: StaffUser = Depends(require_staff),
+):
+    """The staff read of a client's wizard, which did not exist until now.
+
+    /w/{token} is the CLIENT's link and loading it calls
+    wizard_service.record_open, which sets opened_at -- ONCE. So the
+    booking page's "Wizard link" made every staff check look like the
+    client opening their form, and consumed the stamp so the client's real
+    first open was never recorded at all. Documents and invoices each had a
+    preview route already sitting beside the client link; the wizard had
+    none, which is why this is a new route rather than a repointed href.
+
+    Renders the client's own page through the same function they get, so a
+    staff member sees what the client sees -- and records nothing.
+    """
+    booking = _get_booking_or_404(request, db, booking_id)
+    session = booking.wizard_session
+    if session is None:
+        raise HTTPException(status_code=404, detail="This booking has no wizard session")
+    from app.api.wizard import render_wizard
+
+    return render_wizard(request, db, session, is_staff_preview=True)
 
 
 @router.get("/{booking_id}/invoices/{invoice_id}/preview", response_class=HTMLResponse)
