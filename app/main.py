@@ -20,6 +20,7 @@ from app.api.admin_drafts import router as admin_drafts_router
 from app.api.admin_invoices import router as admin_invoices_router
 from app.api.admin_reports import router as admin_reports_router
 from app.api.admin_staff import router as admin_staff_router
+from app.api.admin_venues import router as admin_venues_router
 from app.api.admin_triage import router as admin_triage_router
 from app.api.availability import router as availability_router
 from app.api.documents import router as documents_router
@@ -274,6 +275,7 @@ app.include_router(admin_triage_router)
 app.include_router(admin_calendar_router)
 app.include_router(admin_reports_router)
 app.include_router(admin_staff_router)
+app.include_router(admin_venues_router)
 app.include_router(staff_app_router)
 app.include_router(floor_app_router)
 

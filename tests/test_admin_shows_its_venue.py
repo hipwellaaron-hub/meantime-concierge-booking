@@ -260,7 +260,9 @@ def test_every_nav_link_is_scoped_to_the_venue(admin_client, hamilton):
     nav = re.findall(r'<nav class="primary">(.*?)</nav>', resp.text, re.S)
     assert nav, "the nav did not render"
     links = re.findall(r'href="([^"]+)"', nav[0])
-    assert len(links) == 8, f"expected 8 nav links, got {len(links)}"
+    # The count is pinned so a link silently LOST is caught, not just an
+    # unscoped one. Nine since 2026-09-14, when Venue set-up was added.
+    assert len(links) == 9, f"expected 9 nav links, got {len(links)}"
 
     unscoped = [l for l in links if not l.startswith(f"/admin/{hamilton.slug}/")]
 

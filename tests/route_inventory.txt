@@ -32,6 +32,7 @@ GET    /admin/{venue_slug}/invoices
 GET    /admin/{venue_slug}/reports/attribution
 GET    /admin/{venue_slug}/staff
 GET    /admin/{venue_slug}/triage
+GET    /admin/{venue_slug}/venues
 GET    /api/ai/availability
 GET    /api/ai/bookings
 GET    /api/ai/bookings/{booking_id}/documents
@@ -111,6 +112,8 @@ POST   /admin/{venue_slug}/staff/{user_id}/deactivate
 POST   /admin/{venue_slug}/staff/{user_id}/reactivate
 POST   /admin/{venue_slug}/staff/{user_id}/resend-welcome
 POST   /admin/{venue_slug}/triage/reconcile
+POST   /admin/{venue_slug}/venues
+POST   /admin/{venue_slug}/venues/{venue_id}
 POST   /api/ai/bookings/{reference}/event-order-proposal
 POST   /api/staff/login
 POST   /d/{token}/sign

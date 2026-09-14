@@ -1,0 +1,96 @@
+{% extends "admin/_base.html" %}
+{% block title %}Venue set-up{% endblock %}
+{% block content %}
+<h1>Venue set-up</h1>
+{#- THIS PAGE IS ABOUT EVERY VENUE, which is the exception here rather than
+    the rule: every other admin page shows only the venue in the band. It is
+    one operator setting up two companies, so each row names the company it
+    is about and nothing is left to the band to imply. -#}
+<p class="note" style="color: var(--muted); font-size: 0.85rem; margin: -6px 0 18px;">
+  Every venue in this database, not just {{ (venue.trading_name or venue.name) if venue else "this one" }}.
+  These fields print on invoices, agreements and Event Orders exactly as typed, and nothing
+  substitutes another company&rsquo;s details for a blank one.
+</p>
+
+{% if outcome == "created" %}
+<div class="card" style="border-color:var(--safe-green);"><b style="color:var(--safe-green-text);">Venue created</b>, with its triage space. Fill in the details below before it takes an enquiry.</div>
+{% elif outcome == "saved" %}
+<div class="card" style="border-color:var(--safe-green);"><b style="color:var(--safe-green-text);">Saved.</b></div>
+{% endif %}
+
+{% for row in rows %}
+{% set v = row.venue %}
+<div class="card">
+  <h2>{{ v.trading_name or v.name }} <span class="muted" style="font-weight:400;">/{{ v.slug }}</span></h2>
+
+  {% if row.readiness.is_ready %}
+  <p style="color:var(--safe-green-text);"><b>Ready.</b> Every client-facing detail is filled in and the spaces exist.</p>
+  {% else %}
+  <div style="border-left:3px solid var(--wine); padding-left:12px; margin:0 0 14px;">
+    <p style="margin:0 0 6px;"><b style="color:var(--wine);">Not ready &mdash; {{ row.readiness.gaps|length }} thing(s) missing.</b></p>
+    <ul style="margin:0 0 6px 0; padding-left:18px;">
+      {%- for gap in row.readiness.gaps %}
+      <li>
+        <code>{{ gap }}</code>
+        {%- if gap in blocking %} &mdash; <b style="color:var(--wine);">{{ blocking[gap] }}</b>
+        {%- else %} &mdash; prints blank on client documents{% endif %}
+      </li>
+      {%- endfor %}
+    </ul>
+  </div>
+  {% endif %}
+
+  <form method="post" action="{{ venue_base }}/venues/{{ v.id }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+    <div class="field-row" style="flex-wrap:wrap; gap:12px;">
+      {%- for column in editable_columns %}
+      <div style="flex:1 1 240px;">
+        <label>{{ column.replace("_", " ")|capitalize }}{% if column in client_facing_columns %} <span class="muted">(on documents)</span>{% endif %}</label>
+        <input type="text" name="{{ column }}" value="{{ v[column] or "" }}">
+      </div>
+      {%- endfor %}
+
+      <div style="flex:1 1 240px;">
+        <label>Reference prefix</label>
+        {%- if row.prefix_locked %}
+        <input type="text" value="{{ v.reference_prefix or "" }}" disabled>
+        <span class="muted" style="font-size:0.8rem;">Locked: this venue has issued references a client holds, and every one of them is frozen.</span>
+        {%- else %}
+        <input type="text" name="reference_prefix" value="{{ v.reference_prefix or "" }}" maxlength="5">
+        <span class="muted" style="font-size:0.8rem;">Up to 5 characters. Locks the first time this venue issues a booking or an invoice.</span>
+        {%- endif %}
+      </div>
+    </div>
+
+    <div style="margin:14px 0;">
+      <label>Trading days <span class="muted">(the days this venue is OPEN)</span></label>
+      <input type="hidden" name="trading_days_present" value="1">
+      <div class="field-row" style="gap:14px; flex-wrap:wrap;">
+        {%- for number, label in weekdays %}
+        <label style="font-weight:400;"><input type="checkbox" name="day_{{ number }}" {% if number in row.trading_days %}checked{% endif %}> {{ label }}</label>
+        {%- endfor %}
+      </div>
+      <span class="muted" style="font-size:0.8rem;">Unticking every day records &ldquo;open no days&rdquo;, which is a different answer from never having said.</span>
+    </div>
+
+    <button class="btn" type="submit">Save {{ v.trading_name or v.name }}</button>
+  </form>
+</div>
+{% endfor %}
+
+<div class="card">
+  <h2>Add a venue</h2>
+  <p class="muted" style="font-size:0.85rem; margin:-4px 0 12px;">
+    A new venue is a new COMPANY in this database, and its slug can never be changed afterwards &mdash;
+    it is in the admin URL of every page about it, in the Stripe endpoint its account posts to, and in
+    the AI credential&rsquo;s list of readable venues. Everything else is filled in above once the row exists.
+  </p>
+  <form method="post" action="{{ venue_base }}/venues" class="field-row" style="align-items:flex-end;">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div><label>Name <span class="muted">(internal)</span></label><input type="text" name="name" required maxlength="255" placeholder="The Entrance"></div>
+    <div><label>Slug <span class="muted">(permanent)</span></label><input type="text" name="slug" required maxlength="100" placeholder="entrance"></div>
+    <div style="flex:0 0 auto;"><button class="btn" type="submit">Create venue</button></div>
+  </form>
+</div>
+{% endblock %}
