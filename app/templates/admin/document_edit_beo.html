@@ -249,6 +249,14 @@
     <div id="vendors">
       {% for vendor in booking.vendors %}
       <div class="field-row">
+        {#- THE ROW'S OWN ID. Without it the save matched existing rows on
+            (type, name), so renaming a vendor -- fixing "DJ Micheal" to
+            "DJ Michael" -- was a DELETE plus a CREATE, and the new row was
+            born unconfirmed. The code's own comment says an edit "keeps its
+            source and its confirmation unless the bump-in time itself
+            changed"; keying on the name quietly broke that promise. A new
+            row posts an empty id. -#}
+        <input type="hidden" name="vendor_ids" value="{{ vendor.id }}">
         <div>
           <select name="vendor_types">
             {% for vt in vendor_types %}
@@ -422,6 +430,7 @@
 
 <template id="vendor-template">
   <div class="field-row">
+    <input type="hidden" name="vendor_ids" value="">
     <div>
       <select name="vendor_types">
         {% for vt in vendor_types %}<option value="{{ vt }}">{{ vt }}</option>{% endfor %}

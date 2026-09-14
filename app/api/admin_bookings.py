@@ -1209,6 +1209,7 @@ def save_document_edit(
     pack_down_notes: str = Form(default=""),
     moment_times: list[str] = Form(default=[]),
     moment_labels: list[str] = Form(default=[]),
+    vendor_ids: list[str] = Form(default=[]),
     vendor_types: list[str] = Form(default=[]),
     vendor_names: list[str] = Form(default=[]),
     vendor_contacts: list[str] = Form(default=[]),
@@ -1398,10 +1399,32 @@ def save_document_edit(
         # tagged source='staff' so a client re-saving their wizard step
         # never touches them; edits to an existing row keep its source and
         # its confirmation unless the bump-in time itself changed.
-        existing_vendors = {(v.vendor_type, v.name): v for v in booking.vendors}
-        seen_vendor_keys = set()
+        # KEYED ON THE ROW'S OWN ID, not on (type, name).
+        #
+        # It was the pair, so a RENAME was a delete plus a create: fixing
+        # "DJ Micheal" to "DJ Michael" removed the confirmed row and made a
+        # new one with bump_in_confirmed=False, silently un-confirming a
+        # bump-in somebody had checked against setup access and the day's
+        # other bookings. Changing the TYPE did the same. The comment below
+        # has always said an edit "keeps its source and its confirmation
+        # unless the bump-in time itself changed"; keying on the name broke
+        # that promise without saying so, and the screen still showed
+        # "requested" as if nobody had ever confirmed it.
+        #
+        # The form carries each row's id in a hidden field; a new row posts
+        # an empty one. An id that is not this booking's is ignored rather
+        # than trusted -- it arrived over the wire.
+        existing_vendors = {str(v.id): v for v in booking.vendors}
+        seen_vendor_ids = set()
         valid_vendor_types = {vt.value for vt in VendorType}
-        for v_type, v_name, v_contact, v_bump in zip(vendor_types, vendor_names, vendor_contacts, vendor_bump_ins):
+        # zip stops at the shortest, and vendor_ids is the newest field: a
+        # form rendered before this shipped, or a caller that omits it,
+        # posts none at all. Padding keeps every row processed and treats
+        # them all as new, which is the pre-existing behaviour.
+        padded_ids = list(vendor_ids) + [""] * max(0, len(vendor_names) - len(vendor_ids))
+        for v_id, v_type, v_name, v_contact, v_bump in zip(
+            padded_ids, vendor_types, vendor_names, vendor_contacts, vendor_bump_ins
+        ):
             if not v_name.strip():
                 continue  # a blanked-out name is how the form deletes a vendor
             if v_type not in valid_vendor_types:
@@ -1410,9 +1433,9 @@ def save_document_edit(
                 parsed_bump = dt.time.fromisoformat(v_bump) if v_bump.strip() else None
             except ValueError:
                 raise HTTPException(status_code=422, detail=f"Invalid bump-in time for '{v_name.strip()}'")
-            key = (v_type, v_name.strip())
-            seen_vendor_keys.add(key)
-            row = existing_vendors.get(key)
+            row = existing_vendors.get((v_id or "").strip())
+            if row is not None:
+                seen_vendor_ids.add(str(row.id))
             if row is None:
                 db.add(
                     BookingVendor(
@@ -1426,12 +1449,17 @@ def save_document_edit(
                     )
                 )
             else:
+                # The name and the type are editable now that the row is
+                # found by id. Neither touches the confirmation: it is about
+                # the TIME, which is the only thing anybody checked.
+                row.vendor_type = v_type
+                row.name = v_name.strip()
                 row.contact_number = v_contact.strip() or None
                 if row.bump_in_time != parsed_bump:
                     row.bump_in_time = parsed_bump
                     row.bump_in_confirmed = False if parsed_bump is not None else None
-        for key, row in existing_vendors.items():
-            if key not in seen_vendor_keys:
+        for row_id, row in existing_vendors.items():
+            if row_id not in seen_vendor_ids:
                 db.delete(row)
         db.flush()
         db.expire(booking, ["vendors"])
