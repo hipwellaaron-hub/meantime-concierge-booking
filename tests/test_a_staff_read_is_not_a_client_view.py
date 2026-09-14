@@ -161,6 +161,72 @@ def test_the_client_pdf_link_does_not_record_a_view(db, hamilton, loft, contact)
     assert document.viewed_at is None
 
 
+# --- the same fault on the invoice half ------------------------------------
+
+
+def _sent_invoice(db, booking):
+    from app.services import invoicing
+
+    invoice = invoicing.create_final_invoice(
+        db, booking,
+        line_items=[{"description": "Grazing Platter", "quantity": 1, "unit_price": "250.00"}],
+        due_date=dt.date.today() + dt.timedelta(days=13),
+        actor="test",
+    )
+    db.flush()
+    invoicing.mark_sent(db, invoice, actor="staff:test@meantime.com.au")
+    db.flush()
+    return invoice
+
+
+def test_the_staff_read_of_an_invoice_leaves_no_client_view(
+    admin_client, db, hamilton, loft, contact
+):
+    """Found only by reading the deployed booking page: the document View
+    link was fixed and the INVOICE View link on the same page still pointed
+    at /i/{token}, which calls invoicing.record_view."""
+    booking = _booking(db, loft, contact, name="ZZINVREAD Booking")
+    invoice = _sent_invoice(db, booking)
+    assert invoice.viewed_at is None
+
+    page = admin_client.get(
+        f"/admin/hamilton/bookings/{booking.id}/invoices/{invoice.id}/preview",
+        follow_redirects=True,
+    )
+
+    assert page.status_code == 200, page.text
+    db.refresh(invoice)
+    assert invoice.viewed_at is None, "a staff read stamped the invoice viewed_at"
+
+
+def test_no_invoice_view_link_points_at_the_client_url():
+    """Structural, for the same reason as the document one: the invoice
+    rows are a loop and a behavioural test only covers the invoice the
+    fixture happens to build."""
+    import pathlib
+
+    markup = pathlib.Path(BOOKING_PAGE).read_text(encoding="utf-8")
+    hrefs = re.findall(r'href="(/i/\{\{[^"]*)"', markup)
+    viewing = [h for h in hrefs if not h.rstrip().endswith("/pdf")]
+
+    assert viewing == [], f"a booking-page link opens the client's own invoice URL: {viewing}"
+
+
+def test_a_real_client_open_still_records_an_invoice_view(db, hamilton, loft, contact):
+    """Same rule as the document: don't remove the client's stamp."""
+    booking = _booking(db, loft, contact, name="ZZINVCLIENT Booking")
+    invoice = _sent_invoice(db, booking)
+
+    try:
+        resp = _client(db).get(f"/i/{invoice.access_token}")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200, resp.text
+    db.refresh(invoice)
+    assert invoice.viewed_at is not None, "the client's own open no longer records"
+
+
 # --- the banner must not lie ------------------------------------------------
 
 

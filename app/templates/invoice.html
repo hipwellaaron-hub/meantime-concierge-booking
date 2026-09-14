@@ -66,8 +66,18 @@
 </head>
 <body>
 <div class="card">
+  {# States this invoice's ACTUAL status. It used to say "this has not been
+     sent to the client" whatever the status was -- true only of a draft, and
+     staff now arrive here for sent invoices too, so on exactly the ones they
+     came to check it would have said the opposite of the truth. #}
   {% if is_staff_preview %}
-  <div class="staff-preview-banner">Staff preview — this has not been sent to the client.</div>
+  <div class="staff-preview-banner">
+    {% if invoice.status.value == "draft" %}Staff preview — this is a draft and has not been sent to the client.
+    {% elif invoice.status.value == "paid" %}Staff preview — this invoice is paid. Reading it here does not change anything.
+    {% elif invoice.status.value == "cancelled" %}Staff preview — this invoice was cancelled. The client's link no longer resolves.
+    {% else %}Staff preview — this invoice is live at the client's link. Reading it here does not count as a client view.
+    {% endif %}
+  </div>
   {% endif %}
   <h1>{{ booking.event_name }}</h1>
   <div class="subtitle">

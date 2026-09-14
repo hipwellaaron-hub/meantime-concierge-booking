@@ -1703,35 +1703,32 @@ def preview_invoice(
     db: Session = Depends(get_db),
     staff: StaffUser = Depends(require_staff),
 ):
-    """Staff-only equivalent of /i/{token} for a draft invoice, same
-    reasoning as preview_document above. No live Stripe card-payment-link
-    call here -- irrelevant for a draft nobody can pay yet, and a wasted
-    API call on every preview."""
+    """Staff-only equivalent of /i/{token}, and now the target of the
+    booking page's View link for a SENT invoice too -- because /i/{token}
+    is the CLIENT's link and loading it calls invoicing.record_view, which
+    stamps viewed_at. Staff checking their own work were being recorded as
+    the client opening the invoice.
+
+    Builds the client's own context rather than a second copy of it. The
+    previous hand-built dict hardcoded stripe off with the reasoning that a
+    card link is "irrelevant for a draft nobody can pay yet, and a wasted
+    API call on every preview" -- true of a draft, and false the moment
+    staff arrive here for a sent one: the preview would silently omit the
+    Pay by card button the client actually has, and a staff member could
+    reasonably conclude the client had no way to pay. So the card link is
+    included for anything that is not a draft, exactly as the client sees
+    it, and skipped for a draft exactly as before."""
     _get_booking_or_404(request, db, booking_id)
     invoice = db.get(Invoice, invoice_id)
     if invoice is None or invoice.booking_id != booking_id:
         raise HTTPException(status_code=404, detail="Invoice not found on this booking")
-    summary = invoicing.get_payment_summary(db, invoice)
-    other_invoices = [
-        inv for inv in invoice.booking.invoices
-        if inv.id != invoice.id and inv.status != InvoiceStatus.draft
-    ]
+    from app.api.invoices import _build_invoice_context
+
+    context = _build_invoice_context(
+        db, invoice, include_card_payment=invoice.status != InvoiceStatus.draft
+    )
     return templates.TemplateResponse(
-        request,
-        "invoice.html",
-        {
-            "invoice": invoice,
-            "booking": invoice.booking,
-            "summary": summary,
-            "gst_component": invoicing.gst_component(invoice.total),
-            "line_items": invoicing.line_item_breakdown(invoice.line_items),
-            "other_invoices": other_invoices,
-            **venue_identity(invoice.booking.venue),
-            "stripe_configured": False,
-            "card_payment_url": None,
-            "card_payment_amount": None,
-            "is_staff_preview": True,
-        },
+        request, "invoice.html", {**context, "is_staff_preview": True}
     )
 
 

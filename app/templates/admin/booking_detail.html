@@ -616,7 +616,12 @@
           </form>
           <a href="{{ venue_base }}/bookings/{{ booking.id }}/invoices/{{ invoice.id }}/preview" target="_blank">Preview &rarr;</a>
           {% else %}
-          <a href="/i/{{ invoice.access_token }}" target="_blank">View &rarr;</a>
+          {# NOT /i/{token}: that is the CLIENT's link and loading it calls
+             invoicing.record_view, which stamps viewed_at. Same fault as the
+             document View link above, on the same page. The preview renders
+             the client's own context, card payment link included for a sent
+             invoice, and records nothing. #}
+          <a href="{{ venue_base }}/bookings/{{ booking.id }}/invoices/{{ invoice.id }}/preview" target="_blank">View &rarr;</a>
           <a href="/i/{{ invoice.access_token }}/pdf">Download PDF</a>
           <button type="button" class="btn secondary" onclick="copyLink(this, '/i/{{ invoice.access_token }}')">Copy link</button>
           {% if invoice.status.value == "sent" %}
