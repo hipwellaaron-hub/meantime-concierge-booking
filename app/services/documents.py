@@ -23,7 +23,7 @@ import logging
 import uuid
 from collections.abc import Iterable
 
-from sqlalchemy import func, select
+from sqlalchemy import delete as sa_delete, func, select
 from sqlalchemy.orm import Session
 
 from app.models import Booking, BookingEvent, Document
@@ -838,10 +838,6 @@ def delete_draft(db: Session, document: Document, *, actor: str) -> None:
     the version it superseded. Abandoning a REGENERATE does not, and must
     not -- see the comment on the restore below for why those two differ
     and what the Regenerate case still costs."""
-    if document.status != DocumentStatus.draft:
-        raise ValueError(
-            f"cannot delete a document that is already {document.status.value} -- only a draft can be deleted"
-        )
     # Deleting a draft that a REVISE created is an undo of that Revise, so
     # the version it superseded becomes current again. A Regenerate draft
     # is not an undo and is handled differently below.
@@ -877,18 +873,76 @@ def delete_draft(db: Session, document: Document, *, actor: str) -> None:
     deleted_version = document.version
     restored = None
 
+    # THE STATUS IS DECIDED BY THE DELETE ITSELF, not by a Python attribute
+    # read beforehand, and that is the whole of this guard.
+    #
+    # What it replaces: `if document.status != DocumentStatus.draft: raise`,
+    # standing where this comment does, reading an attribute loaded by the
+    # UNLOCKED db.get in admin_bookings.py's route -- a snapshot of the row
+    # as it was when the booking page rendered, minutes earlier, in a
+    # session with expire_on_commit=False so nothing refreshes it. A client
+    # signing (or another staff member pressing Send) between that page load
+    # and this click was invisible: the stale `draft` passed, and the DELETE
+    # below matched on id alone and removed the signed row -- signature,
+    # signer name, signed_at, the lot. Every sibling writer in this module
+    # re-reads under a lock immediately above its status check; this one
+    # never did.
+    #
+    # A COMPARE-AND-SET IN THE STATEMENT, deliberately, rather than the
+    # locked re-read the siblings use. Adding `db.refresh(document,
+    # with_for_update=True)` here would make delete_draft document-row-first
+    # and put it into the module's unsettled lock-ordering disagreement (see
+    # the comment above). This takes exactly the row lock the DELETE already
+    # took, at exactly the point it already took it, so the lock graph is
+    # byte-for-byte what it was -- and it is STRICTLY stronger than a
+    # re-read, because there is no window at all between the check and the
+    # write: they are one statement.
+    #
+    # The event is written AFTER it succeeds. booking_events is append-only
+    # by trigger, so a refusal that had already inserted "document_deleted"
+    # would leave a permanent audit row for a deletion that never happened.
+    deleted = db.execute(
+        sa_delete(Document).where(
+            Document.id == document.id,
+            Document.status == DocumentStatus.draft,
+        )
+    ).rowcount
+    if deleted != 1:
+        # Re-read for the MESSAGE only -- the decision is already made, and
+        # this is allowed to be a fraction stale.
+        #
+        # A SELECT rather than db.get, because db.get answers from the
+        # identity map and the identity map holds the very snapshot that
+        # caused this bug. And NO db.rollback(): the statement above matched
+        # nothing, so there is nothing of ours to undo, and a service that
+        # rolls back its caller's transaction throws away work it knows
+        # nothing about.
+        became = db.execute(
+            select(Document.status).where(Document.id == document.id)
+        ).scalar_one_or_none()
+        became = became.value if became is not None else "already deleted"
+        raise ValueError(
+            f"cannot delete a document that is already {became} -- only a draft can be "
+            "deleted. It changed while the page you clicked from was open; reload the "
+            "booking."
+        )
+    # The ORM still holds the row it thinks exists. Detached, so no later
+    # flush in this request can try to UPDATE something that is gone.
+    db.expunge(document)
+
     db.add(
         BookingEvent(
-            booking_id=document.booking_id,
+            booking_id=booking_id,
             event_type="document_deleted",
-            field_name=f"{document.type.value}_version",
-            old_value=str(document.version),
+            field_name=f"{doc_type.value}_version",
+            old_value=str(deleted_version),
             actor=actor,
         )
     )
-    db.delete(document)
     # Free the partial-unique-index slot before the restored row claims it,
     # the mirror of the flush create_new_version does when it supersedes.
+    # The DELETE above has already executed, so the slot is free either way;
+    # this flush is what puts the event row down before the restore reads.
     db.flush()
 
     # Two conditions, and the second one is the whole finding.
