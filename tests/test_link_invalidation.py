@@ -498,7 +498,7 @@ def test_webhook_flags_for_review_instead_of_silently_dropping_a_payment_on_a_cl
 
     app.dependency_overrides[get_db] = lambda: db
     try:
-        with patch("app.api.webhooks.STRIPE_WEBHOOK_SECRET", secret):
+        with patch.dict(os.environ, {"STRIPE_WEBHOOK_SECRET": secret}):
             client = TestClient(app)
             resp = client.post("/webhooks/stripe", content=payload, headers={"stripe-signature": signature})
         assert resp.status_code == 200

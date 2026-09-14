@@ -42,7 +42,24 @@ DEFAULT_STRIPE_SECRET_KEY_ENV = "STRIPE_SECRET_KEY"
 # a venue naming a DIFFERENT variable signs with a different account, so
 # its money arriving on the shared endpoint went into the wrong company.
 DEFAULT_STRIPE_WEBHOOK_SECRET_ENV = "STRIPE_WEBHOOK_SECRET"
-STRIPE_WEBHOOK_SECRET = os.environ.get(DEFAULT_STRIPE_WEBHOOK_SECRET_ENV)
+
+
+def process_webhook_secret() -> str | None:
+    """The shared endpoint's signing secret, READ LIVE.
+
+    It was a module constant, captured once at import -- the exact pattern
+    the comment above argues against for the secret key, twenty lines up
+    and for the same reason. Two consequences, and the second is the one
+    that bites: rotating the secret on Railway needed a rebuild before the
+    process would see it, and a webhook arriving in that window failed
+    verification, was retried by Stripe for about three days and then
+    dropped -- a client charged, an invoice still saying unpaid, nothing
+    raised on either side.
+
+    A function, like _process_stripe_key below, so every question about
+    "which secret" comes through one live read and never a cached copy.
+    """
+    return os.environ.get(DEFAULT_STRIPE_WEBHOOK_SECRET_ENV)
 
 
 def _process_stripe_key() -> str | None:

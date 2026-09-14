@@ -27,7 +27,7 @@ from app.models import BookingEvent, Invoice, Payment, Venue
 from app.models.payment import PaymentMethod
 from app.services import booking as booking_service
 from app.services import invoicing
-from app.services.stripe_integration import INVOICE_METADATA_KEY, STRIPE_WEBHOOK_SECRET
+from app.services.stripe_integration import INVOICE_METADATA_KEY, process_webhook_secret
 
 router = APIRouter(tags=["webhooks"])
 logger = logging.getLogger(__name__)
@@ -55,7 +55,9 @@ def _signing_secret_for(db: Session, venue_slug: str | None) -> tuple[str | None
     set on Railway look identical from inside Concierge.
     """
     if venue_slug is None:
-        return STRIPE_WEBHOOK_SECRET, None
+        # Read live, never a module constant captured at import: see
+        # stripe_integration.process_webhook_secret.
+        return process_webhook_secret(), None
     venue = db.query(Venue).filter_by(slug=venue_slug).one_or_none()
     if venue is None:
         logger.error(

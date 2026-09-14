@@ -141,7 +141,7 @@ def test_webhook_rejects_invalid_signature(db, booking):
 
     app.dependency_overrides[get_db] = lambda: db
     try:
-        with patch("app.api.webhooks.STRIPE_WEBHOOK_SECRET", TEST_WEBHOOK_SECRET):
+        with patch.dict(os.environ, {"STRIPE_WEBHOOK_SECRET": TEST_WEBHOOK_SECRET}):
             client = TestClient(app)
             resp = client.post(
                 "/webhooks/stripe", content=payload, headers={"stripe-signature": "t=123,v1=deadbeef"}
@@ -160,7 +160,7 @@ def test_webhook_returns_503_when_not_configured(db, booking):
 
     app.dependency_overrides[get_db] = lambda: db
     try:
-        with patch("app.api.webhooks.STRIPE_WEBHOOK_SECRET", None):
+        with patch.dict(os.environ, {"STRIPE_WEBHOOK_SECRET": ""}):
             client = TestClient(app)
             resp = client.post("/webhooks/stripe", content=payload, headers={"stripe-signature": "t=1,v1=x"})
             assert resp.status_code == 503
@@ -182,7 +182,7 @@ def test_webhook_records_payment_and_marks_invoice_paid(db, booking):
 
     app.dependency_overrides[get_db] = lambda: db
     try:
-        with patch("app.api.webhooks.STRIPE_WEBHOOK_SECRET", TEST_WEBHOOK_SECRET):
+        with patch.dict(os.environ, {"STRIPE_WEBHOOK_SECRET": TEST_WEBHOOK_SECRET}):
             client = TestClient(app)
             resp = client.post("/webhooks/stripe", content=payload, headers={"stripe-signature": signature})
             assert resp.status_code == 200
@@ -207,7 +207,7 @@ def test_webhook_is_idempotent_against_redelivery(db, booking):
 
     app.dependency_overrides[get_db] = lambda: db
     try:
-        with patch("app.api.webhooks.STRIPE_WEBHOOK_SECRET", TEST_WEBHOOK_SECRET):
+        with patch.dict(os.environ, {"STRIPE_WEBHOOK_SECRET": TEST_WEBHOOK_SECRET}):
             client = TestClient(app)
             r1 = client.post("/webhooks/stripe", content=payload, headers={"stripe-signature": _sign(payload)})
             r2 = client.post("/webhooks/stripe", content=payload, headers={"stripe-signature": _sign(payload)})
@@ -226,7 +226,7 @@ def test_webhook_unknown_invoice_id_does_not_crash(db):
 
     app.dependency_overrides[get_db] = lambda: db
     try:
-        with patch("app.api.webhooks.STRIPE_WEBHOOK_SECRET", TEST_WEBHOOK_SECRET):
+        with patch.dict(os.environ, {"STRIPE_WEBHOOK_SECRET": TEST_WEBHOOK_SECRET}):
             client = TestClient(app)
             resp = client.post("/webhooks/stripe", content=payload, headers={"stripe-signature": _sign(payload)})
             assert resp.status_code == 200
@@ -253,7 +253,7 @@ def test_webhook_malformed_invoice_id_does_not_crash(db):
 
     app.dependency_overrides[get_db] = lambda: db
     try:
-        with patch("app.api.webhooks.STRIPE_WEBHOOK_SECRET", TEST_WEBHOOK_SECRET):
+        with patch.dict(os.environ, {"STRIPE_WEBHOOK_SECRET": TEST_WEBHOOK_SECRET}):
             client = TestClient(app)
             resp = client.post("/webhooks/stripe", content=payload, headers={"stripe-signature": _sign(payload)})
             assert resp.status_code == 200
@@ -267,7 +267,7 @@ def test_webhook_ignores_unrelated_event_types(db, booking):
 
     app.dependency_overrides[get_db] = lambda: db
     try:
-        with patch("app.api.webhooks.STRIPE_WEBHOOK_SECRET", TEST_WEBHOOK_SECRET):
+        with patch.dict(os.environ, {"STRIPE_WEBHOOK_SECRET": TEST_WEBHOOK_SECRET}):
             client = TestClient(app)
             resp = client.post("/webhooks/stripe", content=payload, headers={"stripe-signature": _sign(payload)})
             assert resp.status_code == 200
@@ -499,7 +499,7 @@ def test_the_original_webhook_path_still_records_a_payment(db, booking):
 
     app.dependency_overrides[get_db] = lambda: db
     try:
-        with patch("app.api.webhooks.STRIPE_WEBHOOK_SECRET", TEST_WEBHOOK_SECRET):
+        with patch.dict(os.environ, {"STRIPE_WEBHOOK_SECRET": TEST_WEBHOOK_SECRET}):
             resp = TestClient(app).post(
                 "/webhooks/stripe", content=payload, headers={"stripe-signature": _sign(payload)}
             )
@@ -589,7 +589,7 @@ def test_an_unknown_venue_in_the_path_is_refused(db, booking):
         # secret has nothing to fall back to, and the 503 arrives for the
         # ordinary "not configured" reason instead -- the exact shape Aaron
         # named on 2026-09-12 and the third time tonight.
-        with patch("app.api.webhooks.STRIPE_WEBHOOK_SECRET", TEST_WEBHOOK_SECRET):
+        with patch.dict(os.environ, {"STRIPE_WEBHOOK_SECRET": TEST_WEBHOOK_SECRET}):
             resp = TestClient(app).post(
                 "/webhooks/stripe/not-a-venue", content=payload, headers={"stripe-signature": _sign(payload)}
             )
@@ -613,7 +613,7 @@ def test_a_venue_that_has_not_named_its_secret_does_not_borrow_hamiltons(db, ham
     db.flush()
 
     with patch.dict(os.environ, {"STRIPE_WEBHOOK_SECRET": "whsec_hamiltons"}):
-        with patch.object(webhooks, "STRIPE_WEBHOOK_SECRET", "whsec_hamiltons"):
+        with patch.dict(os.environ, {"STRIPE_WEBHOOK_SECRET": "whsec_hamiltons"}):
             secret, venue = webhooks._signing_secret_for(db, "hamilton")
 
     assert secret is None, "the venue borrowed another venue's signing secret"
@@ -640,7 +640,7 @@ def test_the_legacy_path_still_uses_the_process_wide_secret(db):
     keep resolving exactly the secret it resolves now."""
     from app.api import webhooks
 
-    with patch.object(webhooks, "STRIPE_WEBHOOK_SECRET", "whsec_the_live_one"):
+    with patch.dict(os.environ, {"STRIPE_WEBHOOK_SECRET": "whsec_the_live_one"}):
         secret, venue = webhooks._signing_secret_for(db, None)
 
     assert secret == "whsec_the_live_one"
@@ -668,7 +668,7 @@ def test_the_shared_path_refuses_an_invoice_whose_venue_signs_elsewhere(db, book
 
     app.dependency_overrides[get_db] = lambda: db
     try:
-        with patch("app.api.webhooks.STRIPE_WEBHOOK_SECRET", TEST_WEBHOOK_SECRET):
+        with patch.dict(os.environ, {"STRIPE_WEBHOOK_SECRET": TEST_WEBHOOK_SECRET}):
             resp = TestClient(app).post(
                 "/webhooks/stripe", content=payload, headers={"stripe-signature": _sign(payload)}
             )
@@ -710,7 +710,7 @@ def test_the_shared_path_still_records_for_the_venue_the_shared_secret_belongs_t
 
     app.dependency_overrides[get_db] = lambda: db
     try:
-        with patch("app.api.webhooks.STRIPE_WEBHOOK_SECRET", TEST_WEBHOOK_SECRET):
+        with patch.dict(os.environ, {"STRIPE_WEBHOOK_SECRET": TEST_WEBHOOK_SECRET}):
             resp = TestClient(app).post(
                 "/webhooks/stripe", content=payload, headers={"stripe-signature": _sign(payload)}
             )
@@ -734,7 +734,7 @@ def test_the_shared_path_refuses_an_invoice_whose_venue_names_no_secret(db, book
 
     app.dependency_overrides[get_db] = lambda: db
     try:
-        with patch("app.api.webhooks.STRIPE_WEBHOOK_SECRET", TEST_WEBHOOK_SECRET):
+        with patch.dict(os.environ, {"STRIPE_WEBHOOK_SECRET": TEST_WEBHOOK_SECRET}):
             resp = TestClient(app).post(
                 "/webhooks/stripe", content=payload, headers={"stripe-signature": _sign(payload)}
             )
@@ -751,3 +751,49 @@ def test_the_shared_path_refuses_an_invoice_whose_venue_names_no_secret(db, book
         if e.event_type == "payment_venue_mismatch"
     ]
     assert len(flagged) == 1
+
+
+def test_the_shared_secret_is_read_live_not_captured_at_import(db):
+    """It was a module constant, read once at import -- the pattern the
+    module's own comment argues against for the secret key, twenty lines
+    up. Rotating the secret on Railway then needed a rebuild before the
+    process would see it, and a webhook arriving in that window failed
+    verification, was retried by Stripe for about three days and dropped:
+    a client charged, an invoice still saying unpaid.
+
+    Asserted by changing the ENVIRONMENT and reading the answer back with
+    no reimport. A module attribute cannot pass this.
+    """
+    from app.api import webhooks
+
+    with patch.dict(os.environ, {"STRIPE_WEBHOOK_SECRET": "whsec_rotated_just_now"}):
+        secret, venue = webhooks._signing_secret_for(db, None)
+
+    assert secret == "whsec_rotated_just_now"
+    assert venue is None
+
+
+def test_rotating_the_shared_secret_takes_effect_on_the_next_event(db, booking, hamilton):
+    """End to end: an event signed with the NEW secret verifies, without
+    the process being restarted."""
+    from app.services.stripe_integration import DEFAULT_STRIPE_WEBHOOK_SECRET_ENV
+
+    hamilton.stripe_webhook_secret_env = DEFAULT_STRIPE_WEBHOOK_SECRET_ENV
+    db.flush()
+    invoice = _deposit(db, booking)
+    mark_sent(db, invoice, actor="test")
+    rotated = "whsec_rotated_secret"
+    payload = _checkout_completed_event(invoice_id=invoice.id)
+
+    app.dependency_overrides[get_db] = lambda: db
+    try:
+        with patch.dict(os.environ, {"STRIPE_WEBHOOK_SECRET": rotated}):
+            resp = TestClient(app).post(
+                "/webhooks/stripe", content=payload,
+                headers={"stripe-signature": _sign(payload, rotated)},
+            )
+        assert resp.status_code == 200, resp.text
+    finally:
+        app.dependency_overrides.clear()
+
+    assert get_payment_summary(db, invoice)["is_fully_paid"] is True
