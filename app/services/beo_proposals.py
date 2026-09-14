@@ -1452,12 +1452,20 @@ def review_rows(db: Session, booking_id: uuid.UUID, *, document: Document | None
                 }
             )
             continue
-        existing = current[field_row.field]
+        # .get, both of them. field_row.field is a name read back out of
+        # the database, and a field dropped from PROPOSABLE_FIELDS after a
+        # proposal was stored would otherwise KeyError here and 500 the
+        # Event Order form for every booking with such a row pending. An
+        # unknown field renders with its own name and an empty "current";
+        # the approval path refuses it separately.
+        existing = current.get(field_row.field, "") or ""
         rows.append(
             {
                 "field": field_row.field,
                 "kind": "text",
-                "label": beo_rules.FIELD_LABELS[field_row.field],
+                "label": beo_rules.FIELD_LABELS.get(
+                    field_row.field, field_row.field.replace("_", " ").capitalize()
+                ),
                 "id": field_row.id,
                 "proposed": field_row.proposed_value,
                 "current": existing,
