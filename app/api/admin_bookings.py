@@ -1056,7 +1056,7 @@ def _submitted_content(*, document_type, stored, headings, bodies, **fields):
 
 def _edit_form_response(
     request, staff, db, booking_id, document, *, form_content, conflicts=(),
-    conflict=False, sent_while_open=False, status_code=200,
+    conflict=False, sent_while_open=False, moved_outside=(), status_code=200,
 ):
     """The edit screen. Shared by the GET and by the conflict response, so a
     refused save comes back as the same form carrying the staff member's own
@@ -1088,6 +1088,11 @@ def _edit_form_response(
             # cannot work. Their words are still on the page to copy, and
             # Revise is the way forward.
             sent_while_open=sent_while_open,
+            # The names of the form-side fields a colleague moved, for the
+            # third refusal banner. A list of names rather than a table:
+            # a vendor row is a row in the database, not a string.
+            moved_outside=list(moved_outside),
+            form_side_labels=documents_service.FORM_SIDE_LABELS,
             vendor_types=[vt.value for vt in VendorType],
             # Carried back on save and compared: the form is rendered from
             # values that may be minutes old, and without this a change
@@ -1095,6 +1100,14 @@ def _edit_form_response(
             # now also recorded as the reverting staff member's own words.
             content_expect=documents_service.content_fingerprint(
                 document.content, document_regeneration.PROTECTED_FIELD_NAMES
+            ),
+            # The SECOND half of the compare-and-set: everything this form
+            # writes that the content fingerprint cannot see -- the guest
+            # arrival time, the key moments and the pack-down notes (which
+            # go onto the BOOKING), the vendor rows, and the AV block.
+            # See documents.form_side_values.
+            form_expect=documents_service.form_side_fingerprint(
+                db, document.booking, document.content
             ),
             # What the AI has proposed for this Event Order and has not yet
             # had approved -- shown against the value each would replace.
@@ -1248,6 +1261,7 @@ def save_document_edit(
     item_menu_item_ids: list[str] = Form(default=[]),
     item_sources: list[str] = Form(default=[]),
     content_expect: str = Form(default=""),
+    form_expect: str = Form(default=""),
     db: Session = Depends(get_db),
     staff: StaffUser = Depends(require_staff),
 ):
@@ -1325,6 +1339,100 @@ def save_document_edit(
             sent_while_open=True,
             status_code=409,
         )
+
+    # THE SECOND HALF OF THE COMPARE-AND-SET, checked before the one below
+    # because its loss is the one that cannot be undone from the screen.
+    #
+    # content_fingerprint covers the prose and the food order. This form
+    # also writes the guest arrival time, the key moments and the pack-down
+    # notes onto the BOOKING, reconciles the vendor rows in booking_vendors,
+    # and edits the AV block. None of that moved anything the content
+    # fingerprint looked at, so a save decided against values that had since
+    # changed was accepted and reverted them silently -- and a vendor row
+    # the stale form did not re-post was DELETED, while each reverted
+    # timeline fact wrote a field_changed audit row naming the staff member
+    # whose save undid it.
+    #
+    # Agreements are exempt: that form has no timeline, no vendors and no AV
+    # block, and posts no form_expect. An empty form_expect (a tab opened
+    # before this shipped) is treated the same way -- the guard cannot judge
+    # what it was never given, and refusing every such save would log
+    # everybody out of their open forms on deploy.
+    if document.type == DocumentType.beo and form_expect:
+        if form_expect != documents_service.form_side_fingerprint(
+            db, document.booking, document.content
+        ):
+            # Named against what THIS person submitted, not against the
+            # stored values -- "yours versus theirs", so the banner lists
+            # the fields they are about to overwrite rather than every
+            # field that differs from itself.
+            submitted_side = {
+                "guest_arrival_time": guest_arrival_time.strip() or None,
+                "key_moments": [
+                    {"time": t.strip() or None, "label": l.strip()[:120]}
+                    for t, l in zip(moment_times, moment_labels)
+                    if l.strip()
+                ] or None,
+                "pack_down_notes": pack_down_notes.strip() or None,
+                "vendors": sorted(
+                    (
+                        {
+                            "id": (vid or "").strip(),
+                            "vendor_type": vt,
+                            "name": vn.strip(),
+                            "contact_number": vc.strip() or None,
+                            "bump_in_time": vb.strip() or None,
+                        }
+                        for vid, vt, vn, vc, vb in zip(
+                            list(vendor_ids) + [""] * max(0, len(vendor_names) - len(vendor_ids)),
+                            vendor_types, vendor_names, vendor_contacts, vendor_bump_ins,
+                        )
+                        if vn.strip()
+                    ),
+                    key=lambda row: row["id"],
+                ),
+                # BUILT FROM THE FORM, exactly the way the save builds it
+                # forty lines down. Reading it off the document instead made
+                # this key compare equal to itself always, so an AV change
+                # refused the save correctly and then listed NOTHING -- a
+                # refusal that names no field is the thing the conflict
+                # screen exists not to be.
+                "av": (
+                    {
+                        **((document.content or {}).get("av") or {}),
+                        "video_slideshow": av_video_slideshow is not None,
+                        "microphones_for_speeches": av_microphones is not None,
+                        "notes": av_notes.strip() or None,
+                    }
+                    if (document.content or {}).get("av")
+                    else (document.content or {}).get("av")
+                ),
+            }
+            moved = documents_service.form_side_differences(
+                db, document.booking, document.content, submitted_side
+            )
+            return _edit_form_response(
+                request, staff, db, booking_id, document,
+                # Their prose comes back; the rows below re-render from the
+                # booking, which is what is actually there now. That mixed
+                # state is deliberate and the banner says so: their words
+                # are safe, and the rows are the colleague's, so saving
+                # again is a merge rather than a revert.
+                form_content=_submitted_content(
+                    document_type=document.type,
+                    headings=headings, bodies=bodies,
+                    catering_order_and_service_style=catering_order_and_service_style,
+                    bar_structure=bar_structure, room_layout_notes=room_layout_notes,
+                    music=music, entertainment=entertainment,
+                    music_entertainment=music_entertainment, special_notes=special_notes,
+                    dietaries=dietaries, accessibility=accessibility,
+                    decorations=decorations, status_text=status_text,
+                    onsite_contact=onsite_contact, internal_notes=internal_notes,
+                    stored=document.content if isinstance(document.content, dict) else {},
+                ),
+                moved_outside=moved,
+                status_code=409,
+            )
 
     if content_expect != documents_service.content_fingerprint(
         document.content, document_regeneration.PROTECTED_FIELD_NAMES

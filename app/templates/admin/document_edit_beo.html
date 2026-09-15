@@ -145,6 +145,28 @@
 </div>
 {% endif %}
 
+{% if moved_outside %}
+<div class="card" style="border-left:4px solid #b00020;">
+  <h2 style="margin-top:0;">Somebody changed this while you had it open</h2>
+  <p>
+    Nothing has been written. These moved after your page was loaded:
+  </p>
+  <ul>
+    {%- for name in moved_outside %}
+    <li><strong>{{ form_side_labels.get(name, name) }}</strong></li>
+    {%- endfor %}
+  </ul>
+  <p>
+    <strong>Your typing is safe</strong> &mdash; the written fields below are exactly as you left
+    them. The rows that moved are showing what is there <em>now</em>, not what your page had,
+    so saving again keeps both: your words, and their change.
+  </p>
+  <p class="muted" style="font-size:0.85rem;">
+    Confirming a bump-in does <em>not</em> land you here &mdash; that is a different action and this
+    check deliberately ignores it.
+  </p>
+</div>
+{% endif %}
 {% if sent_while_open %}
 {#- A DIFFERENT refusal from the conflict one below, and it must not borrow
     its wording: there is no draft to save again. Until 2026-09-14 this
@@ -232,6 +254,12 @@
      refuses if they have moved, rather than reverting somebody else's
      edit and recording the revert as yours. #}
   <input type="hidden" name="content_expect" value="{{ content_expect }}">
+  {#- The second half of the compare-and-set: the vendor rows, the timeline
+      facts (which live on the BOOKING) and the AV block. Without it a save
+      decided minutes ago silently deleted a colleague's vendor row and
+      reverted their arrival time, with the audit trail naming the person
+      who saved. See documents.form_side_values. -#}
+  <input type="hidden" name="form_expect" value="{{ form_expect }}">
 
 
   <div class="card">

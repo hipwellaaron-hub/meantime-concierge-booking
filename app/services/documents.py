@@ -26,7 +26,7 @@ from collections.abc import Iterable
 from sqlalchemy import delete as sa_delete, func, select
 from sqlalchemy.orm import Session
 
-from app.models import Booking, BookingEvent, Document
+from app.models import Booking, BookingEvent, BookingVendor, Document
 from app.models.document import DocumentStatus, DocumentType
 from app.services import booking as booking_service
 from app.services import content_authorship
@@ -344,6 +344,103 @@ def content_fingerprint(content: object, fields: Iterable[str]) -> str:
         [[name, values.get(name)] for name in sorted(fields)], sort_keys=True, default=str
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:32]
+
+
+# What the Event Order edit form writes that content_fingerprint cannot see.
+# Named here rather than inline so the guard, the refusal message and the
+# test all read the same list.
+FORM_SIDE_FIELDS: tuple[str, ...] = (
+    "guest_arrival_time",
+    "key_moments",
+    "pack_down_notes",
+    "vendors",
+    "av",
+)
+
+FORM_SIDE_LABELS = {
+    "guest_arrival_time": "Guest arrival time",
+    "key_moments": "Key moments",
+    "pack_down_notes": "Pack-down notes",
+    "vendors": "Vendors",
+    "av": "AV",
+}
+
+
+def form_side_values(db: Session, booking, content: object) -> dict:
+    """The values the edit form writes OUTSIDE the protected content fields.
+
+    content_fingerprint covers the prose and the food order. The same form
+    also writes the guest arrival time, the key moments and the pack-down
+    notes ONTO THE BOOKING, reconciles the vendor rows in booking_vendors,
+    and edits the AV block inside the content. None of that moved anything
+    the fingerprint looked at, so a save decided against stale values was
+    accepted and reverted them without a word -- and the blast radius is
+    wider than "the document": a vendor row the stale form did not re-post
+    is DELETED, and each reverted timeline fact writes a field_changed
+    audit row naming the staff member whose save undid it.
+
+    THE VENDOR ROWS CARRY ONLY WHAT THIS FORM OWNS: the row id, the type,
+    the name, the contact number and the bump-in TIME. Never
+    bump_in_confirmed, and that exclusion is the whole reason this guard
+    can exist at all. Confirming a bump-in is a different staff action on a
+    different button, and it legitimately changes that column while an edit
+    form is open; including it would refuse every open form after a
+    confirmation, which is precisely the objection that kept this work
+    parked (Aaron, 2026-09-07).
+
+    Sorted by id so two reads of the same rows cannot hash differently on
+    ordering alone.
+
+    QUERIED, never read off booking.vendors. A relationship collection is
+    whatever was loaded the first time it was touched, so in a session that
+    had already rendered the form this returned the OLD rows and the guard
+    passed over a colleague's brand-new vendor -- proved by test before
+    this line was written. The same trap cost two reconciliation checks on
+    2026-09-14.
+    """
+    values = content if isinstance(content, dict) else {}
+    rows = db.scalars(
+        select(BookingVendor).where(BookingVendor.booking_id == booking.id)
+    ).all()
+    vendors = sorted(
+        (
+            {
+                "id": str(v.id),
+                "vendor_type": v.vendor_type,
+                "name": v.name,
+                "contact_number": v.contact_number,
+                "bump_in_time": str(v.bump_in_time) if v.bump_in_time is not None else None,
+            }
+            for v in rows
+        ),
+        key=lambda row: row["id"],
+    )
+    return {
+        "guest_arrival_time": (
+            str(booking.guest_arrival_time) if booking.guest_arrival_time is not None else None
+        ),
+        "key_moments": booking.key_moments,
+        "pack_down_notes": booking.pack_down_notes,
+        "vendors": vendors,
+        "av": values.get("av"),
+    }
+
+
+def form_side_fingerprint(db: Session, booking, content: object) -> str:
+    """One hash over form_side_values, the same shape as
+    content_fingerprint -- canonical JSON, sorted keys."""
+    return content_fingerprint(form_side_values(db, booking, content), FORM_SIDE_FIELDS)
+
+
+def form_side_differences(db: Session, booking, content: object, expected: dict) -> list[str]:
+    """Which of the form-side fields moved since the form was rendered.
+
+    For the refusal MESSAGE only -- the decision is the fingerprint's. Names
+    rather than a diff table: a vendor row is a row in the database, not a
+    string, and "the vendors changed" is what a person can act on.
+    """
+    current = form_side_values(db, booking, content)
+    return [name for name in FORM_SIDE_FIELDS if current.get(name) != expected.get(name)]
 
 
 def lock_draft_for_update(db: Session, document: Document) -> Document:
