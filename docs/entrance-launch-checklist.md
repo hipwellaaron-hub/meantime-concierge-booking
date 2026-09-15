@@ -16,36 +16,30 @@ any of the steps below, change it there first and watch it fail.
 
 ---
 
-## Before anything: two decisions that are not the system's to make
+## Settled: both companies trade on the same terms
 
-### 1. Does The Entrance use Hamilton's terms?
+Asked and answered, 2026-09-15: **identical, nothing to build.**
 
-**Every generated agreement carries the Meantime Hamilton Master Policy
-v1.3 figures, for whichever venue it belongs to.** Venue IDENTITY moved onto
-the venue row; venue POLICY did not. There is no column for any of these:
+Venue IDENTITY is on the venue row. Venue POLICY is not, and that is now a
+decision rather than an accident. Every generated agreement carries the
+same figures whatever venue it belongs to:
 
-| Figure | Constant | Where it prints |
+| Figure | Value | Where it prints |
 | --- | --- | --- |
-| Deposit | `policy.STANDARD_DEPOSIT` ($500) | The deposit clause, the frozen `deposit_required` on the agreement, and the deposit invoice |
-| Event Order lead time | `policy.EVENT_ORDER_LEAD_DAYS` | Two clauses, and the wizard's own deadline |
-| Short-notice cancellation | `policy.CANCELLATION_SHORT_NOTICE_FEE_PER_HEAD` | Two cancellation clauses |
-| Guest shortfall | `policy.SHORTFALL_RATE_PER_ADULT` | The minimum-spend clause |
-| AV deadline | `policy.AV_USB_DEADLINE_DAYS_BEFORE_EVENT` | The Event Order |
+| Deposit | $500 | The deposit clause, the frozen `deposit_required`, and the deposit invoice |
+| Event Order lead time | 14 days | Two clauses, and the wizard's own deadline |
+| Short-notice cancellation | $20 per head | Two cancellation clauses |
+| Guest shortfall | $50 per adult | The minimum-spend clause |
+| AV deadline | 2 days | The Event Order |
 
 Minimum spend and minimum adults are **not** in this list — they come from
-the `spaces` row, so they are already per venue.
+the `spaces` row and have always been per venue, so The Entrance's own room
+carries its own numbers without any of the above changing.
 
-If The Entrance's terms are identical, say so and nothing needs building.
-If any differ, they need venue columns before the first contract goes out —
-the same shape as the identity work, and not a five-minute change.
-
-### 2. Which deposit does The Entrance take?
-
-The same question as the first row above, singled out because it is the one
-a client pays. Today an Entrance contract would say **$500**, from
-Hamilton's policy document.
-
----
+`tests/test_both_venues_trade_on_the_same_terms.py` pins it. Changing any
+of these figures now changes **both** companies' contracts, and adding a
+per-venue policy column fails that file on purpose — not to forbid it, but
+so the decision is made out loud rather than arrived at.
 
 ## The order
 
