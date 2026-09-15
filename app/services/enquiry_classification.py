@@ -208,11 +208,27 @@ def _enquiry_submission_lock(db: Session, email: str):
     yield
 
 
-def _find_recent_duplicate(db: Session, *, contact_id, event_date, event_name) -> Booking | None:
+def _find_recent_duplicate(db: Session, *, venue_id, contact_id, event_date, event_name) -> Booking | None:
+    """The same enquiry arriving twice AT THE SAME VENUE.
+
+    THE VENUE PREDICATE IS NOT COSMETIC. Contacts are shared across venues
+    by design (Aaron, 2026-09-12), so the same person enquiring at both
+    companies about the same event on the same day -- "Vale 40th", one
+    form then the other, deciding between the two rooms -- matched here
+    with no venue clause. The second venue got NO booking at all: this
+    returns the first venue's row, is_new comes back False, and the route
+    gates the notification and both background tasks on is_new. A lead
+    lost silently, filed at the other company, with a 303 to a thanks page
+    naming an event the client never booked there.
+
+    Fifteen seconds is short, and that is exactly how long it takes to
+    open the other venue's form in a second tab.
+    """
     cutoff = dt.datetime.now(dt.timezone.utc) - DUPLICATE_SUBMISSION_WINDOW
     return db.execute(
         select(Booking)
         .where(
+            Booking.venue_id == venue_id,
             Booking.contact_id == contact_id,
             Booking.event_date == event_date,
             Booking.event_name == event_name,
@@ -272,13 +288,19 @@ def create_enquiry_booking(
         if submission_id is not None:
             same_submission = db.scalar(select(Booking).where(Booking.submission_id == submission_id))
             if same_submission is not None:
-                if _same_submission_content(same_submission, email=email, event_name=event_name, event_date=event_date):
+                if _same_submission_content(
+                    same_submission, venue_id=venue.id, email=email,
+                    event_name=event_name, event_date=event_date,
+                ):
                     return same_submission, [], False
                 submission_id = None
 
         contact, duplicate_candidates = find_or_create_contact(db, full_name, email, phone)
 
-        existing = _find_recent_duplicate(db, contact_id=contact.id, event_date=event_date, event_name=event_name)
+        existing = _find_recent_duplicate(
+            db, venue_id=venue.id, contact_id=contact.id,
+            event_date=event_date, event_name=event_name,
+        )
         if existing is not None:
             return existing, duplicate_candidates, False
 
@@ -411,10 +433,23 @@ def _create_enquiry_booking_locked(
     )
 
 
-def _same_submission_content(booking: Booking, *, email: str, event_name: str, event_date: dt.date | None) -> bool:
+def _same_submission_content(
+    booking: Booking, *, venue_id, email: str, event_name: str, event_date: dt.date | None
+) -> bool:
+    """Is this the SAME submission, or one that merely looks like it?
+
+    THE VENUE IS PART OF THE ANSWER. submission_id is globally unique and
+    this lookup ignores the clock entirely, so without it one id posted to
+    two venues -- a page restored from bfcache and re-submitted on the
+    other company's form, an API caller reusing an id -- hands back the
+    first venue's booking forever, and the second venue never gets one.
+    Worse than the 15-second duplicate window above, which at least
+    expires.
+    """
     contact_email = (booking.contact.email if booking.contact else "") or ""
     return (
-        contact_email.strip().lower() == (email or "").strip().lower()
+        booking.venue_id == venue_id
+        and contact_email.strip().lower() == (email or "").strip().lower()
         and (booking.event_name or "") == (event_name or "")
         and booking.event_date == event_date
     )
